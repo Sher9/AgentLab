@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>编排：Airflow 与 Prefect 的 DAG 实践 · AgentLab</title>
+  <meta name="description" content="当数据任务多到需要定时、依赖、重试与告警，就要上编排。对比 Airflow 与 Prefect 的 DAG 模型、重试告警机制、动态与静态 DAG，给出两个框架的可运行骨架，以及与 ML/LLM 管线结合时的注意点。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="编排：Airflow 与 Prefect 的 DAG 实践 · AgentLab"/>
+  <meta property="og:description" content="当数据任务多到需要定时、依赖、重试与告警，就要上编排。对比 Airflow 与 Prefect 的 DAG 模型、重试告警机制、动态与静态 DAG，给出两个框架的可运行骨架，以及与 ML/LLM 管线结合时的注意点。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#data">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🗄️</span>
+        <span class="art-moduleName">数据处理</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">24 分钟</span>
+      </div>
+      <h1 class="art-title">编排：Airflow 与 Prefect 的 DAG 实践</h1>
+      <p class="art-desc">当数据任务多到需要定时、依赖、重试与告警，就要上编排。对比 Airflow 与 Prefect 的 DAG 模型、重试告警机制、动态与静态 DAG，给出两个框架的可运行骨架，以及与 ML/LLM 管线结合时的注意点。</p>
+      <div class="art-tags"><span class="art-tag">#编排</span><span class="art-tag">#Airflow</span><span class="art-tag">#Prefect</span><span class="art-tag">#DAG</span><span class="art-tag">#调度</span><span class="art-tag">#重试</span></div>
+    </div>
+    <div class="prose"><h1>编排：Airflow 与 Prefect 的 DAG 实践</h1>
+<p>一条数据管线从『手动跑一个脚本』演化到『几十个任务、互相依赖、每天定时、挂了要告警』时，就需要<strong>编排（Orchestration）</strong>。编排系统的核心价值就一句话：<strong>把任务依赖、调度、重试、可观测性从业务代码里剥离出来，变成声明式配置</strong>。</p>
+<p>这一篇对比两款主流编排工具——Airflow 与 Prefect，讲清 DAG 模型、重试与告警，给出两个框架的可运行骨架，以及接 ML/LLM 管线时的坑。</p>
+<h2 id="1-为什么不能只靠-cron-脚本">1. 为什么不能只靠 cron + 脚本</h2>
+<p>单任务用 <code>cron</code> 调脚本确实够。但当任务变多，纯脚本方案会迅速腐烂：</p>
+<ul>
+<li><strong>依赖混乱</strong>：任务 B 必须等 A 跑完，cron 只能靠『错开时间』近似，上游延迟就全乱；</li>
+<li><strong>失败静默</strong>：脚本挂了没人知道，第二天才发现数据断了；</li>
+<li><strong>无状态可视</strong>：想知道『昨天那次跑到第几步』，只能翻日志大海捞针；</li>
+<li><strong>重试与并发难做</strong>：手动写重试易漏、并发易打爆下游。</li>
+</ul>
+<p>编排系统把这些问题内建化：你声明『任务与依赖』，它负责调度、重试、告警、可视化。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">编排管的是流程，不是计算</span></div><div class="co-body"><p>  编排框架本身不替你算数据，它只决定『谁先跑、失败了怎么办、跑完通知谁』。
+  重计算逻辑（嵌入、训练）仍是你的 Python/SQL，编排只负责把它们串起来并兜底。</p>
+</div></div><h2 id="2-dag-模型-任务-依赖-重试">2. DAG 模型：任务、依赖、重试</h2>
+<p>两个框架的核心抽象都是 <strong>DAG（有向无环图）</strong>：节点是任务（Task），边是依赖。关键概念：</p>
+<ul>
+<li><strong>依赖（dependency）</strong>：<code>a &gt;&gt; b</code> 表示 b 等 a 成功后才跑；支持多对多；</li>
+<li><strong>重试（retry）</strong>：任务失败自动重试 N 次、退避间隔可配；</li>
+<li><strong>幂等（idempotency）</strong>：同一任务重跑应得到等价结果，编排才敢放心重试；</li>
+<li><strong>告警（alert）</strong>：失败/超时通过回调（邮件、Webhook、Slack）通知。</li>
+</ul>
+<pre><code class="language-text">extract &gt;&gt; clean &gt;&gt; embed &gt;&gt; sync &gt;&gt; reconcile
+                clean &gt;&gt; validate
+</code></pre>
+<p>上面表示：clean 完成后并行跑 embed 与 validate，embed 完成后 sync，最后 reconcile。编排引擎据此生成执行计划并在失败时只在受影响分支重试。</p>
+<h2 id="3-airflow-vs-prefect-对比">3. Airflow vs Prefect 对比</h2>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>Airflow</th>
+<th>Prefect</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>范式</td>
+<td>静态 DAG（调度时解析，结构固定）</td>
+<td>动态流（Python 原生，运行时灵活）</td>
+</tr>
+<tr>
+<td>部署</td>
+<td>较重（Scheduler + Worker + 元数据库）</td>
+<td>较轻（可纯 Python 跑，也可托管云）</td>
+</tr>
+<tr>
+<td>学习曲线</td>
+<td>陡，概念多（Operator/DagRun/XCom）</td>
+<td>平缓，写普通 Python 函数即可</td>
+</tr>
+<tr>
+<td>动态生成</td>
+<td>需小心处理（避免 DAG 注入）</td>
+<td>天然擅长（循环/条件生成任务）</td>
+</tr>
+<tr>
+<td>适用</td>
+<td>传统 ETL、固定批处理、团队已成熟</td>
+<td>快速迭代、动态任务、Python 优先团队</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">按团队成熟度选</span></div><div class="co-body"><p>  已有数据平台、流程固定、要丰富 Operator 生态 → Airflow。
+  团队是 Python 优先、任务图常变、想少运维 → Prefect。没有强约束时，Prefect 上手更快。</p>
+</div></div><h2 id="4-airflow-骨架">4. Airflow 骨架</h2>
+<p>下面是 Airflow 风格的最小 DAG（API 以官方文档为准，版本间有差异，伪代码示意结构）：</p>
+<pre><code class="language-python"># airflow_dag.py —— 向量管线 DAG 骨架（结构示意，operator 名以官方为准）
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from datetime import datetime, timedelta
+
+default_args = {
+    "retries": 3,                      # 失败自动重试 3 次
+    "retry_delay": timedelta(minutes=5),  # 退避间隔
+    "email_on_failure": True,          # 失败发告警
+}
+
+def extract(): ...   # 抽取任务
+def embed(): ...     # 嵌入任务（复用数据处理逻辑）
+def sync(): ...      # 同步向量库
+
+with DAG(
+    dag_id="vector_pipeline",
+    schedule="0 2 * * *",              # 每天凌晨 2 点
+    start_date=datetime(2026, 1, 1),
+    default_args=default_args,
+    catchup=False,                     # 不补跑历史遗漏的调度
+) as dag:
+    t1 = PythonOperator(task_id="extract", python_callable=extract)
+    t2 = PythonOperator(task_id="embed", python_callable=embed)
+    t3 = PythonOperator(task_id="sync", python_callable=sync)
+    t1 &gt;&gt; t2 &gt;&gt; t3                     # 声明依赖：线性串起
+</code></pre><p>注意 <code>catchup=False</code>：避免停机后 Airflow 疯狂补跑历史日期把下游打爆，多数新管线都应关掉。</p>
+<h2 id="5-prefect-骨架">5. Prefect 骨架</h2>
+<p>Prefect 更 Python 原生，<code>@flow</code> 与 <code>@task</code> 装饰普通函数即可，依赖用 <code>await</code> 表达：</p>
+<pre><code class="language-python"># prefect_flow.py —— 同一条管线在 Prefect 的写法
+from prefect import flow, task
+from datetime import timedelta
+
+@task(retries=3, retry_delay_seconds=300)
+def extract(): ...
+
+@task(retries=3, retry_delay_seconds=300)
+def embed(): ...
+
+@task(retries=3, retry_delay_seconds=300)
+def sync(): ...
+
+@flow(name="vector_pipeline")
+def pipeline():
+    data = extract()          # 普通函数调用即表达依赖
+    vec = embed(data)
+    sync(vec)
+
+if __name__ == "__main__":
+    pipeline()                 # 本地直接跑，无需先起 Scheduler
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">本地先跑通再上调度</span></div><div class="co-body"><p>  Prefect 的 <code>@flow</code> 能直接 <code>python prefect_flow.py</code> 本地执行，调试体验远好于 Airflow。
+  先用本地模式把逻辑跑顺，再接 Prefect 的调度/云，避免一上来就陷入部署排错。</p>
+</div></div><h2 id="6-告警与监控">6. 告警与监控</h2>
+<p>编排的价值一半在『出事你知道』。两种必做告警：</p>
+<ul>
+<li><strong>任务失败告警</strong>：重试耗尽仍失败，立即通知（Slack/Webhook/邮件）；</li>
+<li><strong>时长/数据量异常告警</strong>：某次抽取行数骤降 90%，可能是上游断流，比失败更隐蔽。</li>
+</ul>
+<p>Airflow 用 <code>on_failure_callback</code> + 连接；Prefect 用 <code>state_handlers</code> 或托管平台的 notification。无论哪种，告警要带 <strong>DagRun id / 任务 id / 失败原因</strong>，让值班人能一键定位。</p>
+<h2 id="7-与-ml-llm-管线结合">7. 与 ML / LLM 管线结合</h2>
+<p>向量管线、模型训练、批处理推理都很适合挂到编排上，但有几点特别注意：</p>
+<ul>
+<li><strong>长任务与超时</strong>：LLM 嵌入一批可能几小时，编排的默认超时可能误杀。显式设 <code>execution_timeout</code>，并把大任务拆成可断点续跑的小批；</li>
+<li><strong>资源隔离</strong>：嵌入任务吃 GPU/网络，别和普通 ETL 抢同一 Worker，用队列/标签把重任务路由到专用资源；</li>
+<li><strong>成本护栏</strong>：LLM 相关任务加『本次预计调用量』上限检查，超阈值直接失败告警而非盲目跑空预算。</li>
+</ul>
+<pre><code class="language-python"># 在编排任务里加成本护栏（伪代码，接你自己的计量）
+def embed_with_budget(batch):
+    est_calls = len(batch)
+    if est_calls &gt; BUDGET_PER_RUN:        # 超预算直接失败，触发告警而非烧钱
+        raise RuntimeError(f"预估调用 {est_calls} 超预算 {BUDGET_PER_RUN}")
+    return embed(batch)
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">编排不是重试万能药</span></div><div class="co-body"><p>  非幂等任务（如『给每个用户发邮件』）被编排重试会重复发送。给这类任务加幂等键
+  （如已发送记录表），或在编排层标记为『不可重试』。重试只该用于真正可重入的任务。</p>
+</div></div><h2 id="8-踩坑清单">8. 踩坑清单</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">DAG 里写了重副作用却没幂等</span></div><div class="co-body"><p>  Airflow 重试时，如果任务已经『发了一半邮件 / 写了一半数据』，重试会重复。把副作用做成幂等
+  （去重键、upsert、事务），否则编排的重试机制反而成故障放大器。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">catchup 把下游打爆</span></div><div class="co-body"><p>  Airflow 默认会补跑错过的调度日期。停机一周后恢复，它可能瞬间提交 7 天的任务。
+  新管线默认 <code>catchup=False</code>，确需要历史补跑时再手动触发并评估下游承载。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">把重计算塞进编排进程</span></div><div class="co-body"><p>  编排 Worker 应只跑『协调逻辑』，重嵌入/训练要提交给专用计算（队列/单独服务）。
+  在 Worker 里跑几小时大模型推理会占满调度资源，拖垮同节点其他任务。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">任务粒度别太碎也别太粗</span></div><div class="co-body"><p>  太碎（每步一个任务）依赖图难读、调度开销大；太粗（一万个文件一个任务）重试成本高、难定位。
+  按『一个可独立重试的语义单元』切，比如『一个数据源的当日全量』为一个任务。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>编排把依赖、调度、重试、告警从业务代码剥离，cron+脚本在任务变多后会腐烂。</li>
+<li>DAG = 任务+依赖；重试与幂等是前提，告警是价值一半。</li>
+<li>Airflow 适合固定批处理/成熟团队；Prefect 适合 Python 优先/动态任务/快速迭代。</li>
+<li>ML/LLM 管线要设超时、资源隔离、成本护栏；非幂等副作用必须加幂等键。</li>
+<li>红线：DAG 重副作用要幂等、谨慎开 catchup、重计算别占用编排 Worker、任务粒度适中。</li>
+</ul>
+<h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>Apache Airflow 官方文档：DAG 定义、Operator、Scheduler 架构、回调与告警</li>
+<li>Prefect 官方文档：flow/task 装饰器、重试、托管云与本地运行差异</li>
+<li><em>Data Pipelines with Apache Airflow</em>（书籍）：生产编排的实战经验</li>
+<li>数据处理中的幂等设计：upsert、事务、去重键在编排重试下的必要性</li>
+<li>编排与数据质量（Great Expectations / 校验任务）：在 DAG 里内建质量门禁</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="data-eval-set.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">评测集构建：黄金集、边界用例与版本管理</span></a>
+    <span></span>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>关于 AgentLab</title>
+  <meta name="description" content="AgentLab 是什么、为谁而建，以及内容来源与更新方式。"/>
+  <meta property="og:type" content="website"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="关于 AgentLab"/>
+  <meta property="og:description" content="AgentLab 是什么、为谁而建，以及内容来源与更新方式。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="assets/styles.css"/>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="index.html" class="">首页</a>
+      <a href="courses.html" class="">课程</a>
+      <a href="about.html" class="hdr-active">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <main class="main">
+  <div class="prose" style="max-width:760px">
+    <h1>关于 AgentLab</h1>
+    <p><strong>AgentLab</strong> 是一个面向<strong>有开发经验者</strong>的 AI Agent 开发学习站。我们相信最好的学习方式，是<strong>边学边做</strong>——所以本站本身也用真实 Agent 项目最常用的技术栈搭建。</p>
+    <h2>为谁而建</h2>
+    <ul>
+      <li>已经是程序员，想系统上手 AI Agent 开发；</li>
+      <li>受够了碎片化、不成体系的框架文档；</li>
+      <li>想要「能复制、能跑、有注释」的实战，而不是概念堆砌。</li>
+    </ul>
+    <h2>内容是怎么组织的</h2>
+    <p>全部教程以 <code>.mdx</code> 文件存放在仓库的 <code>content/</code> 目录，构建期编译成静态页面。你看到的每一篇文章，本质上都是一个可版本控制的代码文件——这意味着内容透明、可溯源，也方便你 Fork 后改成自己的笔记。</p>
+    <h2>内容来源与更新</h2>
+    <p>示例文章采用「能跑的骨架 + 详细注释」写法：结构完整、可直接运行，关键处配注释讲清为什么。课程按 14 个分类组织，从 Python、前端等工程基础，到 AI Agent、LLM、RAG、框架，再到部署运维与评估调优。</p>
+    <h2>开始学习</h2>
+    <p>直接前往 <a href="courses.html">课程大纲</a>，或从 <a href="index.html">首页</a> 的第一课开始。</p>
+  </div>
+  </main>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="courses.html">课程</a>
+      <a href="about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="assets/app.js" defer></script>
+</body>
+</html>

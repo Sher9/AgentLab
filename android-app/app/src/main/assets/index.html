@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>AgentLab · 掌握 AI Agent 开发</title>
+  <meta name="description" content="面向有开发经验者的 AI Agent 开发学习站：每篇教程都是能跑的骨架 + 详细注释。"/>
+  <meta property="og:type" content="website"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="AgentLab · 掌握 AI Agent 开发"/>
+  <meta property="og:description" content="面向有开发经验者的 AI Agent 开发学习站：每篇教程都是能跑的骨架 + 详细注释。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="assets/styles.css"/>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="index.html" class="hdr-active">首页</a>
+      <a href="courses.html" class="">课程</a>
+      <a href="about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <main class="main">
+  <div class="home-wrap">
+    <section class="home-hero">
+      <div class="home-heroText">
+        <span class="home-badge">面向有开发经验者</span>
+        <h1 class="home-title">掌握 <span class="home-serif">AI Agent</span><br/>从工具调用到工程化部署</h1>
+        <p class="home-subtitle">AgentLab 是一个实战型学习站：每篇教程都是「能跑的骨架 + 详细注释」，带你把 Agent 的 loop、工具、记忆、编排逐项跑通。覆盖 Python、前端、LLM、RAG、框架与部署运维的完整链路。</p>
+        <div class="home-cta">
+          <a class="home-primaryBtn" href="courses.html">开始学习</a>
+          <a class="home-ghostBtn" href="courses.html"><span class="home-play">▶</span> 浏览全部分类</a>
+        </div>
+      </div>
+      <div class="home-heroVisual"><div class="hv-visual" aria-hidden="true">
+  <div class="hv-circle"></div>
+  <div class="hv-courseCard">
+    <div class="hv-courseThumb"></div>
+    <div class="hv-courseBody">
+      <div class="hv-courseTitle">Agent 开发入门</div>
+      <div class="hv-courseMeta">14 个分类 · 70+ 教程</div>
+      <div class="hv-courseBtn">开始学习</div>
+    </div>
+  </div>
+  <div class="hv-videoCard">
+    <div class="hv-videoInset"></div>
+    <div class="hv-videoAvatar"></div>
+    <div class="hv-videoName">导师在线答疑</div>
+    <div class="hv-videoControls">
+      <span class="hv-ctrlMic"></span>
+      <span class="hv-ctrlCall"></span>
+      <span class="hv-ctrlCam"></span>
+    </div>
+  </div>
+  <div class="hv-badge"><span class="hv-badgeIcon"></span><span>10k+ 学习者</span></div>
+  <span class="hv-deco hv-star1">✦</span>
+  <span class="hv-deco hv-dot1"></span>
+  <span class="hv-deco hv-dot2"></span>
+  <span class="hv-deco hv-half"></span>
+</div></div>
+    </section>
+
+    <section class="home-sectionCard">
+      <h2 class="home-sectionTitle">按分类学习</h2>
+      <p class="home-sectionSub">14 个方向，从工程基础到 Agent / LLM / RAG 与部署运维，体系化掌握。</p>
+      <div class="home-grid4"><a class="home-catItem" href="courses.html#python">
+      <span class="home-iconCircle" style="background:#dbeafe">🐍</span>
+      <span class="home-catText">Python</span>
+    </a><a class="home-catItem" href="courses.html#frontend">
+      <span class="home-iconCircle" style="background:#fce7f3">🎨</span>
+      <span class="home-catText">前端工程</span>
+    </a><a class="home-catItem" href="courses.html#tools">
+      <span class="home-iconCircle" style="background:#ede9fe">🛠️</span>
+      <span class="home-catText">开发工具</span>
+    </a><a class="home-catItem" href="courses.html#agent">
+      <span class="home-iconCircle" style="background:#dcfce7">🤖</span>
+      <span class="home-catText">AI Agent</span>
+    </a><a class="home-catItem" href="courses.html#llm">
+      <span class="home-iconCircle" style="background:#fee2e2">🧠</span>
+      <span class="home-catText">LLM大模型</span>
+    </a><a class="home-catItem" href="courses.html#prompt">
+      <span class="home-iconCircle" style="background:#ffedd5">✍️</span>
+      <span class="home-catText">Prompt工程</span>
+    </a><a class="home-catItem" href="courses.html#rag">
+      <span class="home-iconCircle" style="background:#ccfbf1">📚</span>
+      <span class="home-catText">RAG</span>
+    </a><a class="home-catItem" href="courses.html#tooldev">
+      <span class="home-iconCircle" style="background:#ecfccb">🔧</span>
+      <span class="home-catText">工具开发</span>
+    </a><a class="home-catItem" href="courses.html#frameworks">
+      <span class="home-iconCircle" style="background:#e0e7ff">🏗️</span>
+      <span class="home-catText">框架</span>
+    </a><a class="home-catItem" href="courses.html#data">
+      <span class="home-iconCircle" style="background:#fef3c7">🗄️</span>
+      <span class="home-catText">数据处理</span>
+    </a><a class="home-catItem" href="courses.html#deploy">
+      <span class="home-iconCircle" style="background:#d1fae5">🚀</span>
+      <span class="home-catText">部署运维</span>
+    </a><a class="home-catItem" href="courses.html#eval">
+      <span class="home-iconCircle" style="background:#fae8ff">📊</span>
+      <span class="home-catText">评估调优</span>
+    </a><a class="home-catItem" href="courses.html#product">
+      <span class="home-iconCircle" style="background:#cffafe">💡</span>
+      <span class="home-catText">产品工程</span>
+    </a><a class="home-catItem" href="courses.html#interview">
+      <span class="home-iconCircle" style="background:#ffe4e6">🎯</span>
+      <span class="home-catText">常见面试题</span>
+    </a></div>
+    </section>
+
+    <section class="home-startBox">
+      <div>
+        <h3 class="home-startTitle">准备好开始了吗？</h3>
+        <p class="home-startDesc">从 AI Agent 的「介绍」开始，先跑通你的第一个 Agent 环境。</p>
+      </div>
+      <a class="home-primaryBtn" href="courses/python-core.html">进入第一课</a>
+    </section>
+  </div>
+  </main>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="courses.html">课程</a>
+      <a href="about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="assets/app.js" defer></script>
+</body>
+</html>

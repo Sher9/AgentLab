@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>实战：从零搭一个可运行的 Agent 项目 · AgentLab</title>
+  <meta name="description" content="把 M0–M7 串成一条线——做一个会规划、检索、调用工具、记忆并产出带引用报告的「研究助手 Agent」。完整目录、可运行代码、扩展路线与工程化清单。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="实战：从零搭一个可运行的 Agent 项目 · AgentLab"/>
+  <meta property="og:description" content="把 M0–M7 串成一条线——做一个会规划、检索、调用工具、记忆并产出带引用报告的「研究助手 Agent」。完整目录、可运行代码、扩展路线与工程化清单。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#agent">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🤖</span>
+        <span class="art-moduleName">AI Agent</span>
+        <span class="art-diff">高级</span>
+        <span class="art-dur">50 分钟</span>
+      </div>
+      <h1 class="art-title">实战：从零搭一个可运行的 Agent 项目</h1>
+      <p class="art-desc">把 M0–M7 串成一条线——做一个会规划、检索、调用工具、记忆并产出带引用报告的「研究助手 Agent」。完整目录、可运行代码、扩展路线与工程化清单。</p>
+      <div class="art-tags"><span class="art-tag">#实战</span><span class="art-tag">#项目</span><span class="art-tag">#综合</span><span class="art-tag">#全栈</span></div>
+    </div>
+    <div class="prose"><h1>实战：从零搭一个可运行的 Agent 项目</h1>
+<p>走到这里，M0–M7 的概念你都过了一遍：会调工具、懂模式、知道记忆/RAG、多 Agent、评估与工程化。但<strong>零散的知识点，只有拼进一个真实项目才会变成能力</strong>。</p>
+<p>本篇带你从零搭一个<strong>研究助手 Agent（Research Agent）</strong>：</p>
+<blockquote>
+<p>给它一个主题，它会：先做计划 → 检索资料（工具）→ 调用计算/查询工具 → 记录关键结论到长期记忆 → 汇总成一份带引用来源的报告。</p>
+</blockquote>
+<p>它把前面所有模块串成一条线。代码全部可运行（用占位数据，零外部 API 依赖即可演示），你本地跑通后，再按文末路线逐步替换为真实能力。</p>
+<h2 id="1-项目结构">1. 项目结构</h2>
+<p>真实项目要把「循环、工具、记忆、规划」拆开，而不是塞在一个文件里。我们采用如下结构：</p>
+<pre><code>research-agent/
+├─ package.json
+├─ .env                      # OPENAI_API_KEY=sk-...
+├─ tsconfig.json
+├─ src/
+│  ├─ agent.ts               # 主循环（规划 + ReAct + 工具 + Zod 校验）
+│  ├─ tools.ts               # 工具定义与实现（检索/计算/笔记）
+│  ├─ memory.ts              # 短期(messages) + 长期(笔记) 记忆
+│  ├─ planner.ts             # 规划阶段：把主题拆成步骤
+│  └─ prompts.ts             # 系统提示词
+└─ run.ts                    # 入口：读主题、跑 Agent、输出报告
+</code></pre><p>下面逐文件给出<strong>可运行骨架</strong>。为方便你一次复制跑通，关键的 <code>agent.ts</code> 与 <code>tools.ts</code> 都做了最小自包含。</p>
+<h2 id="2-规划层-planner-ts">2. 规划层 planner.ts</h2>
+<p>M2 讲「Plan-and-Execute」：复杂任务先规划再执行，能减少盲目试错。这里用一个轻量规划器，把主题拆成有序步骤，写进系统提示引导模型。</p>
+<pre><code class="language-ts">// src/planner.ts
+// 轻量规划：把主题拆成研究步骤（真实场景可让 LLM 生成，这里用规则演示结构）
+export interface Plan {
+  topic: string;
+  steps: string[];
+}
+
+export function makePlan(topic: string): Plan {
+  // 通用三步法：检索定义 → 收集要点 → 形成结论
+  // 真实项目可改为：调用 LLM 生成针对 topic 的定制步骤
+  return {
+    topic,
+    steps: [
+      `检索「${topic}」的核心定义与背景`,
+      `收集「${topic}」的关键要点与争议`,
+      `汇总形成带引用的研究报告`,
+    ],
+  };
+}
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">规划的价值</span></div><div class="co-body"><p>  没有规划时，模型容易「想到哪做到哪」，在长任务里反复横跳。把步骤显式写进 prompt，
+  相当于给循环一个「待办清单」，每轮工具调用都更聚焦。代价是规划可能随进展过期，需要时可动态修订。</p>
+</div></div><h2 id="3-工具层-tools-ts">3. 工具层 tools.ts</h2>
+<p>工具是 Agent 的「手脚」。这里给三个：网页检索（占位）、计算器、保存笔记到长期记忆。</p>
+<pre><code class="language-ts">// src/tools.ts —— 工具定义 + 实现（最小可运行版）
+import { z } from 'zod';
+import type OpenAI from 'openai';
+
+// 长期记忆的容器（真实项目换数据库，见 M4）
+export const notes: string[] = [];
+
+// ① 网页检索：此处用占位数据，真实场景接入搜索 API（如 Brave/Tavily）
+function webSearch(query: string): string {
+  return `[检索 "${query}"] 占位结果：Agent 是能感知环境、自主决策并调用工具完成目标的系统。`;
+}
+
+// ② 计算器
+function calc(expr: string): string {
+  // 仅允许数字与运算符，避免 eval 注入风险
+  if (!/^[\d+\-*/().\s]+$/.test(expr)) return '表达式非法';
+  try {
+    // eslint-disable-next-line no-new-func
+    const v = Function(`"use strict";return (${expr})`)() as number;
+    return String(v);
+  } catch {
+    return '计算失败';
+  }
+}
+
+// ③ 保存笔记（写入长期记忆）
+function saveNote(note: string): string {
+  notes.push(note);
+  return `已保存笔记（共 ${notes.length} 条）`;
+}
+
+// 给模型看的工具清单（JSON Schema，见 M1）
+export const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'web_search',
+      description: '检索与主题相关的资料，返回摘要',
+      parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'calculator',
+      description: '计算数学表达式',
+      parameters: { type: 'object', properties: { expr: { type: 'string' } }, required: ['expr'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'save_note',
+      description: '把关键结论保存到长期记忆，便于最终汇总',
+      parameters: { type: 'object', properties: { note: { type: 'string' } }, required: ['note'] },
+    },
+  },
+];
+
+// 工具分发：按名字执行，并用 Zod 校验参数（见 M1 第 5 节）
+const CalcArgs = z.object({ expr: z.string() });
+const NoteArgs = z.object({ note: z.string().min(1) });
+const SearchArgs = z.object({ query: z.string().min(1) });
+
+export function executeTool(name: string, rawArgs: string): string {
+  let args: unknown;
+  try {
+    args = JSON.parse(rawArgs);
+  } catch {
+    return '参数不是合法 JSON';
+  }
+  if (name === 'web_search') {
+    const p = SearchArgs.safeParse(args);
+    return p.success ? webSearch(p.data.query) : `参数错误：${p.error.message}`;
+  }
+  if (name === 'calculator') {
+    const p = CalcArgs.safeParse(args);
+    return p.success ? calc(p.data.expr) : `参数错误：${p.error.message}`;
+  }
+  if (name === 'save_note') {
+    const p = NoteArgs.safeParse(args);
+    return p.success ? saveNote(p.data.note) : `参数错误：${p.error.message}`;
+  }
+  return `未知工具: ${name}`;
+}
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">工具返回的字符串也会被读回 prompt</span></div><div class="co-body"><p>  工具结果（尤其 web_search 来自外部）属于不可信输入。实战里要在回填前做长度截断、
+  敏感信息脱敏，并警惕提示注入——不要让它借工具结果「改写指令」。详见 M0 局限与 M6 护栏。</p>
+</div></div><h2 id="4-记忆层-memory-ts">4. 记忆层 memory.ts</h2>
+<p>把 M4 的概念落地：短期记忆就是不断增长的 <code>messages</code>；长期记忆是上面 <code>tools.ts</code> 里的 <code>notes</code> 数组。这里提供「拼装长期记忆」的只读视图，以及清空（每轮任务隔离）。</p>
+<pre><code class="language-ts">// src/memory.ts
+import { notes } from './tools';
+
+// 把长期记忆格式化成一段文本，注入最终汇总提示
+export function longTermMemoryView(): string {
+  if (notes.length === 0) return '（暂无长期笔记）';
+  return notes.map((n, i) =&gt; `${i + 1}. ${n}`).join('\n');
+}
+
+// 跨任务隔离：开始前清空，避免上一次的主题污染本次
+export function resetMemory(): void {
+  notes.length = 0;
+}
+</code></pre><h2 id="5-主循环-agent-ts-规划-react-zod-校验">5. 主循环 agent.ts（规划 + ReAct + Zod 校验）</h2>
+<p>这就是 M2 的 ReAct 节律 + M1 的工具闭环 + M4 的记忆 + 本篇的规划，组合成一个可调用的 <code>runAgent</code>。</p>
+<pre><code class="language-ts">// src/agent.ts
+import OpenAI from 'openai';
+import 'dotenv/config';
+import { tools, executeTool } from './tools';
+import { longTermMemoryView, resetMemory } from './memory';
+import { makePlan } from './planner';
+
+const client = new OpenAI();
+
+export async function runAgent(topic: string, maxSteps = 8): Promise&lt;string&gt; {
+  resetMemory();                       // 先清空长期记忆，保证任务隔离
+  const plan = makePlan(topic);        // 规划阶段：生成步骤清单
+  const planText = plan.steps.map((s, i) =&gt; `${i + 1}. ${s}`).join('\n');
+
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    {
+      role: 'system',
+      content:
+        '你是一个研究助手。先按给定计划行动：用 web_search 收集资料，用 calculator 处理数字，' +
+        '用 save_note 记录关键结论。信息足够后，直接输出最终研究报告（带要点），不要继续调用工具。\n' +
+        `研究计划：\n${planText}`,
+    },
+    { role: 'user', content: `请研究这个主题并产出报告：${topic}` },
+  ];
+
+  for (let step = 0; step &lt; maxSteps; step++) {
+    const res = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages,
+      tools,
+    });
+    const msg = res.choices[0].message;
+    messages.push(msg);
+
+    if (!msg.tool_calls?.length) {
+      // 模型认为信息够了，返回最终报告
+      return msg.content ?? '';
+    }
+
+    for (const call of msg.tool_calls) {
+      const result = executeTool(call.function.name, call.function.arguments);
+      messages.push({ role: 'tool', tool_call_id: call.id, content: result });
+    }
+  }
+
+  // 达到上限：用长期记忆兜底汇总，避免空手而归
+  const summary = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: '基于已收集的长期记忆，写出最终报告要点。' },
+      { role: 'user', content: `主题：${topic}\n已记录资料：\n${longTermMemoryView()}` },
+    ],
+  });
+  return summary.choices[0].message.content ?? '';
+}
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">先用占位数据验证逻辑</span></div><div class="co-body"><p>  本骨架的 web_search 是占位返回，目的是让你<strong>不依赖外部 API 也能跑通整条链路</strong>。
+  先确认「规划→循环→工具→记忆→报告」通了，再替换真实检索——这是工程化降低风险的基本功。</p>
+</div></div><h2 id="6-入口-run-ts-与配置">6. 入口 run.ts 与配置</h2>
+<pre><code class="language-ts">// src/run.ts
+import { runAgent } from './agent';
+
+async function main() {
+  const topic = process.argv[2] ?? 'AI Agent 的主流架构模式有哪些？';
+  console.log('研究主题：', topic, '\n');
+  const report = await runAgent(topic);
+  console.log('=== 研究报告 ===\n');
+  console.log(report);
+}
+
+main();
+</code></pre><code>tsconfig.json</code> 只需基础配置（<code>"module": "ESNext"</code>、<code>"moduleResolution": "Bundler"</code>、<code>"strict": true</code>）；<code>package.json</code> 依赖为 <code>openai</code>、<code>dotenv</code>、<code>zod</code>。<h2 id="7-跑起来">7. 跑起来</h2>
+<pre><code class="language-bash">npm init -y
+npm i openai dotenv zod
+npx tsx src/run.ts "AI Agent 的主流架构模式有哪些？"
+</code></pre><p>你会看到 Agent 先 <code>web_search</code> 收集资料、<code>save_note</code> 记录结论，最后输出一份带要点的报告。把 <code>.env</code> 里的 <code>OPENAI_API_KEY</code> 填上即可（M0 环境搭建已讲过）。</p>
+<h2 id="8-加一层规划修订-进阶">8. 加一层规划修订（进阶）</h2>
+<p>上面的 <code>makePlan</code> 是固定三步。真实场景里，模型执行到一半可能发现计划不对。可加一个「每 N 步审视一次计划」的钩子：</p>
+<pre><code class="language-ts">// 伪代码：在 agent.ts 循环内，每 3 步让模型评估「计划是否还合理」
+if (step % 3 === 0) {
+  const review = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: '评估当前进度，简短回答：计划是否需要调整？如需，给出新步骤。' },
+      ...messages.slice(-6), // 只看最近几轮，省 token
+    ],
+  });
+  // 把 review 作为一条 assistant/tool 提示注入，引导后续动作（以官方文档为准，API 易变）
+}
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">这是 Plan-and-Execute 的雏形</span></div><div class="co-body"><p>  把「规划」和「执行」解耦后，规划可以独立缓存、复用、被人审阅。复杂任务里这比纯 ReAct 更可控，
+  但也更贵（多一次规划调用）。取舍见 M2。</p>
+</div></div><h2 id="9-接入真实-rag-替换占位检索">9. 接入真实 RAG（替换占位检索）</h2>
+<p>把 <code>web_search</code> 换成 M4 讲的向量检索，Agent 就能基于你的私有知识库作答：</p>
+<pre><code class="language-ts">// 思路骨架（以官方文档为准，API 易变）：
+// 1. 离线：把文档切块 → embedding → 存入 pgvector/Chroma/Qdrant
+// 2. 运行时 web_search(query)：
+//      qv = embed(query)
+//      hits = vectorStore.search(qv, topK=4)   // 近似检索
+//      return hits.map(h =&gt; h.text).join('\n---\n')
+// 3. 把命中片段作为工具结果回填，模型据此作答并 save_note
+</code></pre><table>
+<thead>
+<tr>
+<th>对比</th>
+<th>占位检索</th>
+<th>真实 RAG</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>数据来源</td>
+<td>硬编码字符串</td>
+<td>你的文档/知识库</td>
+</tr>
+<tr>
+<td>相关性</td>
+<td>无</td>
+<td>语义 top-k</td>
+</tr>
+<tr>
+<td>成本</td>
+<td>0</td>
+<td>每次检索一次 embedding 调用</td>
+</tr>
+<tr>
+<td>风险</td>
+<td>无</td>
+<td>bad retrieval 误导（需阈值过滤）</td>
+</tr>
+</tbody></table>
+<h2 id="10-评估与可观测-上线前必做">10. 评估与可观测（上线前必做）</h2>
+<p>M6 讲评估与可观测。给 <code>runAgent</code> 包一层 trace，记录每步耗时、token、工具调用：</p>
+<pre><code class="language-ts">// 伪代码：包裹一次 Agent 运行，产出可观测日志
+async function tracedRun(topic: string) {
+  const t0 = Date.now();
+  const report = await runAgent(topic);
+  console.log(JSON.stringify({
+    topic,
+    costMs: Date.now() - t0,
+    steps: /* 需要从 runAgent 内部上报 */,
+  }));
+  return report;
+}
+</code></pre><p>评估可用「黄金数据集 + LLM-as-judge」：准备若干主题与期望要点，自动比对报告覆盖率（详见 M6）。</p>
+<h2 id="11-怎么继续扩展-对照前面的模块">11. 怎么继续扩展（对照前面的模块）</h2>
+<p>这个最小项目已经具备「能跑」的骨架，接下来按需求逐步加料：</p>
+<table>
+<thead>
+<tr>
+<th>想要的能力</th>
+<th>看哪篇</th>
+<th>怎么加</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>更稳的「先规划再执行」</td>
+<td>M2 Plan-and-Execute</td>
+<td>在 <code>runAgent</code> 前先调一次规划，把步骤写进 system prompt</td>
+</tr>
+<tr>
+<td>真实语义检索(RAG)</td>
+<td>M4 记忆与 RAG</td>
+<td>把 <code>notes</code> 换成向量库，检索 top-k 注入 prompt</td>
+</tr>
+<tr>
+<td>并行多角色协作</td>
+<td>M5 多 Agent</td>
+<td>拆出「检索 Agent / 写作 Agent」，用 manager 汇总</td>
+</tr>
+<tr>
+<td>评估与护栏</td>
+<td>M6 评估与可观测</td>
+<td>给 <code>runAgent</code> 包一层 tracer + eval 数据集打分</td>
+</tr>
+<tr>
+<td>流式输出/缓存/部署</td>
+<td>M7 工程化</td>
+<td><code>stream: true</code> 逐步吐字；加 Redis 缓存；部署为常驻服务</td>
+</tr>
+</tbody></table>
+<h2 id="12-一个完整项目的工程化清单">12. 一个完整项目的工程化清单</h2>
+<p>把教程变成产品，别忘了这些上线前必做项（都已在前面覆盖）：</p>
+<ul>
+<li><strong>成本</strong>：简单步骤换小模型，长 prompt 摘要压缩（M4/M7）</li>
+<li><strong>延迟</strong>：流式输出、并行工具、减少轮数（M7）</li>
+<li><strong>可靠性</strong>：循环上限、Zod 校验、重试退避（M1/M7）</li>
+<li><strong>安全</strong>：危险工具加护栏与确认，防提示注入（M1/M6）</li>
+<li><strong>可观测</strong>：每步打 trace，上线后能排查（M6）</li>
+<li><strong>文档/SEO</strong>：对外站点要 sitemap、OG、响应式（本站即范例）</li>
+</ul>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">永远给循环设上限</span></div><div class="co-body"><p>  本骨架 <code>maxSteps=8</code> 不是可选项。没有上限，模型一旦陷入「调同一个工具→得到相似结果→再调」的死循环，
+  会一直烧 token 直到失败。生产环境还要叠加成本预算与超时，作为第二道保险。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>真实 Agent = 规划（planner） + 主循环（ReAct） + 工具（M1） + 记忆（M4）的组合。</li>
+<li>先跑通最小闭环（占位数据），再逐模块替换真实能力，是风险最低的路径。</li>
+<li>规划让长任务更聚焦；长期记忆让跨步结论可汇总；工具结果须经校验与脱敏再回填。</li>
+<li>本项目的每一行，都能在前 7 篇找到出处——这就是「边学边做」的闭环。</li>
+<li>上线前补齐：循环上限、成本预算、评估、可观测、安全护栏（M6/M7）。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">到这里，八模块学完</span></div><div class="co-body"><p>  你已具备从零搭建一个生产级 Agent 的知识骨架。想深入某一块、或看更多参考资料，
+  欢迎去资源页。下一步，是把它真正写进你自己的项目里。</p>
+</div></div><h2 id="延伸阅读">延伸阅读</h2>
+<ul>
+<li><a href="https://openai.github.io/openai-agents-js/">OpenAI Agents SDK</a> — 官方 Agent 编排框架参考</li>
+<li><a href="https://langchain-ai.github.io/langgraph/">LangGraph 文档</a> — 状态图编排（框架篇 M3 详述）</li>
+<li><a href="https://docs.ragas.io/">RAG 评估 Ragas</a> — 检索/生成质量量化</li>
+<li><a href="/ai-agent/m1-tool-calling">本系列 M1 工具调用</a> — 工具闭环源码细节</li>
+<li><a href="/ai-agent/m4-memory-rag">本系列 M4 记忆与 RAG</a> — 把占位检索换成真实向量库</li>
+<li><a href="/ai-agent/m6-eval-observability">本系列 M6 评估与可观测</a> — 给 Agent 加 trace 与评分</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="agent-spec.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">Agent 规格定义：需求拆解、能力清单与输入输出契约</span></a>
+    <span></span>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

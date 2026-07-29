@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>原生 vs 框架：何时手写，何时用框架 · AgentLab</title>
+  <meta name="description" content="剖析「裸用 LLM SDK 自己写循环」与「用 CrewAI/LangGraph 等框架」两路在控制流、抽象成本、可维护性上的真实权衡，给出可操作的决策框架与对照骨架。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="原生 vs 框架：何时手写，何时用框架 · AgentLab"/>
+  <meta property="og:description" content="剖析「裸用 LLM SDK 自己写循环」与「用 CrewAI/LangGraph 等框架」两路在控制流、抽象成本、可维护性上的真实权衡，给出可操作的决策框架与对照骨架。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#frameworks">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🏗️</span>
+        <span class="art-moduleName">框架</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">22 分钟</span>
+      </div>
+      <h1 class="art-title">原生 vs 框架：何时手写，何时用框架</h1>
+      <p class="art-desc">剖析「裸用 LLM SDK 自己写循环」与「用 CrewAI/LangGraph 等框架」两路在控制流、抽象成本、可维护性上的真实权衡，给出可操作的决策框架与对照骨架。</p>
+      <div class="art-tags"><span class="art-tag">#框架</span><span class="art-tag">#原生</span><span class="art-tag">#抽象成本</span><span class="art-tag">#可维护性</span><span class="art-tag">#选型</span></div>
+    </div>
+    <div class="prose"><h1>原生 vs 框架：何时手写，何时用框架</h1>
+<p>M1 里我们用几十行代码就跑通了工具调用闭环，M3 对比过主流框架选型。但一个总被问到的问题是：<strong>「我到底要不要上框架？」</strong></p>
+<p>很多团队一上来就 <code>pip install langchain</code>，半年后又花大力气把关键链路改回原生。这一篇不站队，只把两条路的<strong>真实成本收益</strong>摆清楚，给你一份能落地的决策框架。</p>
+<h2 id="1-两条路的定义">1. 两条路的定义</h2>
+<ul>
+<li><strong>原生路线</strong>：直接用 LLM 厂商 SDK（如 OpenAI Node/Python SDK）+ 自己写的循环与状态管理，不引入 Agent 框架。M1 的工具闭环就是典型原生实现。</li>
+<li><strong>框架路线</strong>：用 CrewAI / LangGraph / AutoGen / LlamaIndex 等，把编排、记忆、工具、多 Agent 通信等封装成组件。</li>
+</ul>
+<p>两者底层都还是「模型 + 工具 + 循环」，区别只在<strong>控制流归谁管、复用层多厚</strong>。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">框架不是能力增强，是工程封装</span></div><div class="co-body"><p>  框架不会让模型变聪明，只是把「你已经会手写的循环/状态/路由」提前写好、参数化。
+  所以选型的本质问题是：<strong>这部分工程，你自己写值不值？</strong></p>
+</div></div><h2 id="2-原生路线的成本与收益">2. 原生路线的成本与收益</h2>
+<h3 id="2-1-收益">2.1 收益</h3>
+<ul>
+<li><strong>完全可控</strong>：每一步的输入输出、重试、降级你都看得见、改得动；</li>
+<li><strong>零抽象泄漏</strong>：没有「框架行为和你预期不一致却查不到原因」的痛苦；</li>
+<li><strong>依赖最小</strong>：少一层包，升级/迁移/审计成本最低；</li>
+<li><strong>调试直白</strong>：报错栈就是你的代码，不怕「框架内部吞了异常」。</li>
+</ul>
+<h3 id="2-2-成本">2.2 成本</h3>
+<ul>
+<li><strong>重复造轮子</strong>：记忆、重试、并行、路由、Human-in-loop……每个都要自己写；</li>
+<li><strong>易写错控制流</strong>：循环上限、超时、并发这些 M1 强调的红线，框架常已内置，原生要自己兜底；</li>
+<li><strong>团队协作口径碎</strong>：十个人手写十种循环风格，后期难维护。</li>
+</ul>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">原型期优先原生</span></div><div class="co-body"><p>  验证想法的阶段，先用原生把链路跑通。你能最快理解「Agent 到底在干嘛」，
+  也避免还没想清需求就被框架的抽象绑架。等模式稳定了再决定是否上框架。</p>
+</div></div><h2 id="3-框架路线的成本与收益">3. 框架路线的成本与收益</h2>
+<h3 id="3-1-收益">3.1 收益</h3>
+<ul>
+<li><strong>开箱即用的编排</strong>：Sequential/Hierarchical 流程、状态图、检查点一句话配好；</li>
+<li><strong>生态组件</strong>：Retriever、Memory、Tool 适配器、可观测性集成现成可接；</li>
+<li><strong>团队一致性</strong>：统一抽象，新人按文档就能接手；</li>
+<li><strong>先进模式低成本复用</strong>：Human-in-loop、持久化检查点这类难写的设施框架已给。</li>
+</ul>
+<h3 id="3-2-成本-抽象成本">3.2 成本（抽象成本）</h3>
+<ul>
+<li><strong>学习曲线</strong>：要懂框架的抽象模型（图？Crew？会话？），错了难定位；</li>
+<li><strong>抽象泄漏</strong>：真实需求稍微超出框架预设，就要「对抗框架」或 hack；</li>
+<li><strong>版本与锁定</strong>：框架 API 迭代快，升级常 breaking；深度绑定后迁移贵；</li>
+<li><strong>黑盒调试</strong>：中间状态被框架接管，verbose 日志外的可观测性要额外接。</li>
+</ul>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">抽象成本会反噬</span></div><div class="co-body"><p>  当你的需求有 30% 落在框架预设之外，维护「绕开框架」的代码往往比
+  「当初直接原生写」更累。框架省钱的前提是：你的用法契合它的预设。</p>
+</div></div><h2 id="4-决策框架-什么时候选哪条">4. 决策框架：什么时候选哪条</h2>
+<p>一张对照表先建立直觉：</p>
+<table>
+<thead>
+<tr>
+<th>信号</th>
+<th>倾向原生</th>
+<th>倾向框架</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>链路是否固定、可控</td>
+<td>固定且要精细控制</td>
+<td>动态、角色多、需快速试</td>
+</tr>
+<tr>
+<td>团队是否有框架经验</td>
+<td>有经验、偏底层</td>
+<td>想快速出原型</td>
+</tr>
+<tr>
+<td>是否需 Human-in-loop/可回放</td>
+<td>自己写得起</td>
+<td>框架现成（如 LangGraph）</td>
+</tr>
+<tr>
+<td>需求是否超框架预设</td>
+<td>超出越多越要原生</td>
+<td>高度契合预设才上</td>
+</tr>
+<tr>
+<td>长期维护/审计要求</td>
+<td>高合规、要可控</td>
+<td>能接受框架依赖</td>
+</tr>
+</tbody></table>
+<h3 id="4-1-决策伪代码">4.1 决策伪代码</h3>
+<pre><code class="language-python"># decide.py —— 选型决策思路骨架（伪代码，按团队实际打分）
+def should_use_framework(need):
+    # ① 需求是否高度契合某框架的预设抽象？
+    fit = estimate_framework_fit(need)        # high / medium / low
+    if fit == "low":
+        return "原生"                          # 框架帮不上，反而添乱
+
+    # ② 是否要精细控制每一步、强可观测、强合规？
+    if need.require_fine_control or need.audit_strict:
+        return "原生" if can_afford(need) else "框架+自写关键节点"
+
+    # ③ 是否快速验证、角色多、流程动态？
+    if need.rapid_prototype and need.many_roles:
+        return "框架"                          # 用 CrewAI/LangGraph 提速
+
+    # ④ 默认：原型用框架，稳定后把关键链路迁回原生
+    return "框架起步，核心链路原生化"
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">常见中间态：混用</span></div><div class="co-body"><p>  实际生产里最稳的是「混合」：编排/多 Agent 用框架，核心工具执行与
+  关键控制流用原生。既借框架提速，又不把命门交给黑盒。</p>
+</div></div><h2 id="5-同一任务的两种实现对照-思路骨架">5. 同一任务的两种实现对照（思路骨架）</h2>
+<p>下面用「带重试的工具 Agent」演示两路差异。API 仅示意，以官方为准。</p>
+<pre><code class="language-python"># 原生思路骨架：循环/重试/降级全在自己手里
+def run_native(user_input, tools, max_steps=5):
+    messages = [{"role": "user", "content": user_input}]
+    for _ in range(max_steps):                  # 上限自己管，红线不漏
+        msg = llm(messages, tools=tools)
+        if not msg.tool_calls:
+            return msg.content
+        for call in msg.tool_calls:
+            result = execute_with_retry(call)    # 重试/降级自己写（见 M1）
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+    return "步数耗尽"
+
+# 框架思路骨架：把循环交给框架，你只声明角色与工具
+# researcher = Agent(role=..., tools=[...]); task = Task(...)
+# crew = Crew(agents=[researcher], tasks=[task], process=Process.sequential)
+# crew.kickoff(inputs={"topic": user_input})
+# 注意：步数上限、重试策略由框架配置项决定，需另行显式设置，否则易失控
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">对照着读就懂了</span></div><div class="co-body"><p>  原生版每一行都是你的；框架版把『循环 + 消息回填』收进了 Crew。
+  框架省的是『写循环』，你让渡的是『看清循环』。选型就是权衡这笔账。</p>
+</div></div><h2 id="6-踩坑">6. 踩坑</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">没想清就上框架</span></div><div class="co-body"><p>  需求还没稳定就引入重框架，后期「对抗框架」的改造量常大于『当初原生写』。
+  先原生验证，再决定上不上、上哪个。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">被框架锁定</span></div><div class="co-body"><p>  深度使用某框架专有抽象（自定义 State、Callback）后，迁移成本极高。
+  关键链路尽量用框架的「薄封装」而非「深定制」，给未来留退路。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">以为框架替你管了红线</span></div><div class="co-body"><p>  循环上限、超时、工具护栏这些 M1 红线，框架不一定默认兜底（尤其层级流程）。
+  上框架后仍需显式配置步数上限与工具权限，别想当然。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">先量再定</span></div><div class="co-body"><p>  拿真实任务跑一遍：原生写要几行、框架写要几行、调试各花多久。
+  用你们团队的数据说话，比任何选型文章都准。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>原生 = 完全可控、依赖最小、调试直白，但要自己写编排与红线兜底。</li>
+<li>框架 = 编排/生态/一致性开箱即用，代价是抽象成本、版本锁定与黑盒调试。</li>
+<li>决策核心：需求是否契合框架预设？是否要精细控制/强合规？是否快速试错？</li>
+<li>最稳是混合：框架提速、核心链路原生化；且任何框架都要显式配步数上限与护栏。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  若决定上框架，可按需看同分类的 CrewAI / LangGraph / LlamaIndex / AutoGen 实战篇，
+  对照本篇的决策框架选最契合的一个起步。</p>
+</div></div><h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>M3 主流框架选型（定位与适用场景的总览对照）</li>
+<li>M1 工具调用实战（原生闭环与红线，理解框架在替你做什么）</li>
+<li>LangGraph / CrewAI 官方文档（各自抽象模型与配置项，以官方为准）</li>
+<li>12-Factor App（依赖管理与「显式优于隐式」的工程原则）</li>
+<li><em>The Law of Leaky Abstractions</em>（抽象必然泄漏，理解框架代价的底层逻辑）</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="framework-crewai.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">CrewAI 实战：角色扮演式多 Agent 编排</span></a>
+    <span></span>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

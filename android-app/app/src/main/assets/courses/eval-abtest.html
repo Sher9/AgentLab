@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>线上实验：用 A/B 与灰度验证真实收益 · AgentLab</title>
+  <meta name="description" content="把离线评测的『可能变好』变成线上的『确实变好』：A/B 实验指标设计、分流与灰度发布、统计显著性与常见陷阱，并给出分流骨架。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="线上实验：用 A/B 与灰度验证真实收益 · AgentLab"/>
+  <meta property="og:description" content="把离线评测的『可能变好』变成线上的『确实变好』：A/B 实验指标设计、分流与灰度发布、统计显著性与常见陷阱，并给出分流骨架。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#eval">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">📊</span>
+        <span class="art-moduleName">评估调优</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">18 分钟</span>
+      </div>
+      <h1 class="art-title">线上实验：用 A/B 与灰度验证真实收益</h1>
+      <p class="art-desc">把离线评测的『可能变好』变成线上的『确实变好』：A/B 实验指标设计、分流与灰度发布、统计显著性与常见陷阱，并给出分流骨架。</p>
+      <div class="art-tags"><span class="art-tag">#A/B</span><span class="art-tag">#灰度</span><span class="art-tag">#显著性</span><span class="art-tag">#线上实验</span><span class="art-tag">#分流</span></div>
+    </div>
+    <div class="prose"><h1>线上实验：用 A/B 与灰度验证真实收益</h1>
+<p>离线评测（见 <code>eval-dataset</code> / <code>eval-prompt-opt</code>）只能告诉你『在样本集上变好了』。但真实用户分布、长尾问题、业务指标（留存、转化、满意度）才是最终裁判。这一篇讲如何把改动放到线上做<strong>对照实验</strong>，用数据而非直觉拍板。</p>
+<h2 id="1-离线评测与线上实验的分工">1. 离线评测与线上实验的分工</h2>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>回答的问题</th>
+<th>工具</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>离线评测</td>
+<td>这个改动在已知样本上是否变好</td>
+<td>评测集 + judge</td>
+</tr>
+<tr>
+<td>线上实验</td>
+<td>真实用户下是否真的更好、有没有副作用</td>
+<td>A/B / 灰度</td>
+</tr>
+</tbody></table>
+<p>离线评测快、便宜、可重复，是『守门员』；线上实验慢、贵、有风险，是『终审』。两者不可互相替代。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">能离线解决的别上线上</span></div><div class="co-body"><p>  凡是评测集能覆盖的差异，优先离线解决，别为了『感受一下』就开线上实验。
+  线上实验要占用流量、增加复杂度、还有伤用户的风险，只留给真正需要真实分布的问题。</p>
+</div></div><h2 id="2-指标设计-先定-north-star">2. 指标设计：先定 North Star</h2>
+<p>实验前必须明确<strong>主指标（North Star）<strong>与</strong>护栏指标（Guardrail）</strong>：</p>
+<ul>
+<li>主指标：你想提升的，如『任务一次解决率』『答案满意度评分』；</li>
+<li>护栏指标：绝对不能恶化的，如『响应延迟』『成本/次』『报错率』。</li>
+</ul>
+<p>护栏指标用于『拦截』：主指标涨了但护栏跌了，实验判负。这是防止『拆东墙补西墙』的关键。</p>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">护栏指标常比主指标更重要</span></div><div class="co-body"><p>  很多实验主指标微涨、成本却翻倍——这种『赢』毫无意义。护栏指标（延迟/成本/报错）
+  往往决定一个改动能否上线。把护栏写进实验结论的硬性门槛。</p>
+</div></div><h2 id="3-分流与灰度-控制爆炸半径">3. 分流与灰度：控制爆炸半径</h2>
+<p>线上实验的核心是<strong>把流量分成互斥组</strong>，只让实验组用新版本：</p>
+<pre><code class="language-ts">// ab-split.ts —— 按用户 ID 稳定分流（可运行骨架）
+// 关键：同一用户每次都落同一组（哈希稳定），否则体验会反复横跳
+function assignBucket(userId: string, experiment: string): 'control' | 'treatment' {
+  // 把 userId + 实验名拼成种子再做哈希，保证同用户稳定、不同实验独立
+  const seed = `${experiment}:${userId}`;
+  let h = 0;
+  for (let i = 0; i &lt; seed.length; i++) {
+    h = (h * 31 + seed.charCodeAt(i)) &gt;&gt;&gt; 0;
+  }
+  // 取模到 100 → 0~49 进 control，50~99 进 treatment（各 50%）
+  return h % 100 &lt; 50 ? 'control' : 'treatment';
+}
+
+// 用法：请求进来时决定用哪个 Prompt 版本
+function pickPrompt(userId: string): string {
+  const bucket = assignBucket(userId, 'prompt-v2');
+  return bucket === 'treatment' ? PROMPT_V2 : PROMPT_V1;
+}
+</code></pre><p>灰度发布则是<strong>逐步放大实验组比例</strong>（1% → 10% → 50% → 100%），随时可一键回滚，把事故影响限制在最小范围。</p>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">分流必须稳定且互斥</span></div><div class="co-body"><p>  同一用户每次请求必须落同一组，否则他这会儿看到新版、下会儿看到旧版，
+  体验割裂还会污染日志。用『用户 ID 哈希』而非随机，保证稳定；
+  同一请求不要同时进多组，保证互斥。</p>
+</div></div><h2 id="4-统计显著性-别被噪声骗了">4. 统计显著性：别被噪声骗了</h2>
+<p>样本不够时，1% 的差异可能纯属随机。判断实验是否有效要看：</p>
+<ul>
+<li><strong>样本量</strong>：实验前用预期效应大小算所需样本（可用在线样本量计算器）；</li>
+<li><strong>显著性水平（p 值）</strong>：通常 p &lt; 0.05 才算『有把握不是噪声』；</li>
+<li><strong>置信区间</strong>：给出效应范围，而非单点估计。</li>
+</ul>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">盯着数据直到显著是作弊</span></div><div class="co-body"><p>  反复看数据、一出现显著就停实验（peeking），会人为抬高假阳性率。
+  要么预先定好实验时长/样本量到期再读，要么用序贯检验修正。
+  『多看几次总能显著』是真实存在的统计陷阱。</p>
+</div></div><h2 id="5-灰度发布流程">5. 灰度发布流程</h2>
+<pre><code>① 1% 流量开实验组，盯护栏指标（延迟/成本/报错）有无异常
+② 护栏稳 → 放量到 10%、50%，持续观察主指标趋势
+③ 到期读数：主指标显著提升且护栏未恶化 → 全量；否则回滚
+④ 全量后保留旧版本可回滚，直到确认无问题再清理
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">先小流量验证护栏</span></div><div class="co-body"><p>  灰度的第一目标不是看主指标，而是确认『没把系统搞挂』。1% 阶段重点盯延迟和报错率，
+  护栏一旦报警立刻回滚，比主指标涨 2% 重要得多。</p>
+</div></div><h2 id="6-线上实验-vs-离线评测对比">6. 线上实验 vs 离线评测对比</h2>
+<table>
+<thead>
+<tr>
+<th>对比项</th>
+<th>离线评测</th>
+<th>线上 A/B</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>数据</td>
+<td>固定样本集</td>
+<td>真实全量分布</td>
+</tr>
+<tr>
+<td>速度</td>
+<td>分钟级</td>
+<td>天/周级</td>
+</tr>
+<tr>
+<td>成本</td>
+<td>低</td>
+<td>高（占用流量）</td>
+</tr>
+<tr>
+<td>指标</td>
+<td>通过率/评分</td>
+<td>业务指标/护栏</td>
+</tr>
+<tr>
+<td>风险</td>
+<td>几乎无</td>
+<td>有（伤部分用户）</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">两者是上下游不是二选一</span></div><div class="co-body"><p>  标准流程：离线评测先证明『不差且可能更好』，再开小流量线上实验验证真实收益。
+  跳过离线直接上线实验，既浪费流量又延长了『带病版本』的暴露时间。</p>
+</div></div><h2 id="7-常见坑">7. 常见坑</h2>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">样本不足就下结论</span></div><div class="co-body"><p>  跑了一百个用户就宣布『新版更好』，差异大概率在噪声范围内。
+  先算所需样本量，到期再读，不要提前看一眼就拍板。</p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">只盯主指标忽略护栏</span></div><div class="co-body"><p>  主指标 +2% 但成本 +50%、延迟翻倍——这种实验该判负。护栏指标是上线硬门槛。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">分流不稳定导致体验割裂</span></div><div class="co-body"><p>  见第 3 节：随机而非哈希分流，会让同一用户在新旧版间反复横跳，日志脏、体验差。</p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">peeking 作弊</span></div><div class="co-body"><p>  见第 4 节：频繁偷看数据直到显著，假阳性率飙升。预设周期，到期再读。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">实验组与对照组不同步变更</span></div><div class="co-body"><p>  实验期间若对照组也被别人改了 Prompt，两组的差异就不再是你要测的变量。
+  实验期内冻结对照组的无关改动，保证单一变量。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>离线评测守门、线上实验终审；能离线解决的别占用线上流量。</li>
+<li>先定主指标 + 护栏指标；护栏（延迟/成本/报错）是上线硬门槛。</li>
+<li>分流用『用户 ID 哈希』保证稳定互斥；灰度从小流量起步、可一键回滚。</li>
+<li>看显著性要防 peeking，预设样本量/周期到期再读；实验期内冻结对照组改动。</li>
+<li>红线：护栏不可恶化、分流要稳定、样本要够、不偷看、单一变量。</li>
+</ul>
+<h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>Microsoft <em>Trustworthy Online Controlled Experiments</em>（Kohavi）：实验设计与陷阱经典</li>
+<li>Evan Miller 的 A/B 样本量与显著性在线计算器</li>
+<li>OpenAI / Anthropic 的线上评估与监控文档（以官方为准）</li>
+<li>eval-dataset / eval-prompt-opt 篇：离线评测与 Prompt 调优（本分类前置）</li>
+<li>Feature Flag 平台文档：灰度发布与一键回滚的工程实现</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="eval-guardrail.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">护栏与安全评估：输入/输出过滤、敏感词、合规与红队评估</span></a>
+    <span></span>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

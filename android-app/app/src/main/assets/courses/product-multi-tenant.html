@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>多租户与权限：一个后端服务好多个客户 · AgentLab</title>
+  <meta name="description" content="讲透 SaaS 形态下 Agent 产品的多租户设计——数据隔离、密钥隔离、配额控制与审计，给出行级隔离、每租户密钥、配额限流与审计日志的可运行骨架。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="多租户与权限：一个后端服务好多个客户 · AgentLab"/>
+  <meta property="og:description" content="讲透 SaaS 形态下 Agent 产品的多租户设计——数据隔离、密钥隔离、配额控制与审计，给出行级隔离、每租户密钥、配额限流与审计日志的可运行骨架。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#product">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">💡</span>
+        <span class="art-moduleName">产品工程</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">24 分钟</span>
+      </div>
+      <h1 class="art-title">多租户与权限：一个后端服务好多个客户</h1>
+      <p class="art-desc">讲透 SaaS 形态下 Agent 产品的多租户设计——数据隔离、密钥隔离、配额控制与审计，给出行级隔离、每租户密钥、配额限流与审计日志的可运行骨架。</p>
+      <div class="art-tags"><span class="art-tag">#多租户</span><span class="art-tag">#数据隔离</span><span class="art-tag">#密钥隔离</span><span class="art-tag">#配额</span><span class="art-tag">#审计</span></div>
+    </div>
+    <div class="prose"><h1>多租户与权限：一个后端服务好多个客户</h1>
+<p>当你把 Agent 做成 SaaS，一个后端要同时服务 N 个客户（租户）。核心矛盾是：<strong>既要共享一套代码与基础设施省成本，又要让每个租户的数据、密钥、额度互不串门</strong>。这一篇讲四个支柱——数据隔离、密钥隔离、配额、审计，全给骨架。</p>
+<h2 id="1-多租户的三种隔离模型">1. 多租户的三种隔离模型</h2>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>做法</th>
+<th>隔离强度</th>
+<th>成本</th>
+<th>适用</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>独立库/独立实例</td>
+<td>每租户一个 DB 或部署</td>
+<td>最强</td>
+<td>最高</td>
+<td>大客户/合规严苛</td>
+</tr>
+<tr>
+<td>共享库 + 行级隔离</td>
+<td>同库同表，每行带 <code>tenant_id</code></td>
+<td>中（靠代码纪律）</td>
+<td>最低</td>
+<td>大多数 SaaS</td>
+</tr>
+<tr>
+<td>共享库 + Schema 隔离</td>
+<td>每租户一个 schema</td>
+<td>较强</td>
+<td>中</td>
+<td>中等规模</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">选型的本质是成本与合规的权衡</span></div><div class="co-body"><p>  早期几乎都用『共享库 + 行级隔离』，因为加租户只是多写个 <code>tenant_id</code>、无需运维新库。
+  但当某客户体量或合规要求到阈值（如金融、医疗），再切到独立实例。先用行级隔离起步，
+  把 <code>tenant_id</code> 当成一等公民贯穿全链路，未来迁移才不痛。</p>
+</div></div><h2 id="2-数据隔离-行级是底线">2. 数据隔离：行级是底线</h2>
+<p>行级隔离的关键不是『建了 <code>tenant_id</code> 字段』，而是<strong>每一次查询都强制带上它</strong>，且不能靠调用方自觉。</p>
+<pre><code class="language-ts">// tenant-context.ts —— 用请求上下文绑定 tenantId，杜绝漏带
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+// 把当前租户 ID 放进异步上下文，一次请求内任意处可取，避免层层传参
+const tenantStore = new AsyncLocalStorage&lt;string&gt;();
+
+export function withTenant&lt;T&gt;(tenantId: string, fn: () =&gt; T): T {
+  return tenantStore.run(tenantId, fn);
+}
+export const currentTenant = () =&gt; {
+  const id = tenantStore.getStore();
+  if (!id) throw new Error('no tenant in context'); // 没绑定就报错，逼你显式传入
+  return id;
+};
+
+// 所有数据访问必须经过这层封装，自动注入 tenantId
+async function listConversations(db: DB, onlyResolved: boolean) {
+  const tid = currentTenant(); // 从上下文取，调用方没法漏
+  return db.query(
+    'SELECT * FROM conversations WHERE tenant_id = $1 AND resolved = $2',
+    [tid, onlyResolved]
+  );
+}
+</code></pre><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">漏带 tenantId 是数据泄露事故</span></div><div class="co-body"><p>  任何一处手写 SQL 忘了 <code>WHERE tenant_id = ?</code>，就会把 A 客户的数据返给 B。
+  做法：封装统一的数据访问层强制注入；CI 里用 lint/正则扫描裸 <code>SELECT</code>；给表加
+  <code>tenant_id</code> 非空约束 + 复合唯一索引 <code>(tenant_id, id)</code>，从数据库层兜底。</p>
+</div></div><h2 id="3-密钥隔离-每个租户用自己的-llm-key">3. 密钥隔离：每个租户用自己的 LLM Key</h2>
+<p>很多 Agent 产品允许客户自带 LLM API Key（BYOK），或平台按租户分配独立配额 key。绝不能把所有租户混用同一个全局 Key——一旦泄露或超配额，全体瘫痪。</p>
+<pre><code class="language-ts">// key-vault.ts —— 按租户取独立密钥，密钥本身只存密文
+async function getTenantKey(tenantId: string): Promise&lt;string&gt; {
+  // 真实场景：从 KMS / Vault 取解密后的明文，密文落库
+  const row = await secretStore.get(`llm_key:${tenantId}`);
+  if (!row) throw new Error(`tenant ${tenantId} has no key provisioned`);
+  return decrypt(row.cipher); // 运行时解密，日志/数据库里只留密文
+}
+
+// 调用 LLM 时按租户注入对应密钥，配额与账单天然按租户归集
+async function chatForTenant(tenantId: string, messages: Msg[]) {
+  const apiKey = await getTenantKey(tenantId);
+  const client = new LLMClient({ apiKey }); // 每租户独立 key → 独立限流/计费
+  return client.chat(messages);
+}
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">密钥别进日志</span></div><div class="co-body"><p>  解密后的明文 key 绝不能打日志、不能进错误信息、不能进前端。
+  日志只记 <code>tenantId</code> 与 <code>key_id</code>。密钥轮换要有版本号，旧 key 失效不影响在途请求。</p>
+</div></div><h2 id="4-配额-按租户的-rpm-token-成本限流">4. 配额：按租户的 RPM / Token / 成本限流</h2>
+<p>共享资源下，一个租户的突发流量不能挤掉别人。配额在<strong>两个层面</strong>做：上游 LLM 的调用频率、以及平台自身的成本上限。</p>
+<pre><code class="language-ts">// quota.ts —— 基于滑动窗口的租户配额（Redis 实现示意）
+async function checkQuota(tenantId: string, cost: number): Promise&lt;boolean&gt; {
+  const key = `quota:${tenantId}:${minuteBucket()}`; // 按分钟分桶
+  const used = await redis.incrby(key, cost);
+  if (used === cost) await redis.expire(key, 60); // 首写设过期，避免无限堆积
+  const limit = await getTenantLimit(tenantId);     // 每租户独立上限
+  return used &lt;= limit; // 超了就拒，返回 429 + 剩余额度提示
+}
+
+// 用法：在入口网关处对每个租户请求先过配额闸
+async function handle(req: Req, res: Res) {
+  if (!(await checkQuota(req.tenantId, estimateTokens(req)))) {
+    return res.status(429).json({ error: '配额已用尽，请升级套餐或稍后重试' });
+  }
+  // ...正常处理
+}
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">配额要可观测可升级</span></div><div class="co-body"><p>  配额不是『堵』，是『可弹性』。把每租户用量做成实时面板，临近上限主动提醒，
+  并提供一键升级套餐——把限流从『拒绝』变成『商业转化』的入口。</p>
+</div></div><h2 id="5-审计-谁在何时做了什么">5. 审计：谁在何时做了什么</h2>
+<p>多租户系统里，审计日志是合规与排障的命脉：出问题能定位到具体租户、具体操作、具体人。</p>
+<pre><code class="language-ts">// audit.ts —— 结构化审计事件，tenantId 必填
+type AuditEvent = {
+  tenantId: string;
+  actor: string;       // 用户/服务账号
+  action: string;      // chat.create / key.rotate / data.export
+  target?: string;
+  at: string;          // ISO 时间戳
+  meta?: Record&lt;string, unknown&gt;;
+};
+
+async function audit(e: AuditEvent) {
+  // 写独立审计库（与生产库分离，防误删），且不可篡改（append-only）
+  await auditLog.append({ ...e, at: new Date().toISOString() });
+}
+</code></pre><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">审计库别和生产库混</span></div><div class="co-body"><p>  审计日志应落到独立、append-only 的存储，生产库被误删/回滚时审计仍在。
+  含 PII 的审计内容要做脱敏，且保留期要满足客户合同与当地法规。</p>
+</div></div><h2 id="6-对比速查">6. 对比速查</h2>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>行级隔离</th>
+<th>独立实例</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>新增租户成本</td>
+<td>极低（写条记录）</td>
+<td>高（建库/部署）</td>
+</tr>
+<tr>
+<td>隔离强度</td>
+<td>依赖代码纪律</td>
+<td>物理隔离</td>
+</tr>
+<tr>
+<td>跨租户查询</td>
+<td>容易（同库聚合）</td>
+<td>难（需跨实例）</td>
+</tr>
+<tr>
+<td>典型故障半径</td>
+<td>大（一处 bug 影响全部）</td>
+<td>小（仅该租户）</td>
+</tr>
+</tbody></table>
+<h2 id="7-踩坑清单">7. 踩坑清单</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">tenantId 靠前端传等于没隔离</span></div><div class="co-body"><p>  若 <code>tenant_id</code> 由客户端请求体/参数传入并直接用于查询，攻击者改个值就能跨租户读数据。
+  正确做法：tenantId 来自<strong>服务端鉴权上下文</strong>（JWT 校验后的声明），前端不可篡改。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">共享缓存忘了加租户前缀</span></div><div class="co-body"><p>  Redis key 不加 <code>tenantId:</code> 前缀，A 租户的会话会被 B 取到。所有缓存/队列 key 必须带租户前缀。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">配额用全局限流替代</span></div><div class="co-body"><p>  全局『每秒 100 请求』不能防『单租户占满 100』。配额必须按 <code>tenantId</code> 维度分别计数。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">把隔离做成中间件</span></div><div class="co-body"><p>  数据隔离、密钥注入、配额检查、审计，统一收敛到『租户中间件』，业务代码无感知。
+  隔离逻辑集中一处，才不会出现『某接口忘了加 tenantId』的散落漏洞。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>多租户 = 共享代码、隔离数据/密钥/配额。起步用行级隔离，把 <code>tenant_id</code> 当一等公民。</li>
+<li>数据隔离靠封装层强制注入 <code>tenant_id</code>，密钥隔离按租户独立 Key 并只存密文。</li>
+<li>配额按租户分别限流（RPM/Token/成本），既防挤占也是商业化入口。</li>
+<li>审计落独立 append-only 库，tenantId 必填、含 PII 需脱敏。</li>
+<li>红线：tenantId 必须来自服务端鉴权而非前端、缓存 key 带前缀、配额按租户维度、密钥不进日志。</li>
+</ul>
+<h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>Microsoft <em>Multitenant_SaaS_ architecture</em>：隔离模型选型与成本权衡</li>
+<li>PostgreSQL Row Level Security（RLS）：在数据库层强制行级隔离，比应用层更稳</li>
+<li>HashiCorp Vault 官方文档：密钥加密存储、动态密钥与轮换</li>
+<li>AWS/云厂商『Well-Architected SaaS』白皮书：配额、计量与租户路由</li>
+<li>本系列 <code>product-fallback</code>（租户级熔断隔离）、<code>deploy-monitor</code>（按租户指标看板）</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="product-fallback.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">降级与容错：让 Agent 服务稳如老狗</span></a>
+    <a class="art-pagerLink art-pagerRight" href="product-analytics.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">产品数据分析：用数据驱动 Agent 迭代</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

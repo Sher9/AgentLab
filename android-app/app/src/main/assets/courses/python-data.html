@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>pandas / numpy 数据处理实战 · AgentLab</title>
+  <meta name="description" content="用 pandas 的 Series/DataFrame 与 numpy 向量化做高效数据清洗，覆盖向量化思维、缺失值处理，并说明它如何接入 LLM 数据管线。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="pandas / numpy 数据处理实战 · AgentLab"/>
+  <meta property="og:description" content="用 pandas 的 Series/DataFrame 与 numpy 向量化做高效数据清洗，覆盖向量化思维、缺失值处理，并说明它如何接入 LLM 数据管线。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#python">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🐍</span>
+        <span class="art-moduleName">Python</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">25 分钟</span>
+      </div>
+      <h1 class="art-title">pandas / numpy 数据处理实战</h1>
+      <p class="art-desc">用 pandas 的 Series/DataFrame 与 numpy 向量化做高效数据清洗，覆盖向量化思维、缺失值处理，并说明它如何接入 LLM 数据管线。</p>
+      <div class="art-tags"><span class="art-tag">#pandas</span><span class="art-tag">#numpy</span><span class="art-tag">#数据处理</span><span class="art-tag">#向量化</span><span class="art-tag">#缺失值</span></div>
+    </div>
+    <div class="prose"><h1>pandas / numpy 数据处理实战</h1>
+<p>做 AI / LLM 工程，绕不开数据：语料清洗、评测集构建、RAG 文档规整、批量生成结果分析……这些活儿如果写 <code>for</code> 循环逐行处理，既慢又难维护。<strong>pandas + numpy</strong> 把数据当成「列」来整体操作（向量化），一行代码替代上百行循环。</p>
+<p>这篇面向已经会基础 Python 的开发者，聚焦三件事：<strong>核心数据结构</strong>、<strong>向量化思维（和循环的本质区别）</strong>、<strong>缺失值处理</strong>，最后讲它在 LLM 数据管线里的位置。</p>
+<h2 id="1-两个核心结构-series-与-dataframe">1. 两个核心结构：Series 与 DataFrame</h2>
+<ul>
+<li><code>Series</code>：带索引的一维数组（可理解为「一列」）。</li>
+<li><code>DataFrame</code>：多列 Series 拼成的二维表（可理解为「一张表」），是 pandas 的主力。</li>
+</ul>
+<pre><code class="language-python">import pandas as pd
+import numpy as np
+
+# DataFrame 可由字典构造，键是列名，值是每列数据
+df = pd.DataFrame({
+    "text":   ["你好", "world", None, "RAG 很有用"],
+    "tokens": [ 3,     1,    np.nan, 5 ],   # numpy 的 NaN 表示缺失
+    "score":  [ 0.9,   0.2,  None,   0.7 ],
+})
+
+print(df.dtypes)     # 每列的类型；混合了字符串/浮点
+print(df.shape)      # (4, 3) —— 4 行 3 列
+print(df["text"])    # 取出 text 这一列，是个 Series
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">为什么用 NaN 而不是 None</span></div><div class="co-body"><p>  pandas 里数值列的缺失用 <code>np.nan</code>（float）表示，字符串列的缺失才用 <code>None</code>/<code>pd.NA</code>。
+  统一缺失语义对后面 <code>isna()</code> / <code>dropna()</code> 的判断很关键，别混用导致漏判。</p>
+</div></div><h2 id="2-向量化-别写-for-循环">2. 向量化：别写 for 循环</h2>
+<p>向量化的核心是：<strong>对整个列一次性运算，而不是逐元素循环</strong>。pandas/numpy 在底层用 C 实现，速度通常是 Python 循环的数十到数百倍，代码也更短。</p>
+<pre><code class="language-python"># ❌ 反例：逐行循环，慢且啰嗦
+scores = []
+for v in df["score"]:
+    scores.append(0.0 if v is None else v * 10)
+df["score_x10"] = scores
+
+# ✅ 正解：向量化，一行搞定，底层 C 加速
+df["score_x10"] = df["score"].fillna(0) * 10
+
+# 条件赋值用 np.where（向量化的 if/else）
+df["level"] = np.where(df["score"] &gt; 0.5, "高", "低")
+</code></pre><p>向量化不止快，更重要的是<strong>可读、可组合</strong>：把每一步当「对整列做变换」去思考，管线就能像管道一样串起来。</p>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">向量化思维转换</span></div><div class="co-body"><p>  遇到「对每一行做 X」的冲动，先问：能不能写成对整列的表达式？
+  绝大多数过滤、映射、聚合都能向量化。实在不行才用 <code>.apply()</code>（它本质还是逐行，
+  只是写起来像向量化，性能提升有限）。</p>
+</div></div><h2 id="3-缺失值处理-数据分析的半壁江山">3. 缺失值处理：数据分析的半壁江山</h2>
+<p>真实数据几乎没有「完整」的。处理缺失值有四板斧：</p>
+<pre><code class="language-python"># 1) 检测：哪些格子是缺失的
+print(df.isna())          # 逐格布尔
+print(df["score"].isna().sum())  # 该列缺失计数
+
+# 2) 删除：丢掉含缺失的行（axis=0）或列（axis=1）
+df_drop = df.dropna(subset=["text"])   # 只在 text 缺失时才删
+
+# 3) 填充：用固定值 / 统计量 / 前向填充
+df["score"] = df["score"].fillna(0)          # 填 0
+df["tokens"] = df["tokens"].fillna(df["tokens"].mean())  # 填均值
+df = df.ffill()                               # 用上一个有效值向下填充
+
+# 4) 标记：新增一列记录是否曾缺失，把「缺失」本身当信息
+df["score_was_missing"] = df["score"].isna()
+</code></pre><p>选哪种取决于业务含义：用户年龄缺失可以填均值，但「是否填写年龄」这个布尔特征可能本身就很有预测价值。<strong>删除是最省事也最危险的</strong>，样本少时删一行可能偏掉整个分布。</p>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">inplace 的坑</span></div><div class="co-body"><p>  老代码常见 <code>df.dropna(inplace=True)</code>，它原地修改并返回 <code>None</code>，容易和链式调用
+  冲突且难调试。新版 pandas 官方建议<strong>避免 inplace</strong>，改用赋值式 <code>df = df.dropna()</code>，
+  函数式、可链式、可复现。</p>
+</div></div><h2 id="4-聚合与分组-从明细到统计">4. 聚合与分组：从明细到统计</h2>
+<pre><code class="language-python"># 按 level 分组，看每组的行数与平均分
+grouped = df.groupby("level").agg(
+    cnt=("score", "size"),
+    avg_score=("score", "mean"),
+)
+print(grouped)
+</code></pre><p>这是做 LLM 评测分析最常见的操作：按模型版本、按题型分组，算通过率/平均分。</p>
+<h2 id="5-与-llm-数据管线的关系">5. 与 LLM 数据管线的关系</h2>
+<p>pandas 在 AI 工程里通常不是「训练模型」的工具，而是<strong>模型上下游的数据搬运工</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>pandas 的角色</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>语料构建</td>
+<td>读 CSV/JSON/Parquet，去重、过滤低质样本、打标签</td>
+</tr>
+<tr>
+<td>RAG 文档预处理</td>
+<td>规整多源文档为统一 <code>id / content / meta</code> 表，切块前后做统计</td>
+</tr>
+<tr>
+<td>评测集管理</td>
+<td>维护黄金集、按难度/类别切分、统计覆盖度</td>
+</tr>
+<tr>
+<td>批量结果分析</td>
+<td>跑完一批 LLM 调用后，算通过率、成本、延迟分布</td>
+</tr>
+</tbody></table>
+<pre><code class="language-python"># 典型：把一批 LLM 调用结果汇总成表再统计
+results = pd.DataFrame([
+    {"case": "qa_1",  "ok": True,  "cost": 0.012, "latency": 1.3},
+    {"case": "qa_2",  "ok": False, "cost": 0.009, "latency": 0.9},
+    {"case": "sum_1", "ok": True,  "cost": 0.021, "latency": 2.1},
+])
+print("通过率：", results["ok"].mean())      # 0.666...
+print("平均成本：", results["cost"].mean())   # 向量化聚合
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">大数据别硬刚 pandas</span></div><div class="co-body"><p>  数据量上亿行时，pandas 单机内存扛不住。此时考虑 <code>polars</code>（更快、更省内存）、
+  <code>dask</code>（分布式 pandas API）或直接上 Spark。pandas 适合「能装进内存的中等规模」，
+  这正是绝大多数 LLM 评测/语料场景的体量。</p>
+</div></div><h2 id="6-运行方式">6. 运行方式</h2>
+<pre><code class="language-bash">pip install pandas numpy
+python your_script.py
+</code></pre><p>最小可运行骨架（缺失值 + 向量化 + 聚合）：</p>
+<pre><code class="language-python">import pandas as pd
+import numpy as np
+
+df = pd.DataFrame({
+    "text":   ["你好", "world", None, "RAG 很有用"],
+    "score":  [0.9, 0.2, None, 0.7],
+})
+
+# 缺失填充 + 向量化派生列
+df["score"] = df["score"].fillna(0)
+df["level"] = np.where(df["score"] &gt; 0.5, "高", "低")
+
+# 聚合看分布
+print(df.groupby("level").size())
+print(df)
+</code></pre><h2 id="小结">小结</h2>
+<ul>
+<li><code>Series</code> 是一列、<code>DataFrame</code> 是一张表，是 pandas 的两大核心。</li>
+<li><strong>向量化优先</strong>：对整个列一次性运算，别写 <code>for</code> 循环；<code>.apply()</code> 只是伪向量化。</li>
+<li>缺失值四板斧：检测 <code>isna</code>、删除 <code>dropna</code>、填充 <code>fillna</code>/<code>ffill</code>、标记成特征。</li>
+<li>分组聚合 <code>groupby().agg()</code> 是做 LLM 评测/语料统计的主力。</li>
+<li>pandas 在 AI 工程里是「数据搬运工」而非「训练器」：语料清洗、RAG 预处理、评测分析。</li>
+<li>中大规模用 pandas；超大规模换 polars/dask/Spark。新版 pandas 避免 <code>inplace=</code>。</li>
+</ul>
+<h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>pandas 官方文档（10 分钟入门）：<a href="https://pandas.pydata.org/docs/getting_started/intro_tutorials/01_table_oriented.html">https://pandas.pydata.org/docs/getting_started/intro_tutorials/01_table_oriented.html</a></li>
+<li>numpy 广播（向量化底层机制）：<a href="https://numpy.org/doc/stable/user/basics.broadcasting.html">https://numpy.org/doc/stable/user/basics.broadcasting.html</a></li>
+<li>pandas 缺失值处理指南：<a href="https://pandas.pydata.org/docs/user_guide/missing_data.html">https://pandas.pydata.org/docs/user_guide/missing_data.html</a></li>
+<li>polars（pandas 的高性能替代）：<a href="https://pola.rs/">https://pola.rs/</a></li>
+<li>Real Python《pandas 数据处理》：<a href="https://realpython.com/pandas-dataframe/">https://realpython.com/pandas-dataframe/</a></li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="python-async.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">asyncio 异步编程：事件循环、协程与并发原语</span></a>
+    <span></span>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

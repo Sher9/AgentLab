@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>CodeBuddy 编程助手实战 · AgentLab</title>
+  <meta name="description" content="搞懂 CodeBuddy 的对话、补全、多文件编辑、@引用与 Agent 模式，掌握把它嵌进日常研发的提效工作流，并与 Copilot/Cursor 做对比。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="CodeBuddy 编程助手实战 · AgentLab"/>
+  <meta property="og:description" content="搞懂 CodeBuddy 的对话、补全、多文件编辑、@引用与 Agent 模式，掌握把它嵌进日常研发的提效工作流，并与 Copilot/Cursor 做对比。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#tools">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🛠️</span>
+        <span class="art-moduleName">开发工具</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">28 分钟</span>
+      </div>
+      <h1 class="art-title">CodeBuddy 编程助手实战</h1>
+      <p class="art-desc">搞懂 CodeBuddy 的对话、补全、多文件编辑、@引用与 Agent 模式，掌握把它嵌进日常研发的提效工作流，并与 Copilot/Cursor 做对比。</p>
+      <div class="art-tags"><span class="art-tag">#CodeBuddy</span><span class="art-tag">#AI编程</span><span class="art-tag">#提效</span><span class="art-tag">#Agent模式</span></div>
+    </div>
+    <div class="prose"><h1>CodeBuddy 编程助手实战</h1>
+<p>传统 IDE 的补全器只能「猜下一个 token」。CodeBuddy 这类 AI 编程助手的区别在于：<strong>它能理解整仓上下文、跨文件改写、并自主执行多步任务</strong>。本篇不堆功能列表，而是从「日常研发到底怎么用」出发，把对话、补全、多文件编辑、<code>@</code> 引用、Agent 模式拆开讲，并给你一套能直接落地的提效工作流。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">适用读者</span></div><div class="co-body"><p>  你已经被各种 AI 编程工具宣传轰炸过，想知道 CodeBuddy 到底「强在哪、怎么用才不踩坑」。
+  本文以工程视角讲机制与范式，具体命令与 UI 文案以官方文档为准，API 易变。</p>
+</div></div><h2 id="1-它解决什么问题">1. 它解决什么问题</h2>
+<p>先把三件事说清楚，后面所有功能都是围绕它们展开：</p>
+<ul>
+<li><strong>上下文感知</strong>：传统补全只看光标前后几十行；AI 助手能读整个文件、跨文件依赖、甚至整个仓库的索引。</li>
+<li><strong>意图到代码</strong>：你用自然语言描述「做什么」，它产出「改哪些文件、怎么改」，而不只是补全一行。</li>
+<li><strong>自主执行</strong>：把「查 bug → 改 → 跑测试 → 再改」这种多步循环交给它跑，人只在关键节点确认。</li>
+</ul>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">核心心智模型</span></div><div class="co-body"><p>  CodeBuddy = 一个「读得懂你仓库、能动手改文件、能跑命令」的初级工程师搭档。
+  你负责定方向、做决策、卡质量；它负责执行和探索。把关系摆正，提效才稳。</p>
+</div></div><h3 id="1-1-原理浅析-它怎么读懂你的仓库">1.1 原理浅析：它怎么读懂你的仓库</h3>
+<p>理解底层机制，能帮你预判「它为什么有时准、有时瞎」。整套流程本质是 RAG + 工具调用的组合（详见本站的 RAG 与 Agent 系列）：</p>
+<pre><code>① 仓库索引    扫描文件、按语言切分、建符号索引（函数/类/导出）
+               → 让它可以「按名字」而不是「按全文扫描」定位代码
+② 上下文检索  你提问 / 改代码时，用 @引用 + 语义检索，挑出最相关的片段
+               → 模型上下文窗口有限，必须「先找相关的再喂」
+③ 提示组装    把你的指令 + 检索到的代码 + 仓库约定（如 lint 规则）拼成 prompt
+④ 生成与执行  产出补全 / 跨文件 diff / shell 命令
+⑤ 应用与反馈  落盘 diff、跑命令，结果再回填进下一轮（Agent 模式即此循环）
+</code></pre><p>两个关键点决定体验上限：</p>
+<ul>
+<li><strong>索引质量</strong>：<code>.gitignore</code> 没排除的巨型 <code>node_modules</code>、构建产物会污染检索。保持仓库整洁，检索更准。</li>
+<li><strong>上下文预算</strong>：模型一次能看的 token 有限。你用 <code>@</code> 精准缩小范围，等于把预算花在刀刃上；反之它被迫「抽样」，质量下降。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">它不是在「实时读全仓」</span></div><div class="co-body"><p>  很多人误以为助手每次都扫遍整个仓库。实际是：索引 + 检索 把最相关片段送进窗口。
+  所以「仓库越大越慢」主要体现在索引与检索阶段，而非每次生成的上下文长度。</p>
+</div></div><h2 id="2-四种核心交互模式">2. 四种核心交互模式</h2>
+<p>CodeBuddy 的能力可以粗分为四种模式。理解它们各自的边界，决定你「什么时候用哪个」。</p>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>触发方式</th>
+<th>适合场景</th>
+<th>自主度</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>对话（Ask）</td>
+<td>提问框</td>
+<td>解释代码、问方案、不落盘</td>
+<td>低</td>
+</tr>
+<tr>
+<td>补全（Inline）</td>
+<td>行内 Tab</td>
+<td>写函数体、填样板、续写</td>
+<td>极低</td>
+</tr>
+<tr>
+<td>多文件编辑（Craft）</td>
+<td>改写指令</td>
+<td>重构、加功能、批量修改</td>
+<td>中</td>
+</tr>
+<tr>
+<td>Agent 模式</td>
+<td>任务指令</td>
+<td>多步调试、跨仓改动、跑流程</td>
+<td>高</td>
+</tr>
+</tbody></table>
+<h3 id="2-1-对话模式-当作会读代码的搜索引擎">2.1 对话模式：当作会读代码的搜索引擎</h3>
+<p>对话模式不改动文件，纯粹问答。但它比普通 Chat 强在「能看你的代码」——把光标放在某段代码上提问，它能结合那一段回答。</p>
+<p>典型用法：</p>
+<ul>
+<li>「这个函数为什么在并发下会丢数据？」</li>
+<li>「这段正则是什么意思，有没有更稳的写法？」</li>
+<li>「给我讲清楚这个模块的职责边界」</li>
+</ul>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">别在对话里迷信答案</span></div><div class="co-body"><p>  对话模式的回答是基于它读到的片段推理的，未必覆盖全仓所有约束。
+  涉及架构决策时，让它给出「需要我确认的前提假设」，再人工核对。</p>
+</div></div><h3 id="2-2-补全模式-把样板交给它">2.2 补全模式：把样板交给它</h3>
+<p>行内补全适合「你知道要写什么、但不想手写」的场景：样板代码、测试桩、类型定义、重复结构。</p>
+<p>提效要点：</p>
+<ul>
+<li>先写有意义的<strong>函数签名和注释</strong>，补全质量会明显提升——它在「理解意图」而非「瞎猜」。</li>
+<li>大段逻辑别指望一次补全对，把它切成多个小函数逐步补全更稳。</li>
+</ul>
+<pre><code class="language-ts">// 写好签名 + 注释，补全器更容易给出对的实现
+// 把用户列表按注册时间倒序，并过滤掉被封禁的，返回 id + 昵称
+async function listActiveUsers(limit: number): Promise&lt;{ id: string; name: string }[]&gt; {
+  // ↑ 光有这一行注释，补全就能产出合理实现；若连注释都没有，质量会下降
+  // ...（此处交给行内补全生成）
+}
+</code></pre><h3 id="2-3-多文件编辑-重构与加功能的主力">2.3 多文件编辑：重构与加功能的主力</h3>
+<p>当你说「给 UserService 加一个软删除方法，并更新所有调用点」，这涉及多个文件：定义、实现、调用方、测试。多文件编辑模式会：</p>
+<ol>
+<li>检索相关文件（依赖、调用方）；</li>
+<li>给出跨文件的改动方案；</li>
+<li>逐文件落盘，并展示 diff。</li>
+</ol>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">改动前先有基线</span></div><div class="co-body"><p>  多文件编辑前，确保代码已提交或至少有 git 状态可对比。
+  所有改动都能用 <code>git diff</code> 回看，不满意直接 <code>git checkout</code> 回滚——
+  这是把「AI 自由发挥」关进「可撤销」笼子的关键习惯。</p>
+</div></div><h3 id="2-4-agent-模式-把多步循环交给它">2.4 Agent 模式：把多步循环交给它</h3>
+<p>Agent 模式是自主度最高的一档。你给一个目标（如「让登录接口在密码错误 5 次后锁定账号 10 分钟，并补上测试」），它在内部循环：读代码 → 改 → 跑命令（测试/构建）→ 看结果 → 再改，直到目标达成或卡住时来找你。</p>
+<p>它的本质是 M0～M8 里讲的 Agent 主循环：工具调用 + 结果回填 + 循环上限，只不过「工具」是读文件、写文件、跑 shell。</p>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">Agent 模式必须带护栏</span></div><div class="co-body"><p>  Agent 能执行命令、能写文件，意味着它能「搞破坏」。务必：
+  在隔离分支/沙箱里跑；限制它能执行的命令范围；
+  关键操作（删库、强推、改 CI）加人工确认。否则一次「自主」就可能把主分支推崩。</p>
+</div></div><h2 id="3-引用-把上下文喂准">3. @ 引用：把上下文喂准</h2>
+<code>@</code> 引用是「控制它看什么」的核心机制。模糊的提问 = 它瞎猜上下文；精准的 <code>@</code> = 它直击要害。<p>常见引用维度（以官方文档为准，命名可能不同）：</p>
+<ul>
+<li><code>@文件</code>：把单个文件纳入上下文——「@src/auth.ts 这里的 token 校验有漏洞吗」。</li>
+<li><code>@目录</code>：把整个目录作为背景——「@src/utils 里哪些函数可以删掉」。</li>
+<li><code>@符号</code>：精确到具体类/函数——「@UserService.login 加上限流」。</li>
+<li><code>@网络/文档</code>：引用外部链接或官方文档，让它基于最新资料回答。</li>
+<li><code>@终端</code>：引入当前报错或命令输出——「@终端 这个报错怎么修」。</li>
+</ul>
+<pre><code class="language-bash"># 典型工作流：先把报错甩给它，再让它改
+# 1) 跑测试，复制失败输出
+npm test 2&gt;&amp;1 | tail -40
+# 2) 在对话里 @终端 上述输出 + 描述目标
+#    「@终端 这是登录测试的失败栈，请 @src/auth/login.ts 修掉根因并补测试」
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">引用越小，回答越准</span></div><div class="co-body"><p>  与其 @整个仓库让它自己翻，不如你先 @最相关的 1～3 个文件。
+  上下文越聚焦，它越不容易被无关文件带偏，token 也更省。</p>
+</div></div><h2 id="4-与其他工具的对比">4. 与其他工具的对比</h2>
+<p>选型不是看谁「更聪明」，而是看谁契合你的工作流。</p>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>CodeBuddy</th>
+<th>GitHub Copilot</th>
+<th>Cursor</th>
+<th>Aider（CLI）</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>主要形态</td>
+<td>插件/客户端，多模式</td>
+<td>IDE 补全为主</td>
+<td>AI-native 编辑器</td>
+<td>终端 CLI</td>
+</tr>
+<tr>
+<td>多文件编辑</td>
+<td>强（Craft）</td>
+<td>较弱</td>
+<td>强</td>
+<td>强</td>
+</tr>
+<tr>
+<td>Agent 自主执行</td>
+<td>有</td>
+<td>有限</td>
+<td>有（Agent）</td>
+<td>有（但偏脚本化）</td>
+</tr>
+<tr>
+<td>上下文引用</td>
+<td><code>@</code> 多维引用</td>
+<td>弱</td>
+<td><code>@</code> 引用</td>
+<td>手动指定文件</td>
+</tr>
+<tr>
+<td>学习曲线</td>
+<td>低（沿用现有 IDE）</td>
+<td>最低</td>
+<td>中（换编辑器）</td>
+<td>高（命令行）</td>
+</tr>
+<tr>
+<td>适合人群</td>
+<td>想留在原 IDE 提效</td>
+<td>只想补全</td>
+<td>愿意换工具链</td>
+<td>极客/自动化流水线</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">没有银弹</span></div><div class="co-body"><p>  很多团队是「组合使用」：Copilot 做日常补全，CodeBuddy/Agent 做重构与多步任务，
+  Aider 写在 CI 里做自动化小修。按任务挑工具，比押注单一工具更划算。</p>
+</div></div><h2 id="5-提效工作流实战">5. 提效工作流实战</h2>
+<p>下面是一套可复制的日常范式，按「风险从低到高」排列，建议循序渐进采用。</p>
+<h3 id="5-1-范式一-补全-对话-零风险-立刻上手">5.1 范式一：补全 + 对话（零风险，立刻上手）</h3>
+<ul>
+<li>写新代码时：先写签名和注释，用补全填实现。</li>
+<li>读不懂代码时：对话模式问，要求它「先说前提假设再给结论」。</li>
+</ul>
+<h3 id="5-2-范式二-多文件编辑做小重构">5.2 范式二：多文件编辑做小重构</h3>
+<pre><code class="language-bash"># 工作流
+git checkout -b refactor/extract-validator   # ① 永远在新分支改
+# ② 给指令：@src 把散落的参数校验抽成一个 validate.ts 并改调用点
+# ③ 逐文件 review diff
+git diff --stat                              # 看改了哪些文件
+# ④ 跑测试确认没破
+npm test
+</code></pre><h3 id="5-3-范式三-agent-模式攻难题">5.3 范式三：Agent 模式攻难题</h3>
+<p>适合「目标清晰、但步骤多」的任务，例如接一个新 SDK：</p>
+<pre><code>指令示例：
+「在项目里接入 stripe 支付：
+ 1) 新增 payments 模块，封装 createCheckoutSession；
+ 2) 在订单服务里调用它；
+ 3) 补集成测试（用 mock）；
+ 4) 跑 npm test 与 tsc 直到全绿。
+ 遇到拿不准的外部 API 用法，标注『以官方文档为准』并停下来问我。」
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">给 Agent 设明确出口</span></div><div class="co-body"><p>  Agent 容易「跑偏自嗨」。指令里要明确：
+  跑到什么状态算成功（测试全绿 / 构建通过）；
+  什么情况必须停下来问你（用到未知 API、需要密钥、要删文件）。
+  没有出口的 Agent 任务，等于把方向盘交给一个不知疲倦但会迷路的新人。</p>
+</div></div><h3 id="5-4-范式四-把重复任务沉淀成-skill-进阶">5.4 范式四：把重复任务沉淀成 Skill（进阶）</h3>
+<p>当某类任务你反复让 CodeBuddy 做（如「每次 PR 前跑一遍规范检查」），可以把它固化成 Skill 复用——这正是下一篇《编写 CodeBuddy Skill》的主题。这里先留个钩子：Skill 本质是「一段带触发词和工具权限的指令包」。</p>
+<h3 id="5-5-写好任务指令的套路">5.5 写好任务指令的套路</h3>
+<p>无论哪个模式，「会提问」决定了 80% 的产出质量。一个好指令通常包含四要素：</p>
+<pre><code>角色/背景  你是熟悉本项目的资深工程师，遵循 TypeScript 严格模式与现有分层约定。
+目标       给 UserService 增加软删除方法，并同步更新所有调用点。
+约束       不破坏现有公共 API 签名；新增方法需补单元测试；禁止引入新依赖。
+出口       跑通 npm test 与 tsc 后停；遇到不确定的外部 API 用法先问我。
+</code></pre><pre><code class="language-bash"># 反例（太模糊，产出靠运气）：「优化下登录模块」
+# 正例（四要素齐全）：
+# 「你是本项目资深工程师。目标：给 @src/user/service.ts 的 UserService
+#   增加 softDelete(id)，并把 @src 里所有 userRepository.remove 调用改为 softDelete。
+#   约束：保留原方法签名、补测试、不引新依赖。出口：npm test 与 tsc 全绿后停。」
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">先给约束再给自由</span></div><div class="co-body"><p>  指令里「不许做什么」往往比「要做什么」更重要：不引依赖、不改签名、不碰某目录……
+  约束越具体，它越不会「好心办坏事」。把边界写在前，自由发挥才安全。</p>
+</div></div><h2 id="6-配置与钩子-可运行骨架">6. 配置与钩子（可运行骨架）</h2>
+<p>CodeBuddy 通常支持项目级配置（如 <code>.codebuddy/settings.json</code>）和钩子（hook），用来约束它的行为。下面的示例是<strong>思路骨架</strong>，字段名以官方文档为准。</p>
+<pre><code class="language-json">{
+  "name": "my-project-buddy",
+  "version": "1.0.0",
+  "settings": {
+    "model": "default",
+    "maxIterations": 12,
+    "allowedCommands": [
+      "npm test",
+      "npm run build",
+      "tsc --noEmit",
+      "git diff",
+      "git status"
+    ],
+    "deniedCommands": [
+      "git push --force",
+      "rm -rf",
+      "git reset --hard"
+    ],
+    "reviewBeforeWrite": true
+  }
+}
+</code></pre><p>配套一个「写文件前自动跑 lint」的钩子思路（bash 骨架）：</p>
+<pre><code class="language-bash">#!/usr/bin/env bash
+# pre-edit-hook.sh —— 伪代码骨架，具体触发机制以官方文档为准
+# 每当 CodeBuddy 准备写文件时，先对改动做静态检查
+set -euo pipefail
+
+TARGET_FILE="$1"   # 由宿主传入：待写入的文件路径
+
+# 只检查 ts 文件
+case "$TARGET_FILE" in
+  *.ts|*.tsx)
+    # 跑类型检查，失败则阻止写入（返回非 0）
+    npx tsc --noEmit "$TARGET_FILE" || {
+      echo "类型检查未通过，已拦截写入：$TARGET_FILE"
+      exit 1
+    }
+    ;;
+esac
+exit 0
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">护栏写进配置最稳</span></div><div class="co-body"><p>  与其每次口头叮嘱「别强推」，不如把 <code>deniedCommands</code> 写进项目配置并提交到仓库。
+  这样团队里任何人用 CodeBuddy 都自带同一套护栏，新人也不会误伤主分支。</p>
+</div></div><h2 id="7-踩坑与最佳实践">7. 踩坑与最佳实践</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">直接让它改主分支</span></div><div class="co-body"><p>  最贵的坑：没开新分支就让 Agent 大改，结果改崩了难以回滚。
+  铁律：任何多文件/Agent 任务，先在 <code>git checkout -b</code> 的新分支上进行。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">把它的代码当成品</span></div><div class="co-body"><p>  AI 生成的代码编译过 ≠ 逻辑对。尤其涉及并发、边界、安全（鉴权/注入）的地方，
+  必须人工 review diff，并补关键测试。把它当「初稿作者」，不是「终稿作者」。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">上下文喂错方向</span></div><div class="co-body"><p>  不写 <code>@</code>、不指文件，丢一句「优化下性能」——它会基于猜测乱改。
+  精准引用相关文件 + 明确目标（哪个接口、什么指标），质量天差地别。</p>
+</div></div><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">忘记成本与延迟</span></div><div class="co-body"><p>  Agent 每轮都要读文件、跑命令、再推理，token 和耗时远高于一次补全。
+  非多步任务别开 Agent 模式；长任务拆小，分步验收比「一次跑完」更可控。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">沉淀成团队资产</span></div><div class="co-body"><p>  把验证过的指令、配置、Skill 提交进仓库的 <code>.codebuddy/</code> 目录，
+  团队共享同一套「会做事的搭档」，避免每个人从头调教。</p>
+</div></div><h2 id="8-适用与不适用场景">8. 适用与不适用场景</h2>
+<p><strong>适合：</strong></p>
+<ul>
+<li>样板代码、测试桩、重复重构；</li>
+<li>跨文件但边界清晰的改动；</li>
+<li>目标明确的多步任务（接 SDK、修测试、加日志）；</li>
+<li>读不懂代码时当「会看上下文的讲解员」。</li>
+</ul>
+<p><strong>不适合 / 要谨慎：</strong></p>
+<ul>
+<li>涉及重大架构决策——它缺乏全仓业务约束，需人来拍板；</li>
+<li>安全敏感操作（删数据、改权限）——必须人工确认；</li>
+<li>你不熟悉、无法 review 的领域——看不懂 diff 就别让它改；</li>
+<li>强实时/强一致的关键路径——生成代码需严格验证后才能上线。</li>
+</ul>
+<h2 id="小结">小结</h2>
+<ul>
+<li>CodeBuddy 的四种模式各有边界：对话（问答）、补全（续写）、多文件编辑（重构）、Agent（多步自主）。</li>
+<li><code>@</code> 引用决定它「看什么」，引用越聚焦，回答越准、越省。</li>
+<li>提效范式按风险递进：补全/对话 → 多文件重构（新分支+diff review）→ Agent 攻难题（设明确出口）→ 沉淀 Skill。</li>
+<li>护栏写进配置最稳：限制命令、强制 review、新分支作业。</li>
+<li>它产出初稿，你把控质量——人工 review diff + 补测试是底线。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  当你发现某类任务反复让 CodeBuddy 做，就该把它固化成可复用的 Skill 了。
+  下一篇《编写 CodeBuddy Skill》讲清 SKILL.md 结构、触发词、工具权限与调试发布。</p>
+</div></div><h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>CodeBuddy 官方文档：安装、模式说明、配置字段（以官方最新为准）。</li>
+<li>指令工程基础：系统提示与角色设定如何提升助手回答质量。</li>
+<li>Agent 主循环原理（M0～M8 系列）：理解「工具调用 + 结果回填 + 循环上限」。</li>
+<li>GitHub Copilot / Cursor / Aider 官方文档：横向对比不同 AI 编程工具定位。</li>
+<li>团队 AI 协作规范：如何把 AI 配置与 Skill 沉淀为共享资产。</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <span></span>
+    <a class="art-pagerLink art-pagerRight" href="tool-codebuddy-skill.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">编写 CodeBuddy Skill</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

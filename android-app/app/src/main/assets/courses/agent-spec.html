@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Agent 规格定义：需求拆解、能力清单与输入输出契约 · AgentLab</title>
+  <meta name="description" content="写代码前先写规格。讲透如何把模糊需求拆成可执行项、列出能力清单、定义输入输出契约与评测口径，并给出用 Zod 固化契约的骨架。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="Agent 规格定义：需求拆解、能力清单与输入输出契约 · AgentLab"/>
+  <meta property="og:description" content="写代码前先写规格。讲透如何把模糊需求拆成可执行项、列出能力清单、定义输入输出契约与评测口径，并给出用 Zod 固化契约的骨架。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#agent">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🤖</span>
+        <span class="art-moduleName">AI Agent</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">20 分钟</span>
+      </div>
+      <h1 class="art-title">Agent 规格定义：需求拆解、能力清单与输入输出契约</h1>
+      <p class="art-desc">写代码前先写规格。讲透如何把模糊需求拆成可执行项、列出能力清单、定义输入输出契约与评测口径，并给出用 Zod 固化契约的骨架。</p>
+      <div class="art-tags"><span class="art-tag">#规格</span><span class="art-tag">#需求拆解</span><span class="art-tag">#能力清单</span><span class="art-tag">#契约</span><span class="art-tag">#评测口径</span></div>
+    </div>
+    <div class="prose"><h1>Agent 规格定义</h1>
+<p>很多 Agent 项目烂在开头：需求一句『做个智能助手』，团队直接开写工具，写到一半发现目标不清、能力边界模糊、上线没标准。和写任何严肃系统一样，Agent 也该先有**规格（spec）**再落地。</p>
+<p>这一篇讲怎么把模糊需求落成：需求拆解 → 能力清单 → 输入输出契约 → 评测口径。最后给你一份用 Zod 把契约固化进代码的骨架。</p>
+<h2 id="1-为什么-agent-更需要先写规格">1. 为什么 Agent 更需要先写规格</h2>
+<p>LLM 的不确定性放大了『需求模糊』的代价：</p>
+<ul>
+<li>模型会<strong>自行发挥</strong>，没有边界就往你没预期的方向走；</li>
+<li>工具是会<strong>产生副作用</strong>的（发消息、改库），能力清单不清楚就会误触发；</li>
+<li>『好不好』没法靠『能跑』判断，必须有<strong>可测的口径</strong>，否则无法迭代。</li>
+</ul>
+<p>规格就是这三件事的书面约定：边界、契约、验收标准。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">规格是给人和模型一起看的</span></div><div class="co-body"><p>  一份好规格有两层价值：对人是需求对齐与验收依据；对模型，规格里的『能力清单 + 约束』
+  会直接变成系统提示与工具描述。规格写得含糊，模型的表现就含糊。</p>
+</div></div><h2 id="2-需求拆解-从目标到可执行项">2. 需求拆解：从目标到可执行项</h2>
+<p>面对『智能客服 Agent』这种大词，先用『用户意图 × 动作类型』拆成可执行单元：</p>
+<pre><code>目标：智能客服 Agent
+├─ 查订单状态      → 只读工具 query_order
+├─ 退换货          → 写工具 refund_order（需人工确认）
+├─ 回答产品问题    → 检索知识库（RAG）
+└─ 转人工          → 触发 handoff 事件
+</code></pre><p>拆解原则：</p>
+<ul>
+<li>每个单元都能落到『调一个或一组工具 + 一段判断』；</li>
+<li>区分<strong>只读</strong>与<strong>有副作用</strong>，副作用项后续要加护栏；</li>
+<li>明确<strong>不做什么</strong>（如『不处理退款金额超过 5000 的单子』），边界比功能更重要。</li>
+</ul>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">先列边界，再列能力</span></div><div class="co-body"><p>  写规格时先写『本 Agent 不处理什么』，往往比写『能处理什么』更能防住事故。
+  模型爱『逞能』，边界写清楚，它在越界时才有明确收手依据。</p>
+</div></div><h2 id="3-能力清单-agent-到底能干什么">3. 能力清单：Agent 到底能干什么</h2>
+<p>能力清单 = 工具集 + 每个工具的职责与限制。它既是给团队的，也是喂给模型的。</p>
+<pre><code class="language-ts">// 能力清单：每个条目 = 一个可被模型调用的能力
+// 注意 description 同时服务于『模型决策』与『团队对齐』
+const tools = [
+  {
+    type: 'function',
+    function: {
+      name: 'query_order',
+      description: '查询订单当前状态。仅支持已登录用户的订单，只读。',
+      parameters: { /* ... */ },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'refund_order',
+      description: '发起退款。金额≤5000 自动执行；超出须转人工，本工具拒绝。',
+      parameters: { /* ... */ },
+    },
+  },
+];
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">能力清单要可收敛</span></div><div class="co-body"><p>  工具不是越多越好。超过 ~20 个，模型选错率与 token 成本明显上升（见 M1 工具路由）。
+  规格阶段就定好『本期做哪几个』，其余进 backlog，别一次性全塞进去。</p>
+</div></div><h2 id="4-输入输出契约-用-zod-固化边界">4. 输入输出契约：用 Zod 固化边界</h2>
+<p>『用户输入长什么样、工具参数长什么样、最终输出长什么样』，用 Zod schema 写成单一事实来源——校验和文档一体。</p>
+<pre><code class="language-ts">import { z } from 'zod';
+
+// 输入契约：用户请求的结构化部分（如来自前端的字段）
+const AgentInput = z.object({
+  userId: z.string().min(1),
+  query: z.string().min(1).max(2000),
+  sessionId: z.string().optional(),
+});
+
+// 输出契约：最终答案的结构（便于前端渲染与评测比对）
+const AgentOutput = z.object({
+  answer: z.string(),
+  usedTools: z.array(z.string()),
+  needHuman: z.boolean(),
+});
+
+// 工具参数契约：执行前 safeParse，非法直接拦截
+const RefundArgs = z.object({
+  orderId: z.string(),
+  amount: z.number().positive().max(5000), // 边界写进 schema
+});
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">把业务边界写进 schema</span></div><div class="co-body"><p>  『退款≤5000』这种规则尽量落到 Zod 的 <code>.max(5000)</code>，而非只在提示里说。
+  schema 是硬约束，提示是软约束；硬约束失败了能被代码拦下，软约束模型可能忘。</p>
+</div></div><h2 id="5-评测口径-怎么算-做对了">5. 评测口径：怎么算『做对了』</h2>
+<p>没有口径就无法迭代。规格里必须写清验收维度，常见四类：</p>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>问什么</th>
+<th>怎么测</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>任务完成度</td>
+<td>用户目标达成没</td>
+<td>黄金集比对 / LLM-as-judge</td>
+</tr>
+<tr>
+<td>工具正确性</td>
+<td>调对工具、传对参没</td>
+<td>断言 <code>usedTools</code> 与参数</td>
+</tr>
+<tr>
+<td>安全合规</td>
+<td>越权/误触没</td>
+<td>护栏命中率、越界拦截率</td>
+</tr>
+<tr>
+<td>成本延迟</td>
+<td>贵不贵、慢不慢</td>
+<td>平均步数、平均 token</td>
+</tr>
+</tbody></table>
+<pre><code class="language-ts">// 评测口径落到代码：一条最小断言示例
+function evaluate(out: unknown, expect: { tools: string[] }) {
+  const parsed = AgentOutput.parse(out);
+  const ok = expect.tools.every((t) =&gt; parsed.usedTools.includes(t));
+  return { pass: ok, usedTools: parsed.usedTools };
+}
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">口径先于优化</span></div><div class="co-body"><p>  先有『通过/不通过』的判定，才有资格谈『提升准确率』。
+  哪怕一开始只是 10 条手标黄金集 + 一条断言，也比『感觉好多了』强。</p>
+</div></div><h2 id="6-规格模板-可直接复用">6. 规格模板（可直接复用）</h2>
+<p>一份 Agent 规格至少含：</p>
+<ol>
+<li><strong>目标与边界</strong>：做什么、不做什么；</li>
+<li><strong>用户场景</strong>：典型输入/预期输出各 2~3 例；</li>
+<li><strong>能力清单</strong>：工具名、职责、只读/副作用、护栏；</li>
+<li><strong>输入契约</strong>：<code>AgentInput</code> 字段与约束；</li>
+<li><strong>输出契约</strong>：<code>AgentOutput</code> 字段与结构；</li>
+<li><strong>评测口径</strong>：维度 + 判定方式 + 黄金集规模。</li>
+</ol>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">规格要随模型版本更新</span></div><div class="co-body"><p>  模型升级后，同一份规格下 Agent 表现可能变（更好或更差）。
+  规格与评测集应纳入版本管理，模型一换就重跑评测，别假设『换模型无回归』。</p>
+</div></div><h2 id="7-与相邻概念的关系">7. 与相邻概念的关系</h2>
+<ul>
+<li>规格 ≠ 架构（M2 架构模式解决『怎么思考』，规格解决『做什么、做到什么标准』）；</li>
+<li>规格 ≠ 工具定义（M1），工具定义是规格里『能力清单』的落地形态；</li>
+<li>规格驱动评测（评估调优分类），评测结果反过来修订规格——形成闭环。</li>
+</ul>
+<h2 id="小结">小结</h2>
+<ul>
+<li>Agent 先写规格再写码：需求拆解 → 能力清单 → 输入输出契约 → 评测口径。</li>
+<li>边界（不做什么）比功能列表更能防事故；先列边界。</li>
+<li>工具不是越多越好，本期收敛、其余进 backlog。</li>
+<li>用 Zod 把输入/输出/参数契约固化成单一事实来源，硬约束优于软提示。</li>
+<li>评测口径先于优化：先有通过/不通过，再谈提升。</li>
+<li>规格与评测集一起版本化，模型一换就重跑。</li>
+</ul>
+<h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>OpenAI 文档：tool/function 定义与 <code>strict</code> 模式（契约保结构）</li>
+<li>Zod 文档：<code>safeParse</code> 与 schema 组合，用于契约校验</li>
+<li>LLM-as-judge 实践：把『评测口径』变成可自动执行的判定</li>
+<li>评估调优分类：Ragas、黄金集与回归测试设计</li>
+<li>公开工程实践：Agent 系统规格书（spec sheet）的推荐结构</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="agent-multimodal.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">多模态 Agent：视觉/语音/文档理解与模态路由</span></a>
+    <a class="art-pagerLink art-pagerRight" href="m8-capstone.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">实战：从零搭一个可运行的 Agent 项目</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

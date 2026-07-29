@@ -1,0 +1,35 @@
+# ===== 依赖 =====
+node_modules/
+
+
+# ===== Android SDK（由 build_apk.ps1 自动下载，体积巨大）=====
+android-app/android-sdk/
+
+# ===== Android 构建中间产物 =====
+android-app/build/
+
+# ===== 打包产物 / 签名中间文件 =====
+*.apk
+*.aab
+*.idsig
+
+# ===== 密钥（绝不可提交；正式发布请使用官方密钥并妥善保管）=====
+*.jks
+*.keystore
+
+# ===== 日志 =====
+*.log
+
+# ===== build_apk.ps1 的临时下载与解压目录 =====
+android-app/*.zip
+android-app/bt_tmp/
+android-app/pl_tmp/
+android-app/pt_tmp/
+
+# ===== 系统 / 编辑器 =====
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ===== 工具目录（CodeBuddy 运行时数据）=====
+.codebuddy/

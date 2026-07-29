@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Docker 命令行与镜像优化 · AgentLab</title>
+  <meta name="description" content="搞懂镜像分层原理、.dockerignore、多阶段构建与常用命令，对比不同优化策略的体积与构建速度差异，给出可运行骨架与踩坑清单。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="Docker 命令行与镜像优化 · AgentLab"/>
+  <meta property="og:description" content="搞懂镜像分层原理、.dockerignore、多阶段构建与常用命令，对比不同优化策略的体积与构建速度差异，给出可运行骨架与踩坑清单。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#tools">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🛠️</span>
+        <span class="art-moduleName">开发工具</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">24 分钟</span>
+      </div>
+      <h1 class="art-title">Docker 命令行与镜像优化</h1>
+      <p class="art-desc">搞懂镜像分层原理、.dockerignore、多阶段构建与常用命令，对比不同优化策略的体积与构建速度差异，给出可运行骨架与踩坑清单。</p>
+      <div class="art-tags"><span class="art-tag">#Docker</span><span class="art-tag">#镜像优化</span><span class="art-tag">#多阶段构建</span><span class="art-tag">#分层</span><span class="art-tag">#CLI</span></div>
+    </div>
+    <div class="prose"><h1>Docker 命令行与镜像优化</h1>
+<p>镜像是 Docker 的核心产物，也是最常见的『体积爆炸』源头：一个 Hello World 镜像动辄上 GB。这一篇从<strong>分层原理</strong>讲起，落到 <code>.dockerignore</code>、多阶段构建与高频命令，帮你把镜像压到最小、构建提到最快。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">面向有经验者</span></div><div class="co-body"><p>  假定你用过 <code>docker run/build</code>，本篇聚焦原理与优化，不重复『容器是什么』。</p>
+</div></div><h2 id="1-镜像分层原理">1. 镜像分层原理</h2>
+<p>Docker 镜像由若干<strong>只读层（layer）<strong>堆叠而成，每层是上一层的差异（diff）。<code>Dockerfile</code> 里</strong>每条指令产生一层</strong>（部分指令如 <code>ENV</code>/<code>WORKDIR</code> 也会成层）。关键推论：</p>
+<ul>
+<li><strong>层的复用</strong>：基础层相同则共享缓存，多镜像间省空间、省拉取；</li>
+<li><strong>层顺序决定缓存命中</strong>：被频繁变动的文件（如源码）应放在后面，稳定的依赖放前面；</li>
+<li><strong>层越多体积越大</strong>：每层的冗余文件（如构建缓存）都会进最终镜像。</li>
+</ul>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">用 dive 看层</span></div><div class="co-body"><p>  工具 <code>dive &lt;image&gt;</code> 可视化每一层新增了什么文件、占多大，是定位『体积刺客』的利器。</p>
+</div></div><h2 id="2-dockerignore-构建上下文的第一道闸">2. .dockerignore：构建上下文的第一道闸</h2>
+<code>docker build</code> 会先把**整个上下文目录**打包发给守护进程，再执行 Dockerfile。不加 <code>.dockerignore</code>，<code>.git</code>、<code>node_modules</code>、本地缓存全被传上去，既慢又可能泄露。<pre><code class="language-dockerignore"># .dockerignore —— 类比 .gitignore，但作用于构建上下文
+node_modules
+.git
+*.log
+dist
+.env
+Dockerfile
+docker-compose.yml
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">漏掉 .dockerignore 的代价</span></div><div class="co-body"><p>  没有它，<code>COPY . .</code> 会把宿主机 <code>node_modules</code>（可能与目标镜像架构不符）拷进去，
+  覆盖镜像内正确装好的依赖，引发诡异运行时错误。务必先 ignore 再 COPY。</p>
+</div></div><h2 id="3-多阶段构建-把构建环境与运行环境拆开">3. 多阶段构建：把构建环境与运行环境拆开</h2>
+<p>最经典的优化。第一阶段用『重』镜像（含编译器、SDK）构建产物，第二阶段用『轻』镜像只拷贝产物，最终镜像不含构建工具链。</p>
+<pre><code class="language-dockerfile"># 阶段一：用完整 Node 镜像编译/打包
+FROM node:20 AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci                # 仅装依赖
+COPY . .
+RUN npm run build         # 产出 dist/
+
+# 阶段二：用极小的运行时镜像
+FROM node:20-alpine
+WORKDIR /app
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+CMD ["node", "dist/main.js"]
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">alpine 省空间也有代价</span></div><div class="co-body">  <code>alpine</code> 基于 musl libc，部分依赖（如某些原生模块、Puppeteer）需 glibc 会编译失败。
+<p>  此时用 <code>debian-slim</code> 折中：体积比完整版小很多，兼容性更好。</p>
+</div></div><h2 id="4-层顺序与缓存优化">4. 层顺序与缓存优化</h2>
+<p>依赖比源码稳定，先拷依赖清单装好，再拷源码——这样改源码时依赖层命中缓存，不必重装。</p>
+<pre><code class="language-dockerfile">WORKDIR /app
+COPY package*.json ./      # ① 先拷清单
+RUN npm ci                 # ② 装依赖（稳定，缓存命中率高）
+COPY . .                   # ③ 再拷源码（频繁变，放最后）
+</code></pre><table>
+<thead>
+<tr>
+<th>顺序策略</th>
+<th>效果</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>依赖在前、源码在后</td>
+<td>改源码不触发重装，构建快</td>
+</tr>
+<tr>
+<td>合并多条 <code>RUN</code></td>
+<td>减少层数（如 <code>RUN apt-get update &amp;&amp; apt-get install -y xxx &amp;&amp; rm -rf /var/lib/apt/lists/*</code>）</td>
+</tr>
+<tr>
+<td>一条 <code>RUN</code> 内清理缓存</td>
+<td>同层删临时文件才真正减小体积，下一层删无效</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">RUN 里要顺手清理</span></div><div class="co-body"><p>  在 <code>RUN apt-get install</code> 同一行里 <code>rm -rf /var/lib/apt/lists/*</code>，缓存才不进层。
+  若分两行，第一行已把列表写进层，第二行删的是新层，体积照旧。</p>
+</div></div><h2 id="5-常用命令骨架">5. 常用命令骨架</h2>
+<pre><code class="language-bash"># 构建并打标签，利用构建缓存
+docker build -t myapp:1.0 .
+
+# 查看镜像体积，按大小排序
+docker images --format "{{.Size}}\t{{.Repository}}" | sort -h
+
+# 运行并映射端口、限制资源
+docker run -p 8080:8080 --memory=512m --cpus=1 myapp:1.0
+
+# 清理悬空镜像与容器（省磁盘）
+docker image prune -f
+docker container prune -f
+
+# 进入运行中容器排查
+docker exec -it &lt;容器id&gt; sh
+</code></pre><h2 id="6-优化策略对比">6. 优化策略对比</h2>
+<table>
+<thead>
+<tr>
+<th>策略</th>
+<th>体积收益</th>
+<th>复杂度</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>.dockerignore</code></td>
+<td>中</td>
+<td>低</td>
+<td>减上下文、防误拷</td>
+</tr>
+<tr>
+<td>多阶段构建</td>
+<td>高</td>
+<td>中</td>
+<td>剔除构建工具链</td>
+</tr>
+<tr>
+<td><code>alpine</code>/<code>slim</code> 基础镜像</td>
+<td>高</td>
+<td>低~中</td>
+<td>注意 libc 兼容</td>
+</tr>
+<tr>
+<td>合并 RUN + 层内清理</td>
+<td>中</td>
+<td>低</td>
+<td>减层数与冗余</td>
+</tr>
+<tr>
+<td><code>--squash</code>（实验）</td>
+<td>中</td>
+<td>低</td>
+<td>压成单层，但失缓存优势</td>
+</tr>
+<tr>
+<td>distroless</td>
+<td>最高</td>
+<td>高</td>
+<td>只含运行时与依赖，无 shell</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">没有银弹</span></div><div class="co-body"><p>  选策略看场景：交付给 K8s 的内部服务用多阶段+alpine 足够；对安全性极敏感的用 distroless；
+  本地调试镜像则需要 shell，别盲目追求最小。</p>
+</div></div><h2 id="7-常见坑">7. 常见坑</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">latest 标签导致不可复现</span></div><div class="co-body"><p>  基础镜像写 <code>FROM node:latest</code> 会让每次构建拉到不同版本，生产环境必用<strong>固定版本/摘要</strong>
+  （如 <code>node:20.11.0-alpine</code> 或 <code>@sha256:...</code>），保证可复现与回滚。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">root 用户跑容器</span></div><div class="co-body"><p>  容器内默认 root，一旦被攻破危害宿主。在 Dockerfile 加 <code>USER node</code> 或运行时
+  <code>--user 1000</code> 降权。配合只读根文件系统 <code>--read-only</code> 进一步收敛攻击面。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">把密钥 COPY 进镜像</span></div><div class="co-body"><p>  把 <code>.env</code> 烤进镜像会随镜像分发泄露。用运行时挂载（<code>-v</code>/secret）或编排层注入环境变量，
+  且 <code>.dockerignore</code> 务必忽略 <code>.env</code>。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">缓存陷阱：COPY 全量在前</span></div><div class="co-body"><p>  若把 <code>COPY . .</code> 写在 <code>RUN npm ci</code> 之前，任意源码改动都会让依赖层缓存失效、全量重装。
+  顺序永远是『先稳定、后易变』。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>镜像即分层差异，层顺序决定缓存命中；稳定依赖前置、易变源码后置。</li>
+<li><code>.dockerignore</code> 是构建提速与防泄露的第一道闸，永远先写。</li>
+<li>多阶段构建把构建链与运行时拆分，是压体积最有效手段；<code>alpine</code> 注意 libc 兼容。</li>
+<li>固定基础镜像版本、降权运行、密钥勿入镜像；<code>dive</code> 帮你定位体积刺客。</li>
+<li>没有一刀切的最小镜像，按交付场景选策略。</li>
+</ul>
+<h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>Docker 官方文档：Best practices for writing Dockerfiles</li>
+<li><code>dive</code> 工具仓库（镜像层可视化分析）</li>
+<li>GoogleContainerTools/distroless（极简运行时镜像）</li>
+<li>各语言官方镜像的 <code>-alpine</code> / <code>-slim</code> 变体说明</li>
+<li>OCI 镜像规范（理解层、manifest 与 digest 的底层结构）</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="tool-git.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">Git 高级工作流</span></a>
+    <a class="art-pagerLink art-pagerRight" href="tool-terminal.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">终端与 Shell 效率</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>文档切分：把长文切成可检索的语义单元 · AgentLab</title>
+  <meta name="description" content="系统讲解固定切分、递归切分、语义切分的原理与可运行实现，覆盖重叠窗口、表格与代码块的特殊处理，并对比选型与常见坑。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="文档切分：把长文切成可检索的语义单元 · AgentLab"/>
+  <meta property="og:description" content="系统讲解固定切分、递归切分、语义切分的原理与可运行实现，覆盖重叠窗口、表格与代码块的特殊处理，并对比选型与常见坑。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#rag">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">📚</span>
+        <span class="art-moduleName">RAG</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">35 分钟</span>
+      </div>
+      <h1 class="art-title">文档切分：把长文切成可检索的语义单元</h1>
+      <p class="art-desc">系统讲解固定切分、递归切分、语义切分的原理与可运行实现，覆盖重叠窗口、表格与代码块的特殊处理，并对比选型与常见坑。</p>
+      <div class="art-tags"><span class="art-tag">#RAG</span><span class="art-tag">#切分</span><span class="art-tag">#Chunking</span><span class="art-tag">#重叠</span><span class="art-tag">#递归切分</span><span class="art-tag">#语义切分</span></div>
+    </div>
+    <div class="prose"><h1>文档切分：把长文切成可检索的语义单元</h1>
+<p>在 <code>rag-overview</code> 里我们说了：RAG 的质量天花板由检索决定，而检索的最小单位就是**切分（Chunking）**产出的 chunk。切得不好，后面再强的 embedding 模型、再贵的生成模型都救不回来。</p>
+<p>这一篇把切分讲透：三种主流策略（固定、递归、语义）的原理与可运行实现、重叠窗口怎么设、表格和代码这类『结构敏感』内容怎么特殊处理，最后给对比与踩坑。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">切分是第一道关口</span></div><div class="co-body"><p>  检索时是以 chunk 为单位算相似度的。如果『正确答案』被切成了两半、分别落在两个 chunk，
+  任何单次的 Top-K 检索都只能召回半截——模型看到的就是支离破碎的证据。所以切分的目标只有一个：
+  <strong>让每个 chunk 在语义上自洽、且尽量不割裂一个完整知识点</strong>。</p>
+</div></div><h2 id="1-切分的核心权衡">1. 切分的核心权衡</h2>
+<p>切分本质上是在两个相反的目标之间找平衡：</p>
+<table>
+<thead>
+<tr>
+<th>目标</th>
+<th>chunk 偏大</th>
+<th>chunk 偏小</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>语义完整性</td>
+<td>好，信息不碎</td>
+<td>差，知识点被切散</td>
+</tr>
+<tr>
+<td>检索精度</td>
+<td>差，一个 chunk 混进无关内容，噪声高</td>
+<td>好，命中更精准</td>
+</tr>
+<tr>
+<td>上下文成本</td>
+<td>贵，喂进 prompt 废话多</td>
+<td>省，但可能缺上下文</td>
+</tr>
+<tr>
+<td>召回率</td>
+<td>高（信息全在），但精准率低</td>
+<td>精准率高，但可能漏上下文</td>
+</tr>
+</tbody></table>
+<p>没有『黄金尺寸』。经验起点是 <strong>300～800 字（约 200～500 token）</strong>，再按你的文档类型实测调。技术手册、法律条款、客服 FAQ 各有最优区间，必须用 <code>rag-overview</code> 里的 Recall@K 方法测出来，而非拍脑袋。</p>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">尺寸按『检索单元』而非『字数』定</span></div><div class="co-body"><p>  与其纠结『多少字』，不如想『一个问题通常对应多大一段信息』。客服问答可能一段 200 字就够；
+  论文研读可能需要一整节。先按业务问题长度反推 chunk 大小，再用指标校准。</p>
+</div></div><h2 id="2-固定切分-fixed-size-chunking">2. 固定切分（Fixed-size Chunking）</h2>
+<p>最简单：按固定字符数/ token 数切，不关心内容边界。实现成本低，但容易把句子、段落拦腰截断。</p>
+<pre><code class="language-ts">// fixed-chunk.ts —— 固定长度切分 + 重叠窗口（可运行骨架）
+import { z } from 'zod';
+
+const FixedConfig = z.object({
+  size: z.number().int().min(50).max(2000).default(500),  // 每块目标字符数
+  overlap: z.number().int().min(0).max(500).default(50),  // 相邻块重叠字符数
+});
+
+function fixedChunk(text: string, cfg = FixedConfig.parse({})): string[] {
+  const { size, overlap } = cfg;
+  if (overlap &gt;= size) throw new Error('overlap 必须小于 size');
+  const chunks: string[] = [];
+  let start = 0;
+  while (start &lt; text.length) {
+    const end = start + size;
+    chunks.push(text.slice(start, end).trim());
+    // 步长 = size - overlap：下一块从『末尾往回 overlap』处开始，保证重叠
+    start = end - overlap;
+  }
+  return chunks.filter((c) =&gt; c.length &gt; 0);
+}
+
+const demo = '这是一段很长的文档内容，'.repeat(40);
+console.log(fixedChunk(demo, FixedConfig.parse({ size: 200, overlap: 40 })));
+</code></pre><p>固定切分的致命问题：它完全不看内容。一个 chunk 可能以『……因此该函数的返回值是』结尾，下一句『null』被切到下一块——检索任何一半都是半截话。所以<strong>生产很少纯用固定切分</strong>，更多用作『最后兜底』或配合结构感知。</p>
+<h2 id="3-递归切分-recursive-character-splitting">3. 递归切分（Recursive Character Splitting）</h2>
+<p>目前最常用、性价比最高的策略：按『分隔符优先级』逐级切割——先按段落 <code>\n\n</code>，再按句子，再按词，直到每块不超过目标大小。它尽量在自然边界断句，保持语义完整。</p>
+<pre><code class="language-ts">// recursive-chunk.ts —— 递归字符切分（可运行骨架，思路同主流切分库）
+import { z } from 'zod';
+
+const RecConfig = z.object({
+  size: z.number().int().min(50).default(500),
+  overlap: z.number().int().min(0).default(50),
+  // 分隔符优先级：从『粗结构』到『细结构』，越靠前越优先
+  separators: z.array(z.string()).default(['\n\n', '\n', '。', '；', '，', ' ', '']),
+});
+
+function recursiveChunk(text: string, cfg = RecConfig.parse({})): string[] {
+  const { size, overlap, separators } = cfg;
+  const out: string[] = [];
+
+  function split(parts: string[]) {
+    for (const part of parts) {
+      if (part.length &lt;= size) {
+        out.push(part);
+        continue;
+      }
+      // 尝试用当前优先级的分隔符继续切
+      let done = false;
+      for (const sep of separators) {
+        if (!sep) continue; // 空串兜底在最后处理
+        if (!part.includes(sep)) continue;
+        const sub = part.split(sep)
+          // 关键：把分隔符补回每段末尾，避免把『句子。』切成『句子』『下一句』
+          .map((s, i, arr) =&gt; (i &lt; arr.length - 1 ? s + sep : s))
+          .filter((s) =&gt; s.trim().length &gt; 0);
+        // 合并过小的相邻段，凑到接近 size，减少碎片
+        mergeAndPush(sub, size, overlap, out);
+        done = true;
+        break;
+      }
+      // 没有任何分隔符可切（如超长无标点文本）→ 退化为固定切分
+      if (!done) out.push(...fixedFallback(part, size, overlap));
+    }
+  }
+
+  split([text]);
+  return out.filter((c) =&gt; c.trim().length &gt; 0);
+}
+
+// 合并相邻小段，并施加重叠；overlap 实现见第 4 节思路
+function mergeAndPush(segs: string[], size: number, overlap: number, out: string[]) {
+  let buf = '';
+  for (const s of segs) {
+    if ((buf + s).length &gt; size &amp;&amp; buf) {
+      out.push(buf.trim());
+      buf = buf.slice(Math.max(0, buf.length - overlap)) + s; // 重叠接力
+    } else {
+      buf += s;
+    }
+  }
+  if (buf.trim()) out.push(buf.trim());
+}
+
+function fixedFallback(text: string, size: number, overlap: number): string[] {
+  const r: string[] = [];
+  let i = 0;
+  while (i &lt; text.length) {
+    r.push(text.slice(i, i + size).trim());
+    i += size - overlap;
+  }
+  return r;
+}
+
+// 用法：默认按 段落→句→词 的自然边界切，远优于纯固定切分
+const md = '# 标题\n\n第一段讲 A。\n\n第二段讲 B，包含若干细节。';
+console.log(recursiveChunk(md));
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">分隔符顺序就是你的『结构优先级』</span></div><div class="co-body"><p>  分隔符数组决定了切分尊重什么结构。技术文档把 <code>\n## </code>、代码块边界放前面；
+  中文长文把『。；』放前面。按文档的『自然语义边界』排序，切出来的块才自洽。
+  这是递归切比分固定切好的根本原因：它懂边界。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">切分库 API 以官方为准</span></div><div class="co-body"><p>  上面是手写骨架，便于你理解原理。生产可直接用现成切分库（如 LangChain 的
+  <code>RecursiveCharacterTextSplitter</code>、LlamaIndex 的 <code>SentenceSplitter</code>）。它们的参数名与行为
+  会随版本变化，落地时<strong>以官方文档为准，API 易变</strong>，不要照搬本文函数签名。</p>
+</div></div><h2 id="4-重叠窗口-overlap">4. 重叠窗口（Overlap）</h2>
+<p>无论哪种切分，块与块之间都应留<strong>重叠（Overlap）</strong>：让相邻块共享一小段边界内容。作用是防『一个完整知识点刚好跨在两块边界上』时，任一块都只含一半。重叠让边界附近的信息在两块里都完整出现。</p>
+<ul>
+<li>overlap 太小（如 0）：跨边界知识点被撕开，召回任一半都残缺。</li>
+<li>overlap 太大（如接近 size）：相邻块高度重复，检索噪声上升、存储翻倍。</li>
+</ul>
+<p>经验值：<strong>overlap ≈ size × 10%～20%</strong>。例如 size=500 时 overlap=50～100。重叠内容还会在检索侧造成『同一知识点命中多个相邻块』，生成前记得去重（按文本相似度合并）。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">重叠不是免费午餐</span></div><div class="co-body"><p>  重叠会放大存储与 embedding 成本（同一句话被向量化两次），并在检索时制造近重复结果。
+  它解决的是『边界撕裂』，不是『切分粒度错误』。粒度错了，加再多重叠也只是把噪音复制两份。</p>
+</div></div><h2 id="5-语义切分-semantic-chunking">5. 语义切分（Semantic Chunking）</h2>
+<p>前面两种都是『结构感知』，但不看语义。语义切分更进一步：把文本按『意思的转折』切，让每块内部高度相关、块间语义差异大。</p>
+<p>思路（可运行骨架，embedding 用 OpenAI 官方 SDK）：</p>
+<ol>
+<li>先按句子切成细粒度候选；</li>
+<li>给每个句子向量化；</li>
+<li>算相邻句子的语义『距离/断点』；</li>
+<li>距离大的地方就是『话题转折处』，在那里下刀；</li>
+<li>合并相邻句子直到接近目标大小。</li>
+</ol>
+<pre><code class="language-ts">// semantic-chunk.ts —— 语义切分骨架（embedding 用 OpenAI 官方 SDK）
+import OpenAI from 'openai';
+import 'dotenv/config';
+import { z } from 'zod';
+
+const client = new OpenAI();
+
+const SemConfig = z.object({
+  maxSize: z.number().int().default(800),
+  breakpointPercentile: z.number().min(0).max(100).default(90), // 距离排前 10% 处视为断点
+});
+
+// 余弦距离：值越大越『不像』
+function cosineDist(a: number[], b: number[]): number {
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i &lt; a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  const sim = dot / (Math.sqrt(na) * Math.sqrt(nb));
+  return 1 - sim; // 相似度转距离
+}
+
+export async function semanticChunk(text: string, cfg = SemConfig.parse({})) {
+  const sentences = text.split(/(?&lt;=[。！？])/).filter((s) =&gt; s.trim());
+  const embRes = await client.embeddings.create({
+    model: 'text-embedding-3-small', // 与检索链路同一模型
+    input: sentences,
+  });
+  const vecs = embRes.data.map((d) =&gt; d.embedding);
+
+  // 算相邻句距离
+  const dists: number[] = [];
+  for (let i = 1; i &lt; vecs.length; i++) dists.push(cosineDist(vecs[i - 1], vecs[i]));
+
+  // 以距离的第 percentile 分位为阈值，超过即断点
+  const sorted = [...dists].sort((a, b) =&gt; a - b);
+  const threshold = sorted[Math.floor((sorted.length * cfg.breakpointPercentile) / 100)];
+
+  // 按断点分段，再合并到接近 maxSize
+  const groups: string[][] = [[]];
+  let len = 0;
+  for (let i = 0; i &lt; sentences.length; i++) {
+    if (i &gt; 0 &amp;&amp; dists[i - 1] &gt; threshold &amp;&amp; groups[groups.length - 1].length &gt; 0) {
+      groups.push([]);
+      len = 0;
+    }
+    groups[groups.length - 1].push(sentences[i]);
+    len += sentences[i].length;
+    if (len &gt; cfg.maxSize) {
+      groups.push([]);
+      len = 0;
+    }
+  }
+  return groups.map((g) =&gt; g.join('')).filter((c) =&gt; c.trim());
+}
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">语义切分适合『结构弱、话题跳』的长文</span></div><div class="co-body"><p>  小说、访谈、混杂博客这类没有清晰标题层级的内容，结构切分容易乱切；语义切分按意思转折下刀更稳。
+  但它每次切分要跑一遍 embedding（成本与延迟更高），不建议对每篇文档都上——按需选用。</p>
+</div></div><h2 id="6-结构敏感内容-表格与代码">6. 结构敏感内容：表格与代码</h2>
+<p>普通 prose 怎么切都行，但<strong>表格</strong>和<strong>代码</strong>一旦被按字符拦腰截断，语义就彻底丢失。这两类必须特殊处理。</p>
+<h3 id="6-1-表格">6.1 表格</h3>
+<p>表格的每一行单独看往往没意义（『32』『北京』『已发货』放在一行才有信息）。两种策略：</p>
+<ul>
+<li><strong>整表作为一块</strong>：表格不大时，把整个 <code>&lt;table&gt;</code> 或 Markdown 表格当成单个 chunk，绝不从中间切。</li>
+<li><strong>表头随行携带</strong>：表格很大必须切时，每个数据行 chunk 都把表头（列名）重复带在前面，保证『单行也有上下文』。</li>
+</ul>
+<pre><code class="language-ts">// table-chunk.ts —— 表格按整表或『表头+行』切分（思路骨架）
+function chunkTable(markdownTable: string): string[] {
+  const lines = markdownTable.trim().split('\n');
+  const header = lines[0]; // 表头：列名
+  if (lines.length &lt;= 3) return [markdownTable]; // 小表整块返回
+  // 大表：每行带表头，确保单行自洽
+  return lines.slice(2).map((row) =&gt; `${header}\n${row}`);
+}
+</code></pre><h3 id="6-2-代码">6.2 代码</h3>
+<p>代码切分绝不能按字符数盲切——切在函数体中间会得到无法编译、语义断裂的片段。策略：</p>
+<ul>
+<li><strong>按语法结构切</strong>：用语言解析器（AST）按函数/类/方法为单元切，保证每块是『可独立理解的代码单元』。</li>
+<li><strong>保留签名与导入</strong>：切函数时把函数签名、所属类的 import 也带进 chunk，检索到时模型才知道上下文。</li>
+</ul>
+<pre><code class="language-ts">// code-chunk.ts —— 按代码结构切分的思路（具体 AST API 以官方文档为准）
+// 伪代码：不同语言的解析器 API 差异大，下面只表达意图
+//   const tree = parser.parse(sourceCode);          // 如 tree-sitter
+//   const units = tree.rootNode.children.filter(    // 取函数/类节点
+//     (n) =&gt; n.type === 'function_declaration' || n.type === 'class_declaration'
+//   );
+//   return units.map((u) =&gt; sourceCode.slice(u.startIndex, u.endIndex));
+// 落地时选用对应语言的解析库（如 tree-sitter-*），API 与节点类型以官方文档为准。
+</code></pre><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">代码块被当普通文本切=灾难</span></div><div class="co-body"><p>  把 500 行源码按 500 字符硬切，得到的 chunk 连变量定义都没有，检索召回后模型完全看不懂。
+  代码必须『按语法单元』切，并保留签名/导入上下文。这是 RAG 做技术文档问答时最常被踩的坑。</p>
+</div></div><h2 id="7-三种切分策略对比">7. 三种切分策略对比</h2>
+<table>
+<thead>
+<tr>
+<th>策略</th>
+<th>原理</th>
+<th>优点</th>
+<th>缺点</th>
+<th>适用</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>固定切分</td>
+<td>按字符/token 数</td>
+<td>极简、可控</td>
+<td>常切断语义、边界碎</td>
+<td>兜底、无结构纯文本</td>
+</tr>
+<tr>
+<td>递归切分</td>
+<td>按分隔符优先级逐级切</td>
+<td>尊重自然边界、性价比高</td>
+<td>不感知语义转折</td>
+<td>绝大多数文档的默认选择</td>
+</tr>
+<tr>
+<td>语义切分</td>
+<td>按 embedding 距离找转折</td>
+<td>块内高度相关</td>
+<td>需跑 embedding、更慢更贵</td>
+<td>结构弱、话题跳的长文</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">默认从递归切分开始</span></div><div class="co-body"><p>  90% 的 RAG 项目用递归切分 + 合理 overlap 就能跑出不错基线。先别上语义切分——
+  等 Recall@K 卡在『话题跳跃导致召回碎』时，再针对性引入语义切分补刀。</p>
+</div></div><h2 id="8-踩坑">8. 踩坑</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">把代码/表格当散文切</span></div><div class="co-body"><p>  见第 6 节。代码按字符切、表格从中间切，都会产出语义报废的 chunk。结构敏感内容必须走专用路径。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">overlap 设得比 size 还大</span></div><div class="co-body"><p>  重叠必须小于块大小，否则步长为负、切分死循环或产出空块。代码里务必加 <code>if (overlap &gt;= size) throw</code> 这类守卫。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">所有文档用同一套尺寸</span></div><div class="co-body"><p>  技术手册、法律条款、客服 FAQ 的最优 chunk 尺寸差异很大。用一套固定 size 通吃，必然顾此失彼。
+  按文档类型分组配置，并用 Recall@K 各自校准。</p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">切分后不做去重，相邻重叠块喂给模型</span></div><div class="co-body"><p>  重叠会产生近重复 chunk，检索时可能同时命中多个，挤占上下文还引入冗余。生成前按文本相似度去重/合并。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">保留元数据，切分不止是文本</span></div><div class="co-body"><p>  每个 chunk 除了文本，务必带上 <code>source</code> / <code>section</code> / <code>updatedAt</code> / <code>type</code>(prose/table/code) 等元数据。
+  检索时可用元数据过滤（如只看某章节、只看代码），也能在答案里给出精准溯源。元数据是 RAG 从玩具到生产的分水岭。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">忽略文档解析质量</span></div><div class="co-body"><p>  切分建立在『解析出的文本』之上。PDF 解析错乱、表格变成乱码，再好的切分也无济于事。
+  先保证解析干净（见数据处理分类的『知识库构建』），再谈切分。切分是第二步，不是第一步。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>切分决定检索的最小语义单元，是 RAG 质量的第一道关口；目标是『块内自洽、不割裂知识点』。</li>
+<li>固定切分简单但常切断语义；递归切分按分隔符优先级切，是默认基线；语义切分按 embedding 距离找话题转折，适合结构弱长文。</li>
+<li>重叠窗口（≈ size 的 10%～20%）防边界撕裂，但要配合去重，且不是粒度错误的补丁。</li>
+<li>表格（整表或带表头行）、代码（按 AST 语法单元、带签名）必须走结构敏感专用路径。</li>
+<li>红线：overlap &lt; size、按文档类型分组配置尺寸、切分前先保证解析干净、chunk 必带元数据、生成前去重。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  切好的 chunk 要变成向量才能检索——这就是 <code>rag-embedding</code> 的主题：模型怎么选、维度多少、
+  要不要归一化、领域怎么适配。切分与向量化是摄入链路的两块基石，建议连读。</p>
+</div></div><h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>LangChain <code>RecursiveCharacterTextSplitter</code> 文档（递归切分参数与行为，以官方为准）</li>
+<li>LlamaIndex <code>SentenceSplitter</code> / <code>TokenTextSplitter</code> 文档（句子级与 token 级切分）</li>
+<li>OpenAI Embeddings 文档（语义切分所用的 embedding 模型与维度，以官方为准）</li>
+<li><em>Chunking Strategies for LLM Applications</em>（各类切分对检索质量影响的经验研究，社区文章）</li>
+<li>tree-sitter 文档（代码按 AST 语法单元切分，多语言解析器，以官方为准）</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="rag-overview.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">RAG 总览：检索增强生成的端到端逻辑</span></a>
+    <a class="art-pagerLink art-pagerRight" href="rag-embedding.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">向量化：Embedding 模型选型与维度归一化</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

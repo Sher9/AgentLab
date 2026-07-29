@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>长上下文：窗口、缓存与压缩 · AgentLab</title>
+  <meta name="description" content="讲清上下文窗口的本质、RoPE 位置编码扩展（NTK/插值/YaRN 思路）、Prompt 缓存省成本、以及长文档的压缩与摘要策略。给出 map-reduce 摘要的可运行骨架与踩坑清单。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="长上下文：窗口、缓存与压缩 · AgentLab"/>
+  <meta property="og:description" content="讲清上下文窗口的本质、RoPE 位置编码扩展（NTK/插值/YaRN 思路）、Prompt 缓存省成本、以及长文档的压缩与摘要策略。给出 map-reduce 摘要的可运行骨架与踩坑清单。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#llm">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🧠</span>
+        <span class="art-moduleName">LLM大模型</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">24 分钟</span>
+      </div>
+      <h1 class="art-title">长上下文：窗口、缓存与压缩</h1>
+      <p class="art-desc">讲清上下文窗口的本质、RoPE 位置编码扩展（NTK/插值/YaRN 思路）、Prompt 缓存省成本、以及长文档的压缩与摘要策略。给出 map-reduce 摘要的可运行骨架与踩坑清单。</p>
+      <div class="art-tags"><span class="art-tag">#长上下文</span><span class="art-tag">#RoPE</span><span class="art-tag">#上下文缓存</span><span class="art-tag">#压缩</span><span class="art-tag">#长文摘要</span></div>
+    </div>
+    <div class="prose"><h1>长上下文：窗口、缓存与压缩</h1>
+<p>『上下文窗口』（Context Window）是 LLM 一次能『看到』的最大 token 数。它决定了模型能同时处理多长的对话、多长的文档。本篇讲清窗口背后的机制、位置编码如何被扩展到更长、如何用缓存省成本，以及超长文本该『压』还是『拆』。</p>
+<h2 id="1-窗口的本质-不只是-token-数">1. 窗口的本质：不只是 token 数</h2>
+<p>上下文窗口是 <code>输入 + 输出</code> 合起来的总 token 上限。它背后是注意力的代价：</p>
+<ul>
+<li>自注意力对序列长度是 <strong>O(n²)</strong> 的计算与显存（n 为 token 数）；</li>
+<li>推理时模型要维护 <strong>KV Cache</strong>（每层的 Key/Value 矩阵），窗口越长，缓存占用越大、越贵。</li>
+</ul>
+<p>所以『把窗口做大』不是简单改个数字，而是位置编码、注意力机制、显存多方面的工程问题。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">窗口大≠用得好</span></div><div class="co-body"><p>  模型能装下 100k token，不代表它能在 100k 里精准定位关键信息。长上下文存在
+  『中间遗忘（lost in the middle）』现象：放在文档中段的事实，模型召回率明显低于
+  开头和结尾。窗口够大只是前提，怎么排布信息才是工程重点。</p>
+</div></div><h2 id="2-位置编码扩展-让模型-看得更远">2. 位置编码扩展：让模型『看得更远』</h2>
+<p>原训练模型在固定长度（如 4k）上学会位置感知。要支持更长窗口，不能简单塞更多 token——位置编码会『越界』。主流扩展思路（概念层面，不编造具体 API）：</p>
+<ul>
+<li><strong>位置插值（Position Interpolation）</strong>：把位置坐标线性压缩进原训练范围，让 32k 的位置映射到原 4k 空间，平滑过渡；</li>
+<li><strong>NTK-aware 缩放</strong>：更聪明地缩放旋转频率，保留高频细节，比线性插值损伤小；</li>
+<li><strong>YaRN</strong>：结合插值与外推，兼顾长程与短程，是目前很多长上下文模型的底座思路。</li>
+</ul>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">扩展有上限</span></div><div class="co-body"><p>  位置扩展能『撑大窗口』，但超出训练分布太远，模型在极长位置的推理质量会下降，
+  且需要高质量长文本继续训练（Long-Context SFT）来巩固。窗口数字可以标 128k，
+  但对齐质量往往不如原生训练的长上下文模型。</p>
+</div></div><h2 id="3-prompt-缓存-省成本的关键">3. Prompt 缓存：省成本的关键</h2>
+<p>长上下文里大量内容是<strong>重复</strong>的——系统提示、知识库片段、长文档在多次请求里不变。Prompt 缓存（Prompt Caching）让厂商把这段前缀的 KV Cache 复用，命中缓存的部分<strong>计费大幅降低</strong>、延迟也下降。</p>
+<ul>
+<li>OpenAI、Anthropic 等均已支持前缀缓存（具体开启方式与折扣以官方文档为准）；</li>
+<li>关键是『把稳定不变的内容放前缀』：系统提示、长文档放最前，变动的用户问题放最后，才能最大化命中。</li>
+</ul>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">稳定内容放前缀</span></div><div class="co-body"><p>  缓存按『前缀匹配』生效。把不变的 system prompt、长文档、工具定义放 messages 最前，
+  用户问题放最后。若每次都在前面拼一个随机时间戳，缓存永远不命中。</p>
+</div></div><h2 id="4-压缩与长文摘要策略">4. 压缩与长文摘要策略</h2>
+<p>当文档超过窗口，或塞进去太贵，就要『压缩』。两种路线：</p>
+<h3 id="4-1-检索式-rag-只取相关片段">4.1 检索式（RAG）：只取相关片段</h3>
+<p>不把全文塞进窗口，而是先把文档切块编码（见 llm-embedding），按 query 语义召回 top-k 注入。这是生产里处理超长文档的<strong>首选</strong>——既省 token，又缓解『中间遗忘』。</p>
+<h3 id="4-2-摘要式-map-reduce-refine">4.2 摘要式：map-reduce / refine</h3>
+<p>若必须『理解全文』（如生成长文档的全局摘要），用分治：</p>
+<ul>
+<li><strong>Map-Reduce</strong>：先把文档切成块，逐块各生成一个局部摘要（map），再把这些摘要合并成全局摘要（reduce）；</li>
+<li><strong>Refine</strong>：逐块读，不断把新内容 refinement 进一个滚动摘要，省一次大合并但串行较慢。</li>
+</ul>
+<pre><code class="language-ts">// long-summary.ts —— Map-Reduce 长文档摘要骨架（可运行）
+import OpenAI from 'openai';
+import 'dotenv/config';
+
+const client = new OpenAI();
+
+// 把长文切成约 maxChars 的块（真实场景用语义切分，见 RAG 切分篇）
+function chunk(text: string, maxChars = 3000): string[] {
+  const out: string[] = [];
+  for (let i = 0; i &lt; text.length; i += maxChars) out.push(text.slice(i, i + maxChars));
+  return out;
+}
+
+// map：每块各生成局部摘要
+async function mapChunk(c: string): Promise&lt;string&gt; {
+  const r = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: '用 2 句话概括下面这段的核心信息。' },
+      { role: 'user', content: c },
+    ],
+  });
+  return r.choices[0].message.content ?? '';
+}
+
+// reduce：把局部摘要合并成全局摘要
+async function reduce(summaries: string[]): Promise&lt;string&gt; {
+  const r = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: '根据以下分段摘要，输出一份连贯的全局摘要。' },
+      { role: 'user', content: summaries.join('\n---\n') },
+    ],
+  });
+  return r.choices[0].message.content ?? '';
+}
+
+async function summarize(longText: string): Promise&lt;string&gt; {
+  const chunks = chunk(longText);
+  const parts = await Promise.all(chunks.map(mapChunk)); // 各块可并行，省时延
+  return reduce(parts);
+}
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">map-reduce 会丢细节</span></div><div class="co-body"><p>  逐块摘要必然损失块内细节，合并时也可能前后矛盾。若任务要求『不漏关键数字/条款』，
+  摘要式不如检索式稳。需要精确时，优先 RAG 召回原文片段，而非喂摘要。</p>
+</div></div><h2 id="5-对比-三种长文本处理路线">5. 对比：三种长文本处理路线</h2>
+<table>
+<thead>
+<tr>
+<th>路线</th>
+<th>做法</th>
+<th>优点</th>
+<th>缺点</th>
+<th>适用</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>直接塞窗口</td>
+<td>全文进 prompt</td>
+<td>简单、保细节</td>
+<td>贵、超窗口报错、中间遗忘</td>
+<td>中短文档、需全文理解</td>
+</tr>
+<tr>
+<td>RAG 检索</td>
+<td>切块召回 top-k</td>
+<td>省 token、可扩展、抗遗忘</td>
+<td>需检索质量支撑</td>
+<td>超长文档、知识问答</td>
+</tr>
+<tr>
+<td>摘要压缩</td>
+<td>map-reduce/refine</td>
+<td>出全局概览、省 token</td>
+<td>丢细节、可能矛盾</td>
+<td>长文概览、报告生成</td>
+</tr>
+</tbody></table>
+<h2 id="6-踩坑">6. 踩坑</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">超窗口直接 400</span></div><div class="co-body"><p>  输入+输出超过模型上限会直接报错。上线前必须估算最大输入（长文档+历史+系统提示），
+  超阈值就走 RAG 或摘要，不要无脑堆叠。给输出也留足余量。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">缓存命中被破坏</span></div><div class="co-body"><p>  在稳定前缀里插入变动内容（时间戳、随机 id、每轮变化的统计），会让前缀缓存失效，
+  成本与延迟双双回升。把『会变的东西』统一放最后。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">中间遗忘导致答非所问</span></div><div class="co-body"><p>  关键信息放文档中段，模型容易忽略。重要指令/事实尽量放开头或结尾；
+  或改用 RAG 把相关片段直接贴近问题注入，缩短模型需扫描的距离。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">窗口大不代表能推理长程依赖</span></div><div class="co-body"><p>  即使装得下，模型对超长序列里『首尾呼应』『跨段计数』等长程推理仍易出错。
+  这类任务别迷信窗口长度，应拆成可验证的小步或借助工具（如代码计算）。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>上下文窗口是输入+输出总上限，背后是 O(n²) 注意力与 KV Cache 成本。</li>
+<li>RoPE 扩展（插值/NTK/YaRN）让模型看得更远，但超出训练分布质量会降，需长上下文 SFT 巩固。</li>
+<li>Prompt 缓存按前缀命中省成本：稳定内容（system/文档）放最前，变动内容放最后。</li>
+<li>超长文本三选一：直接塞窗口（中短、保细节）、RAG 检索（超长、首选）、摘要压缩（概览）。</li>
+<li>红线：超窗口必 400、缓存前缀别插变动、警惕中间遗忘、长程推理别迷信窗口。</li>
+</ul>
+<h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>OpenAI / Anthropic 上下文窗口与 Prompt Caching 官方文档（具体上限与折扣以官方为准）</li>
+<li>论文 <em>Extending Context Window via Position Interpolation</em> 与 <em>YaRN</em>：位置编码扩展方法</li>
+<li><em>Lost in the Middle</em> 论文：长上下文中的『中间遗忘』现象与实证</li>
+<li>llm-embedding 与 RAG 分类『文档切分』『向量化』：检索式压缩的落地</li>
+<li>论文 <em>LongLLM / LongRoPE</em>：更长窗口的继续训练与评估思路</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="llm-function-calling.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">函数调用机制：模型如何『调用工具』</span></a>
+    <span></span>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

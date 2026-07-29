@@ -1,0 +1,1333 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>课程大纲 · AgentLab</title>
+  <meta name="description" content="AgentLab 的课程体系：14 个分类，从工程基础、AI Agent、LLM、RAG 到框架、部署与评估调优。"/>
+  <meta property="og:type" content="website"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="课程大纲 · AgentLab"/>
+  <meta property="og:description" content="AgentLab 的课程体系：14 个分类，从工程基础、AI Agent、LLM、RAG 到框架、部署与评估调优。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="assets/styles.css"/>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="index.html" class="">首页</a>
+      <a href="courses.html" class="hdr-active">课程</a>
+      <a href="about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <main class="main">
+  <div class="container">
+    <header class="cr-head">
+      <h1 class="cr-title">课程大纲</h1>
+      <p class="cr-sub">14 个分类、体系化的 AI Agent 开发路径。每篇教程都是「能跑的骨架 + 详细注释」。</p>
+    </header>
+        <section class="cr-module" id="python">
+      <div class="cr-moduleHead">
+        <span class="cr-moduleId">🐍</span>
+        <div>
+          <h2 class="cr-moduleTitle">Python</h2>
+          <p class="cr-moduleDesc">核心语法 · FastAPI · 工程化</p>
+        </div>
+      </div>
+      <ul class="cr-list">
+                <li class="cr-item">
+          <a class="cr-itemLink" href="courses/python-core.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">Python 核心与现代语法</span>
+              <span class="cr-itemDesc">类型注解/typing、虚拟环境与 pyproject、模块与包机制、函数进阶、生成器/异步、高频标准库——面向有经验开发者的 Python 核心要点与踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-入门">入门</span>
+              <span class="cr-dur">35 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/python-fastapi.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">FastAPI 实战：路由、依赖注入、校验、异步与 OpenAPI</span>
+              <span class="cr-itemDesc">用 FastAPI 搭建类型安全、自带文档的异步 API，深入路由、Pydantic 校验、依赖注入、异步视图、中间件、OpenAPI 与安全。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">45 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/python-engineering.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">Python 工程化：测试、Lint、打包、日志与配置</span>
+              <span class="cr-itemDesc">用 pytest 写测试、ruff/mypy 统一质量门禁、打包发布、logging 与配置管理，构建可维护可交付的 Python 项目。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">40 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/python-async.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">asyncio 异步编程：事件循环、协程与并发原语</span>
+              <span class="cr-itemDesc">理解 asyncio 的事件循环与协程模型，掌握 async/await、Task 调度、并发原语（锁/队列/信号量），并学会和同步/CPU 密集库安全互操作，避开最常见的异步坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">40 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/python-data.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">pandas / numpy 数据处理实战</span>
+              <span class="cr-itemDesc">用 pandas 的 Series/DataFrame 与 numpy 向量化做高效数据清洗，覆盖向量化思维、缺失值处理，并说明它如何接入 LLM 数据管线。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">25 分钟</span>
+            </div>
+          </a>
+        </li>
+      </ul>
+    </section>
+    <section class="cr-module" id="frontend">
+      <div class="cr-moduleHead">
+        <span class="cr-moduleId">🎨</span>
+        <div>
+          <h2 class="cr-moduleTitle">前端工程</h2>
+          <p class="cr-moduleDesc">Vue3 · React · Next · Electron</p>
+        </div>
+      </div>
+      <ul class="cr-list">
+                <li class="cr-item">
+          <a class="cr-itemLink" href="courses/fe-vue3.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">Vue3 组合式 API</span>
+              <span class="cr-itemDesc">深入 Vue3 组合式 API：setup 与响应式本质、ref/reactive 取舍、响应式原理、组合式函数与 Pinia，配可运行骨架与踩坑清单。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">35 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/fe-react.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">React Hooks 实战</span>
+              <span class="cr-itemDesc">吃透 React Hooks：useState/useEffect 机制、依赖数组陷阱、自定义 Hook、并发特性（useTransition/useDeferredValue）与状态管理选型，配可运行骨架。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">38 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/fe-nextjs.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">Next.js App Router</span>
+              <span class="cr-itemDesc">深入 Next.js App Router：React Server Components、Server/Client 组件边界、路由与流式渲染、缓存模型与部署，配可运行骨架与踩坑清单。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-高级">高级</span>
+              <span class="cr-dur">42 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/fe-nuxtjs.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">Nuxt3 全栈框架实战</span>
+              <span class="cr-itemDesc">理解 Nuxt3 的文件路由、服务端能力、状态管理与模块生态，写出可运行的全栈骨架，并掌握常见坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">25 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/fe-electron.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">Electron 桌面应用开发</span>
+              <span class="cr-itemDesc">理解 Electron 主进程/渲染进程模型、IPC 通信、与 Node 集成方式，写出可运行骨架并掌握打包与常见坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">25 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/fe-uniapp.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">uni-app 跨端开发实战</span>
+              <span class="cr-itemDesc">理解 uni-app 的跨端编译原理、条件编译、统一组件与 API，写出可运行骨架并掌握多端发布与常见坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">25 分钟</span>
+            </div>
+          </a>
+        </li>
+      </ul>
+    </section>
+    <section class="cr-module" id="tools">
+      <div class="cr-moduleHead">
+        <span class="cr-moduleId">🛠️</span>
+        <div>
+          <h2 class="cr-moduleTitle">开发工具</h2>
+          <p class="cr-moduleDesc">CodeBuddy 进阶技巧与规则</p>
+        </div>
+      </div>
+      <ul class="cr-list">
+                <li class="cr-item">
+          <a class="cr-itemLink" href="courses/tool-codebuddy.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">CodeBuddy 编程助手实战</span>
+              <span class="cr-itemDesc">搞懂 CodeBuddy 的对话、补全、多文件编辑、@引用与 Agent 模式，掌握把它嵌进日常研发的提效工作流，并与 Copilot/Cursor 做对比。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">28 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/tool-codebuddy-skill.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">编写 CodeBuddy Skill</span>
+              <span class="cr-itemDesc">掌握 SKILL.md 的结构、触发词设计、工具权限声明，用一个完整示例走通从编写到调试再到发布的全流程，并规避常见坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">26 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/tool-git.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">Git 高级工作流</span>
+              <span class="cr-itemDesc">掌握 rebase/cherry-pick、worktree、submodule、钩子与冲突解决，理解底层对象模型与命令对比，给出可运行命令骨架与踩坑清单。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">25 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/tool-docker-cli.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">Docker 命令行与镜像优化</span>
+              <span class="cr-itemDesc">搞懂镜像分层原理、.dockerignore、多阶段构建与常用命令，对比不同优化策略的体积与构建速度差异，给出可运行骨架与踩坑清单。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">24 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/tool-terminal.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">终端与 Shell 效率</span>
+              <span class="cr-itemDesc">掌握 zsh/fish、tmux、别名、fzf 与任务调度，理解 Shell 启动流程与效率杠杆，给出可运行配置骨架与踩坑清单。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">22 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/tool-ci.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">CI/CD 基础</span>
+              <span class="cr-itemDesc">掌握 GitHub Actions 流水线、缓存、矩阵与制品，理解持续集成与持续交付的门禁逻辑，给出可运行工作流骨架与踩坑清单。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">23 分钟</span>
+            </div>
+          </a>
+        </li>
+      </ul>
+    </section>
+    <section class="cr-module" id="agent">
+      <div class="cr-moduleHead">
+        <span class="cr-moduleId">🤖</span>
+        <div>
+          <h2 class="cr-moduleTitle">AI Agent</h2>
+          <p class="cr-moduleDesc">设计模式 · 多智能体 · 记忆</p>
+        </div>
+      </div>
+      <ul class="cr-list">
+                <li class="cr-item">
+          <a class="cr-itemLink" href="courses/m0-what-is-agent.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">什么是 Agent：定义、边界、架构与局限</span>
+              <span class="cr-itemDesc">厘清 Agent 与普通 Chatbot 的区别，界定 LLM 的能力边界，拆解典型架构，盘点应用场景与局限，并搭好能跑通的最小开发环境。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-入门">入门</span>
+              <span class="cr-dur">30 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/agent-architecture.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">Agent 系统架构设计：模块划分、契约、状态机与可观测性</span>
+              <span class="cr-itemDesc">从一次性脚本进阶到可维护的 Agent 系统——感知/决策/执行/记忆四层划分、模块间接口契约、显式状态机驱动、可观测性内建，并给出生产级骨架与对比、踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">35 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/m2-architecture-patterns.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">架构模式：ReAct、Plan-and-Execute、Reflexion</span>
+              <span class="cr-itemDesc">从"会调工具"升级到"会思考"。掌握三种主流 Agent 架构模式的原理、适用场景、可运行骨架与取舍，避免一上来就堆代码。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">30 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/m4-memory-rag.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">记忆系统：短期/长期记忆与读写策略</span>
+              <span class="cr-itemDesc">理解 LLM 的无状态本质，掌握短期记忆（滑动窗口/摘要）、长期记忆（键值/向量/摘要）、三类记忆的读写策略与淘汰机制，并给出可运行骨架。RAG 整体已归独立分类，本篇只聚焦记忆。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">32 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/m5-multi-agent.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">多 Agent 协作：角色编排、通信与任务分解</span>
+              <span class="cr-itemDesc">当单 Agent 力不从心，用角色编排、任务分解与通信协议把多个 Agent 组织起来。掌握三种协作拓扑与可运行骨架。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-高级">高级</span>
+              <span class="cr-dur">34 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/agent-loop.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">Agent 主循环与控制流：事件驱动、上限、超时与中断</span>
+              <span class="cr-itemDesc">拆解 Agent 主循环的事件驱动模型，讲透步骤上限、超时/中断、并发执行与错误恢复的设计要点，给出带护栏的可运行骨架与常见坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">22 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/agent-planning.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">规划与推理：ReAct、Plan-and-Execute、反思与思维树</span>
+              <span class="cr-itemDesc">拆解 Agent 的『思考策略』——ReAct 边想边做、Plan-and-Execute 先规划后执行、Reflexion 自我批评、ToT 思维树，讲清原理、与 LLM 推理的关系，并给出可运行骨架、对比与踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">38 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/agent-multimodal.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">多模态 Agent：视觉/语音/文档理解与模态路由</span>
+              <span class="cr-itemDesc">构建能处理图像、语音、文档的 Agent——模态路由、VLM 视觉理解、ASR/TTS 语音管线、文档解析、与工具调用协同，给出典型端到端管线骨架、对比与踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">40 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/agent-spec.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">Agent 规格定义：需求拆解、能力清单与输入输出契约</span>
+              <span class="cr-itemDesc">写代码前先写规格。讲透如何把模糊需求拆成可执行项、列出能力清单、定义输入输出契约与评测口径，并给出用 Zod 固化契约的骨架。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">20 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/m8-capstone.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">实战：从零搭一个可运行的 Agent 项目</span>
+              <span class="cr-itemDesc">把 M0–M7 串成一条线——做一个会规划、检索、调用工具、记忆并产出带引用报告的「研究助手 Agent」。完整目录、可运行代码、扩展路线与工程化清单。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-高级">高级</span>
+              <span class="cr-dur">50 分钟</span>
+            </div>
+          </a>
+        </li>
+      </ul>
+    </section>
+    <section class="cr-module" id="llm">
+      <div class="cr-moduleHead">
+        <span class="cr-moduleId">🧠</span>
+        <div>
+          <h2 class="cr-moduleTitle">LLM大模型</h2>
+          <p class="cr-moduleDesc">Transformer · 微调 · 私有化部署</p>
+        </div>
+      </div>
+      <ul class="cr-list">
+                <li class="cr-item">
+          <a class="cr-itemLink" href="courses/llm-models.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">主流模型选型：能力矩阵与决策树</span>
+              <span class="cr-itemDesc">横向对比 GPT/Claude/Llama/通义/文心/GLM 等主流大模型的能力边界、上下文、价格与部署形态，给出可运行的模型横评骨架与选型决策树，帮有经验的开发者在真实项目里选对模型。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">30 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/llm-transformer.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">Transformer 原理：注意力、位置编码与 KV Cache</span>
+              <span class="cr-itemDesc">拆解自注意力数学、多头机制、绝对/相对位置编码、Decoder-only 架构与 KV Cache 的关系，给出可运行的自注意力计算骨架，并讲清这些原理如何决定推理延迟与显存，面向有经验的开发者。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-高级">高级</span>
+              <span class="cr-dur">40 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/llm-tokenizer.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">分词器：BPE/WordPiece、计费与跨语言</span>
+              <span class="cr-itemDesc">理解 LLM 如何把文本切成 token，掌握 BPE/WordPiece 原理、token 计费口径、中英跨语言差异与截断处理，并给出可运行的 token 计数骨架，面向有经验的开发者。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">18 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/llm-pretrain.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">预训练基础：从语料到基座模型</span>
+              <span class="cr-itemDesc">讲清 LLM 预训练的三大支柱——数据、目标函数、规模定律，并用因果语言建模把训练闭环讲透，最后厘清预训练与微调的边界，给你能落地的概念骨架。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">25 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/llm-finetune.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">微调实战：SFT 与 LoRA 从数据到上线</span>
+              <span class="cr-itemDesc">从『要不要微调』的决策出发，讲透 SFT 数据格式与 Zod 校验、全参/LoRA/QLoRA/PEFT 方案对比、OpenAI 托管微调可运行骨架、LoRA 训练伪代码、评估与成本，给有经验开发者能落地的全流程。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-高级">高级</span>
+              <span class="cr-dur">45 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/llm-inference.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">推理部署与量化：把模型跑起来还跑得稳</span>
+              <span class="cr-itemDesc">从推理服务架构与 KV Cache 讲起，对比 vLLM/TGI/Ollama/llama.cpp 与云 API，拆解 INT4/8 量化与连续批处理原理，给出 OpenAI 兼容本地部署可运行骨架与量化伪代码，并点出上线踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-高级">高级</span>
+              <span class="cr-dur">45 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/llm-embedding.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">Embedding 模型：把文本变成可计算向量</span>
+              <span class="cr-itemDesc">讲清 Embedding 的数学原理、主流模型选型、维度与归一化、领域适配/重训思路，以及它如何成为 RAG 检索的基石。给出 OpenAI embeddings 与相似度计算的可运行骨架。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">22 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/llm-function-calling.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">函数调用机制：模型如何『调用工具』</span>
+              <span class="cr-itemDesc">从 LLM 视角拆解 Function Calling——训练机制、工具 schema 约束、并行调用、参数纠错与自纠正闭环，以及它如何驱动 Agent。给出含 Zod 校验的可运行骨架，并对比 JSON 模式/微调/提示工程。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-高级">高级</span>
+              <span class="cr-dur">38 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/llm-context.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">长上下文：窗口、缓存与压缩</span>
+              <span class="cr-itemDesc">讲清上下文窗口的本质、RoPE 位置编码扩展（NTK/插值/YaRN 思路）、Prompt 缓存省成本、以及长文档的压缩与摘要策略。给出 map-reduce 摘要的可运行骨架与踩坑清单。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">24 分钟</span>
+            </div>
+          </a>
+        </li>
+      </ul>
+    </section>
+    <section class="cr-module" id="prompt">
+      <div class="cr-moduleHead">
+        <span class="cr-moduleId">✍️</span>
+        <div>
+          <h2 class="cr-moduleTitle">Prompt工程</h2>
+          <p class="cr-moduleDesc">框架 · 项目踩坑与优化</p>
+        </div>
+      </div>
+      <ul class="cr-list">
+                <li class="cr-item">
+          <a class="cr-itemLink" href="courses/prompt-basics.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">基础技巧：零样本/少样本与清晰指令</span>
+              <span class="cr-itemDesc">掌握提示工程最底层的四项基本功——零样本与少样本、指令清晰化、分隔符隔离、输出格式约束，并给出可运行骨架与高频踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-入门">入门</span>
+              <span class="cr-dur">18 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/prompt-role.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">角色与系统提示：让模型进入正确语境</span>
+              <span class="cr-itemDesc">理解 system 消息的定位与生命周期，掌握系统提示设计、角色设定的边界约束与优先级策略，并给出可运行骨架与生产踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-入门">入门</span>
+              <span class="cr-dur">16 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/prompt-cot.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">思维链 CoT：让模型把推理写出来</span>
+              <span class="cr-itemDesc">系统讲解思维链（Chain-of-Thought）的三种形态——Zero-shot / Few-shot / Auto-CoT，剖析其生效原理与适用边界，对比直接作答与更复杂推理范式，并给出可运行骨架、工程踩坑与评测口径。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">28 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/prompt-chain.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">提示链与结构化输出：把任务拆成可调试的流水线</span>
+              <span class="cr-itemDesc">掌握提示链（Prompt Chaining）思想——将复杂任务函数式拆解为多步、用 JSON 约束在步骤间传递数据、用 Zod 校验与调试钩子保证可观测，并给出可运行骨架、与设计单条巨提示的对比及踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">30 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/prompt-advanced.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">高级推理技巧：自我一致性、ToT 与 Reflexion</span>
+              <span class="cr-itemDesc">在思维链之上进阶——自我一致性（多链投票）、思维树（分支搜索）、Reflexion（反思复盘）、元提示（让模型写提示），含原理、可运行骨架、对比与踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-高级">高级</span>
+              <span class="cr-dur">22 分钟</span>
+            </div>
+          </a>
+        </li>
+      </ul>
+    </section>
+    <section class="cr-module" id="rag">
+      <div class="cr-moduleHead">
+        <span class="cr-moduleId">📚</span>
+        <div>
+          <h2 class="cr-moduleTitle">RAG</h2>
+          <p class="cr-moduleDesc">检索增强生成全链路</p>
+        </div>
+      </div>
+      <ul class="cr-list">
+                <li class="cr-item">
+          <a class="cr-itemLink" href="courses/rag-overview.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">RAG 总览：检索增强生成的端到端逻辑</span>
+              <span class="cr-itemDesc">从为什么需要 RAG 入手，拆解从文档摄入到查询生成的端到端流水线，定位质量瓶颈，并给出与微调、长上下文的选型对比与可运行骨架。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-入门">入门</span>
+              <span class="cr-dur">35 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/rag-chunking.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">文档切分：把长文切成可检索的语义单元</span>
+              <span class="cr-itemDesc">系统讲解固定切分、递归切分、语义切分的原理与可运行实现，覆盖重叠窗口、表格与代码块的特殊处理，并对比选型与常见坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">35 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/rag-embedding.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">向量化：Embedding 模型选型与维度归一化</span>
+              <span class="cr-itemDesc">讲解 Embedding 如何把文本变成可检索向量，覆盖模型选型、维度与 Matryoshka 截断、归一化对相似度的影响，以及领域适配思路。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-入门">入门</span>
+              <span class="cr-dur">18 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/rag-vector-db.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">向量数据库：RAG 的语义检索底座</span>
+              <span class="cr-itemDesc">理解向量数据库在 RAG 中的角色，掌握 ANN 与 HNSW 索引原理，对比 Milvus/Qdrant/PGVector/Chroma 的取舍，并给出可运行骨架与部署、踩坑要点。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">38 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/rag-hybrid.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">混合检索：BM25 + 向量的优势互补</span>
+              <span class="cr-itemDesc">理解纯向量检索的盲区，掌握 BM25 关键词召回、向量语义召回、RRF 融合、元数据过滤与查询改写，给出可运行骨架与踩坑要点。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">36 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/rag-rerank.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">重排序：用 Cross-Encoder 精排检索结果</span>
+              <span class="cr-itemDesc">理解为什么粗排后还要重排，掌握 Bi-Encoder 与 Cross-Encoder 的差异、Top-K 召回-精排策略，并给出重排骨架与踩坑要点。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">22 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/rag-generation.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">RAG 生成与引用：把检索结果变成可信答案</span>
+              <span class="cr-itemDesc">聚焦 RAG 的『生成』阶段——上下文压缩、引用溯源、抗幻觉与答案组织，给出 OpenAI SDK + Zod 的可运行骨架，并对比朴素拼接的优劣与常见坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">22 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/rag-graph.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">GraphRAG：用知识图谱做全局问答</span>
+              <span class="cr-itemDesc">深入 GraphRAG 的原理——实体关系抽取、社区摘要、全局/局部查询模式，给出 LLM 抽取骨架与图谱构建思路（伪代码，以官方文档为准），并对比传统向量 RAG 的适用边界与踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-高级">高级</span>
+              <span class="cr-dur">38 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/rag-agentic.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">Agentic RAG：会自己决定『查什么、查几次』的检索</span>
+              <span class="cr-itemDesc">把检索从『一次性取 top-k』升级为自主决策的 Agent 过程——检索 Agent、自省检索（Self-RAG）、查询路由，以及与多 Agent 协作的结合。给出 OpenAI SDK + Zod 可运行骨架与思路伪代码。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-高级">高级</span>
+              <span class="cr-dur">40 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/rag-eval.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">RAG 评估：检索/生成指标、Ragas、人工标注与回归测试</span>
+              <span class="cr-itemDesc">把 RAG 拆成检索与生成两段分别量化，讲清 Context Recall/Precision、Faithfulness、Answer Correctness 等核心指标的原理与可运行计算骨架，用 LLM-as-judge 与 Ragas 思路做自动评估，并落到人工标注与 CI 回归测试。评估框架以官方文档为准。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-高级">高级</span>
+              <span class="cr-dur">40 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/rag-production.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">RAG 生产化：增量更新、缓存、监控与成本控制</span>
+              <span class="cr-itemDesc">把能跑通的 RAG 管线搬上生产：知识库增量更新策略、查询/embedding/答案三层缓存、质量与成本监控、以及可落地的成本控制手段。面向有经验开发者，重实战骨架与踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">25 分钟</span>
+            </div>
+          </a>
+        </li>
+      </ul>
+    </section>
+    <section class="cr-module" id="tooldev">
+      <div class="cr-moduleHead">
+        <span class="cr-moduleId">🔧</span>
+        <div>
+          <h2 class="cr-moduleTitle">工具开发</h2>
+          <p class="cr-moduleDesc">Function Calling · MCP</p>
+        </div>
+      </div>
+      <ul class="cr-list">
+                <li class="cr-item">
+          <a class="cr-itemLink" href="courses/m1-tool-calling.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">工具调用：让 Agent 能『动手』</span>
+              <span class="cr-itemDesc">深入 Function Calling 的协议本质、四步闭环、Zod 校验、并行与嵌套调用、错误重试与降级，并对比 JSON 模式与微调方案，给出生产级可运行骨架。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-入门">入门</span>
+              <span class="cr-dur">30 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/tool-cli.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">CLI 工具开发：从参数解析到发布</span>
+              <span class="cr-itemDesc">面向有经验开发者，讲清 Node 命令行工具的原理与骨架——参数解析（commander）、彩色输出（chalk）、交互式输入（inquirer）、可运行骨架与发布到 npm 的要点，并对比各方案取舍与踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-入门">入门</span>
+              <span class="cr-dur">20 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/tool-mcp.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">MCP 协议与开发：给 Agent 接上标准插座</span>
+              <span class="cr-itemDesc">深入 Model Context Protocol 的协议本质、Host/Client/Server 架构、Transport 形态、Tools/Resources/Prompts 原语，并用 TypeScript SDK 给出可运行的 Server/Client 骨架，最后讲清它与 Function Calling 的分工、踩坑与和 Agent 的集成方式。MCP 为快速演进协议，代码骨架以官方文档为准。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">38 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/tool-openapi.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">基于 OpenAPI 封装工具：把 REST API 变成 Agent 可调用的工具</span>
+              <span class="cr-itemDesc">讲清如何用 OpenAPI/Swagger 规范把任意 REST 接口自动转成结构化工具（供 Agent 函数调用），覆盖生成策略、鉴权注入、限流与缓存，并给出可运行骨架、方案对比与踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">22 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/tool-sandbox.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">工具沙箱与安全执行：让 Agent 放心『动手』</span>
+              <span class="cr-itemDesc">理解为什么 LLM 生成的代码/命令必须在隔离环境执行，掌握容器、微虚拟机、Wasm、进程级限制四类沙箱思路，给出 Python 子进程隔离与 Docker 两套可运行骨架，并讲清权限最小化、资源限额、审计三原则与接入 Agent 的踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">36 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/tool-skill.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">Agent 插件 / Skill 开发：契约、注册发现与上下文注入</span>
+              <span class="cr-itemDesc">讲清如何为 Agent 平台开发可复用的插件/Skill——统一的插件契约（manifest）、注册与自动发现机制、运行期上下文注入的三种方式，并给出与框架无关的骨架与对比、踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">22 分钟</span>
+            </div>
+          </a>
+        </li>
+      </ul>
+    </section>
+    <section class="cr-module" id="frameworks">
+      <div class="cr-moduleHead">
+        <span class="cr-moduleId">🏗️</span>
+        <div>
+          <h2 class="cr-moduleTitle">框架</h2>
+          <p class="cr-moduleDesc">LangChain · LangGraph · CrewAI</p>
+        </div>
+      </div>
+      <ul class="cr-list">
+                <li class="cr-item">
+          <a class="cr-itemLink" href="courses/m3-frameworks.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">主流框架选型：原生 SDK vs LangChain/LangGraph vs LlamaIndex vs AutoGen vs CrewAI</span>
+              <span class="cr-itemDesc">对比五类 Agent 开发方案的定位、适用场景与取舍，给出最小可运行示例与选型建议，帮你不从第一步就走弯路。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">32 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/framework-langchain.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">LangChain 实战：从 Runnable 到 LCEL 的编排心智</span>
+              <span class="cr-itemDesc">拆解 LangChain 的核心抽象 Runnable、LCEL 组合语法、Retriever 与 Callback 体系，对比原生 SDK 与 LangGraph，给出生产可用的代码骨架与高频踩坑。框架类以官方文档为准，API 易变。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">38 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/framework-langgraph.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">LangGraph 编排：把 Agent 显式建模成状态图</span>
+              <span class="cr-itemDesc">拆解 LangGraph 的状态图心智——节点/边/状态/条件路由/检查点/Human-in-loop/子图多 Agent，对比 LangChain 链，给出可运行骨架与高频踩坑。框架类以官方文档为准，API 易变。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">40 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/framework-llamaindex.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">LlamaIndex 实战：数据框架视角的 RAG 与 Agent</span>
+              <span class="cr-itemDesc">从数据框架视角拆解 LlamaIndex 的索引/查询/检索/合成链路，对比 LangChain 与原生实现，给出伪代码骨架与踩坑，标注 API 易变、以官方文档为准。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">35 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/framework-autogen.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">AutoGen 实战：多 Agent 对话与代码执行</span>
+              <span class="cr-itemDesc">从对话即编排的视角拆解 AutoGen 的 AssistantAgent/UserProxyAgent/GroupChat，讲清代码执行、会话终止与定制 Agent，对比其他框架并给出伪代码骨架与踩坑，标注 API 易变。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">36 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/framework-crewai.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">CrewAI 实战：角色扮演式多 Agent 编排</span>
+              <span class="cr-itemDesc">理解 CrewAI 的核心抽象——Crew/Role/Task 与 Sequential、Hierarchical 流程，用思路+伪代码骨架搭建一个「研究+写作」协作组，并对比 LangGraph 的取舍与踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">25 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/framework-native-vs-fw.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">原生 vs 框架：何时手写，何时用框架</span>
+              <span class="cr-itemDesc">剖析「裸用 LLM SDK 自己写循环」与「用 CrewAI/LangGraph 等框架」两路在控制流、抽象成本、可维护性上的真实权衡，给出可操作的决策框架与对照骨架。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">22 分钟</span>
+            </div>
+          </a>
+        </li>
+      </ul>
+    </section>
+    <section class="cr-module" id="data">
+      <div class="cr-moduleHead">
+        <span class="cr-moduleId">🗄️</span>
+        <div>
+          <h2 class="cr-moduleTitle">数据处理</h2>
+          <p class="cr-moduleDesc">PostgreSQL · PGVector · Pandas</p>
+        </div>
+      </div>
+      <ul class="cr-list">
+                <li class="cr-item">
+          <a class="cr-itemLink" href="courses/data-etl.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">ETL 管道：从多源抽取到可靠加载</span>
+              <span class="cr-itemDesc">讲透 ETL 的抽取/转换/加载三段式、增量同步、调度与可观测，并对比 ETL 与 ELT、批处理与流式，给出生产级可运行骨架。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">20 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/data-clean.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">数据清洗与质量门禁</span>
+              <span class="cr-itemDesc">讲透去重/标准化/异常值处理的手段与取舍，落地自动化的数据质量门禁与校验，并对比多种去重与异常检测方案，给出可运行骨架。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">20 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/data-knowledge.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">知识库构建：从文档解析到版本化入库</span>
+              <span class="cr-itemDesc">讲透知识库构建的全链路——PDF/Word/HTML 解析、结构化抽取、元数据设计、分块耦合、版本管理、质量门禁，并对比自建与商用方案，给出生产级可运行骨架。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">35 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/data-vector-pipeline.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">向量数据管线：批量嵌入、去重、更新与同步</span>
+              <span class="cr-itemDesc">把原始文档变成可检索向量的端到端管线。覆盖批量嵌入的并发与限流、内容级与语义级去重、全量重建与增量同步的取舍、与向量库的幂等 upsert，并给出可运行 Python 骨架与踩坑清单。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">42 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/data-eval-set.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">评测集构建：黄金集、边界用例与版本管理</span>
+              <span class="cr-itemDesc">评测集是 LLM/Agent 系统可信迭代的基石。讲清黄金集、边界用例、对抗样本三类数据的定位，标注规范与一致性、覆盖度设计、版本管理与漂移检测，并给出可运行的 Python 校验与回归骨架。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">22 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/data-orchestration.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">编排：Airflow 与 Prefect 的 DAG 实践</span>
+              <span class="cr-itemDesc">当数据任务多到需要定时、依赖、重试与告警，就要上编排。对比 Airflow 与 Prefect 的 DAG 模型、重试告警机制、动态与静态 DAG，给出两个框架的可运行骨架，以及与 ML/LLM 管线结合时的注意点。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">24 分钟</span>
+            </div>
+          </a>
+        </li>
+      </ul>
+    </section>
+    <section class="cr-module" id="deploy">
+      <div class="cr-moduleHead">
+        <span class="cr-moduleId">🚀</span>
+        <div>
+          <h2 class="cr-moduleTitle">部署运维</h2>
+          <p class="cr-moduleDesc">Docker · K8s · 云服务器</p>
+        </div>
+      </div>
+      <ul class="cr-list">
+                <li class="cr-item">
+          <a class="cr-itemLink" href="courses/m7-engineering-deploy.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">工程化部署：配置、密钥、健康检查与灰度回滚</span>
+              <span class="cr-itemDesc">从玩具到生产，Agent 服务要过配置分层、密钥安全、健康检查、优雅启停、灰度发布、快速回滚与可观测内建几关。给出可运行骨架与多阶段 Dockerfile。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-高级">高级</span>
+              <span class="cr-dur">32 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/deploy-docker.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">Docker 化 Agent 服务：多阶段、最小化镜像、健康检查与 Compose</span>
+              <span class="cr-itemDesc">把 Agent 服务安全可复现地打包成镜像——讲透多阶段构建、最小化基础镜像、.dockerignore、HEALTHCHECK 与 docker-compose 编排，给出生产级可运行骨架与踩坑清单。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">35 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/deploy-k8s.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">Kubernetes 部署 Agent 服务：Deployment、Service、HPA 与滚动更新</span>
+              <span class="cr-itemDesc">把 Docker 化的 Agent 服务搬上 K8s——讲透 Pod/Deployment/Service、ConfigMap/Secret 配置密钥分离、HPA 自动扩缩、就绪/存活探针、滚动更新与回滚，给出生产级可运行 YAML 骨架与踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">38 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/deploy-serverless.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">Serverless 部署：云函数、冷启动与 Agent 长任务适配</span>
+              <span class="cr-itemDesc">理解 Serverless（FaaS 与 Serverless 容器）的运行模型、冷启动原理与成本特征，掌握把 Agent 长任务适配到函数超时限制下的工程模式，并对比常驻服务。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">22 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/deploy-gpu.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">GPU 推理服务：模型服务化、批处理、显存优化与多卡</span>
+              <span class="cr-itemDesc">把大模型推理服务化部署到 GPU——讲透服务化框架、连续批处理、显存优化（量化/KV Cache/分页注意力）、多卡并行策略，以及 K8s 上 GPU 节点与资源调度的可运行骨架与踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-高级">高级</span>
+              <span class="cr-dur">42 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/deploy-monitor.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">监控与日志：指标、链路、日志与 LLM 专属监控</span>
+              <span class="cr-itemDesc">掌握可观测性的三支柱（指标/链路/日志）在 Agent 服务上的落地，聚焦 LLM 专属监控（token 成本、延迟、质量、工具调用成功率），并给出可运行骨架与告警踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">24 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/deploy-scale.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">弹性伸缩：并发模型、任务队列、限流与成本弹性</span>
+              <span class="cr-itemDesc">掌握 Agent 服务的并发模型选择、用任务队列削峰解耦、用令牌桶限流保护下游 LLM、以及横向伸缩与成本弹性之间的权衡，并给出可运行骨架与踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">23 分钟</span>
+            </div>
+          </a>
+        </li>
+      </ul>
+    </section>
+    <section class="cr-module" id="eval">
+      <div class="cr-moduleHead">
+        <span class="cr-moduleId">📊</span>
+        <div>
+          <h2 class="cr-moduleTitle">评估调优</h2>
+          <p class="cr-moduleDesc">LangSmith · 成本 · 幻觉检测</p>
+        </div>
+      </div>
+      <ul class="cr-list">
+                <li class="cr-item">
+          <a class="cr-itemLink" href="courses/m6-eval-observability.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">可观测与评估：Tracing、Eval 与成本追踪</span>
+              <span class="cr-itemDesc">用 Tracing 让 Agent 行为可见、用数据集驱动 Eval 让质量可量化、用成本追踪看住钱、用 Dashboard 与 Guardrails 守住底线。掌握 span/trace 模型与 LangSmith/Phoenix 对比。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-高级">高级</span>
+              <span class="cr-dur">32 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/eval-metrics.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">评估指标：自动指标、LLM-as-Judge、任务完成度与人工校准</span>
+              <span class="cr-itemDesc">系统梳理 Agent/LLM 系统的评估指标体系：基于规则的自动指标、LLM-as-Judge、任务完成度与人工校准，给出可运行代码骨架、指标对比与常见坑，帮助你把『质量』变成可量化、可回归的数字。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-高级">高级</span>
+              <span class="cr-dur">34 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/eval-trace.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">链路追踪实战：OpenTelemetry、Span 设计、错误定位与回放</span>
+              <span class="cr-itemDesc">用 OpenTelemetry 的 Trace/Span 模型把 Agent 的每一步（LLM 调用、工具执行、检索、规划）都可视化，掌握 Span 切分原则、耗时/错误定位、回放重跑，并对比 LangSmith/Phoenix，给出可运行 TS 骨架。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-高级">高级</span>
+              <span class="cr-dur">33 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/eval-dataset.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">评测集与回归：给 Agent 一个可守护的真相来源</span>
+              <span class="cr-itemDesc">理解 LLM 应用评测集的构成（黄金集/边界用例/标注规范）、可运行评测骨架、回归基线的设定与守护、CI 集成与漂移检测，并给出对比与踩坑清单。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">20 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/eval-prompt-opt.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">Prompt 调优：系统化迭代而非灵感式瞎改</span>
+              <span class="cr-itemDesc">把 Prompt 优化从『拍脑袋』变成可度量、可回滚的工程：系统化迭代闭环、A/B 对照、版本管理与踩坑清单，并给出可运行对比骨架。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">18 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/eval-guardrail.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">护栏与安全评估：输入/输出过滤、敏感词、合规与红队评估</span>
+              <span class="cr-itemDesc">系统化讲解 Agent 的护栏（Guardrails）：输入层（提示注入/敏感词/PII）、输出层（毒性/合规/格式）、运行时护栏，以及用红队评估验证护栏是否真的拦得住，给出伪代码骨架、对比与踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-高级">高级</span>
+              <span class="cr-dur">35 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/eval-abtest.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">线上实验：用 A/B 与灰度验证真实收益</span>
+              <span class="cr-itemDesc">把离线评测的『可能变好』变成线上的『确实变好』：A/B 实验指标设计、分流与灰度发布、统计显著性与常见陷阱，并给出分流骨架。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">18 分钟</span>
+            </div>
+          </a>
+        </li>
+      </ul>
+    </section>
+    <section class="cr-module" id="product">
+      <div class="cr-moduleHead">
+        <span class="cr-moduleId">💡</span>
+        <div>
+          <h2 class="cr-moduleTitle">产品工程</h2>
+          <p class="cr-moduleDesc">Context · Loop · Workflow</p>
+        </div>
+      </div>
+      <ul class="cr-list">
+                <li class="cr-item">
+          <a class="cr-itemLink" href="courses/product-ux.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">Agent 产品交互设计</span>
+              <span class="cr-itemDesc">从状态机而非气泡的角度，重构 Agent 产品的交互设计：对话式 UX 本质、预期管理、可控性、失败态设计，并给出端到端的状态机与前端骨架、对比与踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">35 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/product-stream.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">流式输出体验</span>
+              <span class="cr-itemDesc">用 SSE 实现 Agent 的流式输出：打字机效果、客户端取消、服务端背压，给出可运行骨架与对比、踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-入门">入门</span>
+              <span class="cr-dur">20 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/product-hitl.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">人在回路：让 Agent 可控可信任</span>
+              <span class="cr-itemDesc">深入人在回路（HITL）的设计：确认/编辑、审批流、人机分工、信任建设，给出可运行的审批状态机与服务端骨架、对比与踩坑。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">38 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/product-fallback.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">降级与容错：让 Agent 服务稳如老狗</span>
+              <span class="cr-itemDesc">从超时、限流、重试到兜底话术与优雅降级，讲透 LLM/Agent 产品在生产环境下的容错设计，给出可运行的重试、熔断、降级骨架与踩坑清单。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">22 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/product-multi-tenant.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">多租户与权限：一个后端服务好多个客户</span>
+              <span class="cr-itemDesc">讲透 SaaS 形态下 Agent 产品的多租户设计——数据隔离、密钥隔离、配额控制与审计，给出行级隔离、每租户密钥、配额限流与审计日志的可运行骨架。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">24 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/product-analytics.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">产品数据分析：用数据驱动 Agent 迭代</span>
+              <span class="cr-itemDesc">从埋点设计、会话分析到质量与成本看板，讲透 Agent 产品如何用数据形成『观测—归因—迭代』闭环，给出事件埋点、会话漏斗、成本聚合与看板的可运行骨架。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-进阶">进阶</span>
+              <span class="cr-dur">23 分钟</span>
+            </div>
+          </a>
+        </li>
+      </ul>
+    </section>
+    <section class="cr-module" id="interview">
+      <div class="cr-moduleHead">
+        <span class="cr-moduleId">🎯</span>
+        <div>
+          <h2 class="cr-moduleTitle">常见面试题</h2>
+          <p class="cr-moduleDesc">Agent / LLM / 工程高频题</p>
+        </div>
+      </div>
+      <ul class="cr-list">
+                <li class="cr-item">
+          <a class="cr-itemLink" href="courses/interview-agent.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">Agent/LLM 工程师面试题精讲</span>
+              <span class="cr-itemDesc">从概念题、RAG/Agent 设计题到陷阱题，逐题给出参考答案与可运行代码骨架。覆盖无状态本质、工具调用协议、RAG 质量瓶颈、多 Agent 协作、提示注入与成本控制等高频考点。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-高级">高级</span>
+              <span class="cr-dur">45 分钟</span>
+            </div>
+          </a>
+        </li>
+        <li class="cr-item">
+          <a class="cr-itemLink" href="courses/interview-system-design.html">
+            <div class="cr-itemMain">
+              <span class="cr-itemTitle">系统设计题：RAG/Agent 系统怎么设计</span>
+              <span class="cr-itemDesc">用一道高频系统设计题串起架构分层、容量估算、检索与生成权衡、缓存与成本、可观测与降级。给出可运行骨架与设计决策清单，面向有经验开发者。</span>
+            </div>
+            <div class="cr-itemMeta">
+              <span class="cr-tag cr-高级">高级</span>
+              <span class="cr-dur">30 分钟</span>
+            </div>
+          </a>
+        </li>
+      </ul>
+    </section>
+  </div>
+  </main>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="courses.html">课程</a>
+      <a href="about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="assets/app.js" defer></script>
+</body>
+</html>

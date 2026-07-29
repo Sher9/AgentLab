@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>编写 CodeBuddy Skill · AgentLab</title>
+  <meta name="description" content="掌握 SKILL.md 的结构、触发词设计、工具权限声明，用一个完整示例走通从编写到调试再到发布的全流程，并规避常见坑。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="编写 CodeBuddy Skill · AgentLab"/>
+  <meta property="og:description" content="掌握 SKILL.md 的结构、触发词设计、工具权限声明，用一个完整示例走通从编写到调试再到发布的全流程，并规避常见坑。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#tools">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🛠️</span>
+        <span class="art-moduleName">开发工具</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">26 分钟</span>
+      </div>
+      <h1 class="art-title">编写 CodeBuddy Skill</h1>
+      <p class="art-desc">掌握 SKILL.md 的结构、触发词设计、工具权限声明，用一个完整示例走通从编写到调试再到发布的全流程，并规避常见坑。</p>
+      <div class="art-tags"><span class="art-tag">#CodeBuddy</span><span class="art-tag">#Skill</span><span class="art-tag">#自动化</span><span class="art-tag">#扩展</span></div>
+    </div>
+    <div class="prose"><h1>编写 CodeBuddy Skill</h1>
+<p>上篇讲「怎么用 CodeBuddy 提效」。本篇讲「怎么把重复的用法固化成可复用的 Skill」——相当于给助手装一个专属能力插件。当你发现某类任务反复让助手做（PR 规范检查、生成变更日志、按约定写测试），就该把它写成 Skill，一次定义、处处触发。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">本文定位</span></div><div class="co-body"><p>  这是「开发工具」类的实战教程。Skill 的具体字段名与宿主加载机制以官方文档为准，
+  API 易变；下文给出的是通用结构与思路骨架，可直接照着改造，但上线前请核对最新规范。</p>
+</div></div><h2 id="1-为什么需要-skill">1. 为什么需要 Skill</h2>
+<p>先把「Skill 解决什么」讲透，才知道什么时候该写它：</p>
+<ul>
+<li><strong>复用</strong>：同一段精心调过的指令，不用每次手敲。定义一次，之后触发词一命中就自动加载。</li>
+<li><strong>封装领域知识</strong>：把团队约定（命名规范、目录结构、测试套路）写进 Skill，助手按它行事，新人也能产出一致风格。</li>
+<li><strong>可控的执行边界</strong>：Skill 可以声明「能用哪些工具、不能碰什么」，把能力限制在安全范围内。</li>
+</ul>
+<p>它和「存一段提示词到备忘录」的区别：Skill 是<strong>被宿主自动识别、按需注入上下文</strong>的，而不是你手动复制粘贴。</p>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">Skill ≠ Agent</span></div><div class="co-body"><p>  Skill 是「能力包/指令包」，描述的是「这件事该怎么做」；Agent 模式是「按目标自主多步执行」。
+  一个 Skill 内部可以指导助手启用 Agent 模式，但 Skill 本身更偏「方法论说明书」。</p>
+</div></div><h2 id="2-skill-md-的结构">2. SKILL.md 的结构</h2>
+<p>一个 Skill 通常就是一个 <code>SKILL.md</code> 文件（可附带脚本/资源目录）。最小结构分两段：<strong>frontmatter（元数据）</strong> 与 <strong>正文（指令）</strong>。</p>
+<pre><code class="language-markdown">---
+name: pr-checklist          # 全局唯一标识，小写中划线，勿与现有 Skill 重名
+description: &gt;              # 关键：含触发词，宿主靠它判断是否加载本 Skill
+  提交 Pull Request 前跑一遍规范检查：
+  检查提交信息格式、是否含测试、是否更新文档。
+  当用户说『检查 PR』『pr 规范』『提交前校验』时触发。
+---
+
+# PR 规范检查
+
+你是本仓库的 PR 质量守门员。按以下步骤执行……（正文指令）
+</code></pre><h3 id="2-1-frontmatter-name-与-description">2.1 frontmatter：name 与 description</h3>
+<ul>
+<li><code>name</code>：小写中划线，作为目录名与唯一键。重名会被覆盖或忽略。</li>
+<li><code>description</code>：**最重要**的字段。宿主用它的语义去匹配用户意图。务必把「什么时候该用这个 Skill」写进描述里——包括同义表述和口语化触发词。</li>
+</ul>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">description 决定会不会被触发</span></div><div class="co-body"><p>  很多 Skill 写了却「从不自动生效」，根因是 description 只写了「它是什么」，没写「何时用」。
+  好的 description = 能力说明 + 触发场景 + 同义触发词。这是 Skill 写好的一半。</p>
+</div></div><h3 id="2-2-正文-指令主体">2.2 正文：指令主体</h3>
+<p>正文就是给助手的「操作手册」，用 Markdown 写。建议包含：角色设定、步骤、约束、产出格式、出口条件。越具体，助手越不会自由发挥。</p>
+<pre><code class="language-markdown"># PR 规范检查
+
+你是本仓库的 PR 质量守门员。
+
+## 步骤
+1. 运行 `git diff --stat main...HEAD` 看改了哪些文件。
+2. 检查提交信息是否匹配 `type(scope): 简述` 约定。
+3. 确认本次改动是否含对应测试（*.test.ts）。
+4. 若改动了导出 API，确认文档已更新。
+
+## 约束
+- 不自动修改任何文件，只输出检查清单与问题。
+- 遇到拿不准的约定，标注『以仓库 CONTRIBUTING.md 为准』并询问。
+
+## 产出格式
+- ✅/❌ 逐项列出；最后给一行结论：可提交 / 需修改。
+</code></pre><h3 id="2-3-让正文更稳健的写法">2.3 让正文更稳健的写法</h3>
+<p>正文是给助手的 SOP，质量直接决定产出稳定性。几条实战经验：</p>
+<ul>
+<li><strong>先角色后步骤</strong>：开头一行定角色（「你是本仓库的 PR 守门员」），比裸列步骤更聚焦。</li>
+<li><strong>把「不要做什么」写死</strong>：助手常在边界处「好心办坏事」。明确 deny 行为（不写文件、不推远程、不编内容），比反复强调「要谨慎」管用。</li>
+<li><strong>给出口条件</strong>：写清「跑到什么状态算完成、什么情况停下手问人」，避免它无限循环或擅自行动。</li>
+<li><strong>用清单而非散文</strong>：步骤用有序列表，产出用固定模板。结构化指令比大段描述更易被稳定遵循。</li>
+</ul>
+<pre><code class="language-markdown">## 产出格式（固定模板，助手须严格套用）
+- 结论：可提交 / 需修改
+- 检查项：
+  - [✅/❌] 提交信息格式
+  - [✅/❌] 含测试
+  - [✅/❌] 文档已更新
+- 问题明细：（若无则写「无」）
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">把正文当测试资产维护</span></div><div class="co-body"><p>  正文写得越像「可执行的测试预期」，Skill 行为越可复现。改动正文后，
+  用同一组输入回归一遍产出，确认没退化——和改业务代码要跑测试一个道理。</p>
+</div></div><h2 id="3-触发词怎么写才准">3. 触发词怎么写才准</h2>
+<p>宿主是把用户语句和 <code>description</code> 做语义匹配，所以「多写同义表达」能显著提升命中率。</p>
+<table>
+<thead>
+<tr>
+<th>写法</th>
+<th>效果</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>只写「PR 检查」</td>
+<td>用户说「提交前帮我看看」就不会触发</td>
+</tr>
+<tr>
+<td>写「PR 检查、提交前校验、规范检查、lint 一下」</td>
+<td>口语化表达也能命中</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">把用户原话写进去</span></div><div class="co-body"><p>  回顾你平时怎么跟助手说这句话——把这些原话直接列进 description。
+  越是用户真实会说的词，匹配越稳。别只写书面语。</p>
+</div></div><h2 id="4-工具权限-把能力关进笼子">4. 工具权限：把能力关进笼子</h2>
+<p>Skill 可以声明「执行时能调哪些工具」。这是安全关键：一个只做检查的 Skill，不该拥有「写文件」或「推代码」的权限。</p>
+<p>具体声明方式以官方文档为准，下面给<strong>思路骨架</strong>（YAML 风格伪代码，字段名以官方为准）：</p>
+<pre><code class="language-yaml"># 权限声明思路骨架（伪代码，字段名以官方文档为准）
+name: pr-checklist
+description: 提交前规范检查……
+permissions:
+  # 白名单：本 Skill 允许使用的工具
+  allow:
+    - read_file        # 读改动文件
+    - run_command      # 跑 git diff / 测试
+  # 黑名单：明确禁止的能力
+  deny:
+    - write_file       # 不修改任何文件
+    - git_push         # 不推送远程
+    - network          # 不访问外网
+  # 命令级细粒度限制（可选）
+  commands:
+    allow:
+      - "git diff *"
+      - "npm test"
+    deny:
+      - "git push *"
+      - "rm -rf *"
+</code></pre><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">最小权限原则</span></div><div class="co-body"><p>  默认不授予任何权限，按需逐个开放。一个「只读检查」的 Skill 若误带了 write_file，
+  就可能被诱导去改代码。权限越宽，被 prompt 注入利用的风险越大——宁窄勿宽。</p>
+</div></div><h2 id="5-完整示例-写一个-变更日志生成-skill">5. 完整示例：写一个「变更日志生成」Skill</h2>
+<p>下面给一个<strong>可直接照抄改造</strong>的完整 Skill。它读取 git 提交，按约定生成 CHANGELOG 片段。</p>
+<pre><code class="language-markdown">---
+name: changelog-gen
+description: &gt;
+  根据 git 提交历史生成变更日志（CHANGELOG）片段。
+  当用户说『生成变更日志』『写 changelog』『总结这次改动』『release notes』时触发。
+---
+
+# 变更日志生成
+
+你是本仓库的发布秘书。根据最近的 git 提交产出一段 CHANGELOG 片段。
+
+## 步骤
+1. 获取范围：`git log --no-merges main..HEAD --pretty=format:"%s"`。
+2. 按提交类型分组（feat / fix / chore / docs / refactor）。
+3. 把每条提交改写成「面向用户」的一句话，去掉内部黑话。
+4. 输出 Markdown 片段，不自动写入文件，等用户确认后再落盘。
+
+## 约束
+- 只描述用户可感知的变更；内部重构归入 refactor 且一笔带过。
+- 不编造未发生的改动；拿不准的提交原文引用。
+- 不修改任何文件，只输出片段。
+
+## 产出格式
+### ✨ Features
+- 支持按邮箱搜索用户
+
+### 🐛 Fixes
+- 修复登录后偶发 401
+</code></pre><p>配套的宿主调用示意（伪代码，说明 Skill 如何被加载执行）：</p>
+<pre><code class="language-ts">// 思路骨架：宿主如何根据用户输入选择并注入 Skill（以官方实现为准）
+function resolveSkill(userInput: string, skills: Skill[]): Skill | null {
+  // 把用户输入和每个 Skill 的 description 做语义匹配
+  const match = semanticMatch(userInput, skills.map((s) =&gt; s.description));
+  // 命中且置信度够高 → 加载该 Skill 的正文注入上下文
+  return match.score &gt; 0.7 ? match.skill : null;
+}
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">先手搓再固化</span></div><div class="co-body"><p>  别一上来就写 Skill。先在对话里把「生成变更日志」的指令调顺、验证产出满意，
+  再把那段已验证的指令原样搬进 SKILL.md。Skill 只是「把验证过的指令固化」，不是「凭空发明」。</p>
+</div></div><h2 id="6-调试-本地验证触发与执行">6. 调试：本地验证触发与执行</h2>
+<p>Skill 写完后，最怕「以为写好了，实际从不触发」或「触发了但产出离谱」。调试三板斧：</p>
+<h3 id="6-1-验证触发">6.1 验证触发</h3>
+<p>用你写在 description 里的多个同义表达各测一遍，确认都能命中：</p>
+<pre><code class="language-bash"># 伪命令：在宿主的调试/测试模式里触发（具体命令以官方文档为准）
+# 输入：「提交前帮我看看」
+# 期望：宿主加载 pr-checklist Skill 而不是走通用对话
+# 输入：「release notes 来一份」
+# 期望：加载 changelog-gen Skill
+</code></pre><p>若某句话没触发，回去看 description 是否覆盖了该表述——大概率是缺同义词。</p>
+<h3 id="6-2-验证产出">6.2 验证产出</h3>
+<p>触发后检查产出是否符合正文的「步骤 / 约束 / 产出格式」。常见偏差：</p>
+<ul>
+<li>它「好心」直接写了文件，但你要求只输出 → 正文约束不够强，加上「严禁调用 write_file」。</li>
+<li>它总结了没发生的改动 → 指令里强调「只基于真实 git 输出，不编造」。</li>
+</ul>
+<h3 id="6-3-看注入内容">6.3 看注入内容</h3>
+<p>多数宿主提供「本次实际注入了哪些 Skill 正文」的调试视图。用它确认：你的 Skill 正文确实进了上下文、且没有被更通用的 Skill 盖掉。</p>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">别让 Skill 互相打架</span></div><div class="co-body"><p>  两个 Skill 的 description 语义重叠时，宿主可能加载错那个，或都加载导致指令冲突。
+  保持每个 Skill 的触发边界清晰、互不重叠，是规模化维护多个 Skill 的关键。</p>
+</div></div><h2 id="7-发布-注册与分享">7. 发布：注册与分享</h2>
+<p>Skill 写好后要让团队/宿主能用到。常见路径（具体以官方文档为准）：</p>
+<ul>
+<li><strong>项目级</strong>：放进仓库的 <code>.codebuddy/skills/&lt;name&gt;/SKILL.md</code>，随仓库提交，团队共用。</li>
+<li><strong>用户级</strong>：放进用户配置目录，跨项目生效（适合个人效率工具）。</li>
+<li><strong>市场/共享</strong>：打包上传到内部或官方技能市场，按 <code>skill:</code> 引用名安装。</li>
+</ul>
+<pre><code class="language-bash"># 目录约定思路（以官方为准）
+# .codebuddy/skills/
+#   pr-checklist/SKILL.md
+#   changelog-gen/SKILL.md
+#
+# 提交到仓库后，队友拉取即自动获得，无需各自调教
+git add .codebuddy/skills
+git commit -m "chore: 新增 PR 检查与变更日志 Skill"
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">把 Skill 当代码管理</span></div><div class="co-body"><p>  给它写清 name、description、版本；改动 Skill 走 PR review，
+  就像改业务代码一样。别让「AI 指令」游离在版本控制之外，否则行为不可复现。</p>
+</div></div><h2 id="8-与相近机制的对比">8. 与相近机制的对比</h2>
+<p>容易混的概念，一张表厘清：</p>
+<table>
+<thead>
+<tr>
+<th>机制</th>
+<th>是什么</th>
+<th>适合</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>提示词（手动）</td>
+<td>你每次复制粘贴的指令</td>
+<td>一次性、临时任务</td>
+</tr>
+<tr>
+<td>Skill</td>
+<td>被宿主自动识别注入的指令包</td>
+<td>反复出现的同类任务</td>
+</tr>
+<tr>
+<td>Agent 模式</td>
+<td>按目标自主多步执行</td>
+<td>目标清晰、步骤多的任务</td>
+</tr>
+<tr>
+<td>MCP</td>
+<td>给助手接外部工具/数据源的协议</td>
+<td>需要调用外部系统能力</td>
+</tr>
+<tr>
+<td>钩子（hook）</td>
+<td>在特定事件前后自动跑的脚本</td>
+<td>强制护栏（如写前 lint）</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">组合拳最稳</span></div><div class="co-body"><p>  实战常组合：用 Skill 定义「怎么做」、用 Agent 模式驱动「自主执行」、
+  用 hook 兜底「安全护栏」、用 MCP 接「外部系统」。各管一段，互不替代。</p>
+</div></div><h2 id="9-踩坑与最佳实践">9. 踩坑与最佳实践</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">description 不写触发词</span></div><div class="co-body"><p>  最常见坑：Skill 写了却从不被自动加载，因为 description 只说「它是什么」。
+  补救：把用户真实会说的同义触发词全列进 description。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">权限给太宽</span></div><div class="co-body"><p>  顺手给了 write_file / network，结果被诱导改了文件或外传了代码。
+  严格最小权限：只读 Skill 就只开 read + 受限命令。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">指令含糊导致自由发挥</span></div><div class="co-body"><p>  正文只写「生成变更日志」，没说格式、约束、出口，产出每次都不一样。
+  正文要像给新人写的 SOP：步骤、约束、产出格式、出口条件都明确。</p>
+</div></div><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">Skill 互相重叠</span></div><div class="co-body"><p>  多个 Skill 触发边界交叉，宿主加载错或指令打架。
+  每个 Skill 守好自己的语义地盘，重叠部分靠更精确的 description 区分。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">脱离版本控制</span></div><div class="co-body"><p>  Skill 不提交仓库，换人或换机就失效、行为不可复现。
+  放进 <code>.codebuddy/skills/</code> 并提交，把它当一等公民代码管理。</p>
+</div></div><h2 id="10-适用与不适用场景">10. 适用与不适用场景</h2>
+<p><strong>适合写成 Skill：</strong></p>
+<ul>
+<li>反复发生的同类任务（PR 检查、生成日志、按约定写测试）；</li>
+<li>承载团队约定、需要一致产出的流程；</li>
+<li>风险可控、能声明最小权限的自动化。</li>
+</ul>
+<p><strong>不适合 / 谨慎：</strong></p>
+<ul>
+<li>一次性、临时任务——直接对话更高效，别为用 Skill 而用 Skill；</li>
+<li>需要强自主探索的多步任务——更适合 Agent 模式，Skill 当其中的方法论；</li>
+<li>涉及高风险操作（删数据、强推）——务必靠 hook + 最小权限兜底，Skill 本身不够。</li>
+</ul>
+<h2 id="小结">小结</h2>
+<ul>
+<li>Skill = 被宿主自动识别注入的「能力/指令包」，核心是 <code>SKILL.md</code> 的 frontmatter + 正文。</li>
+<li><code>description</code> 决定触发：必须写清能力 + 触发场景 + 同义触发词，否则写了也不生效。</li>
+<li>工具权限遵循最小权限原则，白名单逐个开放，高风险能力坚决 deny。</li>
+<li>流程：对话里先调顺指令 → 固化进 SKILL.md → 用多组同义表达调试触发与产出 → 提交仓库共享。</li>
+<li>Skill 与 Agent / hook / MCP 各管一段，组合使用最稳。</li>
+</ul>
+<h2 id="发布前自查清单">发布前自查清单</h2>
+<p>写完后用这张清单逐项过一遍，能挡掉 90% 的坑：</p>
+<ul>
+<li><input disabled="" type="checkbox"> <code>name</code> 全局唯一、小写中划线，不与现有 Skill 重名；</li>
+<li><input disabled="" type="checkbox"> <code>description</code> 写清能力 + 触发场景 + 至少 3 个同义触发词；</li>
+<li><input disabled="" type="checkbox"> 正文有角色、步骤、约束、产出格式、出口条件；</li>
+<li><input disabled="" type="checkbox"> 权限按最小原则声明，高风险能力在 <code>deny</code> 列表；</li>
+<li><input disabled="" type="checkbox"> 用多组同义输入测过触发、用真实任务测过产出；</li>
+<li><input disabled="" type="checkbox"> 已提交进仓库 <code>.codebuddy/skills/&lt;name&gt;/</code>，走 PR review。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  Skill 让助手「会做某类事」。当你需要让助手「调用外部系统能力」（数据库、内部 API），
+  就该了解 MCP 协议——详见工具开发分类下的《MCP 协议与开发》。</p>
+</div></div><h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>CodeBuddy 官方文档：SKILL.md 字段规范、权限声明、调试与发布路径（以最新为准）。</li>
+<li>提示工程基础：系统提示与角色设定，直接复用于 Skill 正文写作。</li>
+<li>Agent 模式原理（上篇《CodeBuddy 编程助手实战》）：Skill 可指导 Agent 自主执行。</li>
+<li>MCP 协议文档：当 Skill 需要调用外部工具/数据源时的对接方式。</li>
+<li>Git 高级工作流：Skill 内部常依赖 <code>git diff</code> / <code>git log</code> 等命令，建议一并掌握。</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="tool-codebuddy.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">CodeBuddy 编程助手实战</span></a>
+    <a class="art-pagerLink art-pagerRight" href="tool-git.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">Git 高级工作流</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

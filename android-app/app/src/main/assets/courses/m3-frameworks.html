@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>主流框架选型：原生 SDK vs LangChain/LangGraph vs LlamaIndex vs AutoGen vs CrewAI · AgentLab</title>
+  <meta name="description" content="对比五类 Agent 开发方案的定位、适用场景与取舍，给出最小可运行示例与选型建议，帮你不从第一步就走弯路。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="主流框架选型：原生 SDK vs LangChain/LangGraph vs LlamaIndex vs AutoGen vs CrewAI · AgentLab"/>
+  <meta property="og:description" content="对比五类 Agent 开发方案的定位、适用场景与取舍，给出最小可运行示例与选型建议，帮你不从第一步就走弯路。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#frameworks">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🏗️</span>
+        <span class="art-moduleName">框架</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">32 分钟</span>
+      </div>
+      <h1 class="art-title">主流框架选型：原生 SDK vs LangChain/LangGraph vs LlamaIndex vs AutoGen vs CrewAI</h1>
+      <p class="art-desc">对比五类 Agent 开发方案的定位、适用场景与取舍，给出最小可运行示例与选型建议，帮你不从第一步就走弯路。</p>
+      <div class="art-tags"><span class="art-tag">#框架</span><span class="art-tag">#LangChain</span><span class="art-tag">#LangGraph</span><span class="art-tag">#AutoGen</span><span class="art-tag">#CrewAI</span><span class="art-tag">#选型</span></div>
+    </div>
+    <div class="prose"><h1>主流框架选型：原生 SDK vs LangChain/LangGraph vs LlamaIndex vs AutoGen vs CrewAI</h1>
+<p>M0 跑通了&quot;模型说一句话&quot;，M1 写了一个能调工具的闭环，M2 讨论了 ReAct / Plan-and-Execute 等&quot;思考策略&quot;。
+到这里你已经具备<strong>不依赖任何框架</strong>写出 Agent 的能力。</p>
+<p>这一篇不教你某个框架的 API，而是回答一个更前置、也更容易被忽略的问题：
+<strong>到底要不要上框架？上哪个？</strong> 选错框架的代价，往往比&quot;代码写得糙&quot;高一个数量级。</p>
+<h2 id="1-为什么选型重要">1. 为什么选型重要</h2>
+<p>很多团队在 demo 阶段随手选了一个框架，等发现它限制了自己的控制力、或是为了一个简单需求被迫扛上几百 KB 依赖时，再想换，成本已经很高。</p>
+<p>选型之所以关键，有三个现实原因：</p>
+<ul>
+<li><strong>框架锁死成本</strong>：Agent 的核心逻辑（状态流转、工具调度、记忆管理）一旦写进某个框架的&quot;心智模型&quot;里，迁移成本约等于重写。抽象越重，绑定越深。</li>
+<li><strong>抽象泄漏（Leaky Abstraction）</strong>：所有&quot;帮你屏蔽复杂度&quot;的框架，在出问题时都会把底层细节甩还给你——而那时你往往既看不懂它的内部状态，又不熟底层协议。越是复杂的故障，越容易发生在抽象边界上。</li>
+<li><strong>版本漂移</strong>：几个主流框架都处于高速迭代期，半年前的博客代码今天可能直接编译不过。把业务稳定性押在别人的 API 稳定性上，需要想清楚。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">本文立场</span></div><div class="co-body"><p>  本站的默认建议是：<strong>先用手写 SDK 打底，真正遇到框架能显著省力的信号时再引入。</strong>
+  框架是加速器，不是安全带。下文每一节都会给&quot;何时用 / 何时不用&quot;。</p>
+</div></div><h2 id="2-方案一-原生-sdk-手写循环">2. 方案一：原生 SDK（手写循环）</h2>
+<h3 id="是什么">是什么</h3>
+<p>不引入任何 Agent 框架，只用 LLM 厂商官方 SDK（这里用 OpenAI Node SDK）+ 你的业务代码，自己实现 M1 讲的&quot;四步闭环&quot;。</p>
+<h3 id="何时用">何时用</h3>
+<ul>
+<li>学习阶段：想真正理解 Agent 运行机理，而不是被框架的黑盒包住。</li>
+<li>简单到中等复杂度：单 Agent、工具数可控、流程线性。</li>
+<li>对延迟、依赖体积、可控性有硬要求（边缘、客户端、合规场景）。</li>
+<li>框架的抽象反而碍事时——比如你要做非常规的调度逻辑。</li>
+</ul>
+<h3 id="何时不用">何时不用</h3>
+<ul>
+<li>需要复杂的多 Agent 编排、长期记忆、人类介入（human-in-the-loop）等开箱能力，且你不愿自己造轮子。</li>
+<li>团队规模大、希望有一套统一范式降低协作成本。</li>
+</ul>
+<h3 id="最小可运行骨架">最小可运行骨架</h3>
+<p>下面这段是 M1 闭环的精简版，可直接复制运行（依赖与运行方式见本节末尾）：</p>
+<pre><code class="language-ts">// native-agent.ts —— 纯 SDK 的 Agent 闭环（可运行骨架）
+import OpenAI from 'openai';
+import 'dotenv/config';
+import { z } from 'zod';
+
+const client = new OpenAI();
+
+// ① 工具定义：JSON Schema 数组，模型据此决策是否调用
+const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'get_weather',
+      description: '查询某城市的当前天气',
+      parameters: {
+        type: 'object',
+        properties: {
+          city: { type: 'string', description: '城市名，如 北京' },
+        },
+        required: ['city'],
+      },
+    },
+  },
+];
+
+// ② 工具真实实现（真实场景换成 API 调用）
+function getWeather(city: string): string {
+  return `${city}：晴，26°C，微风。`;
+}
+
+// ③ 参数校验 schema：单一事实来源，运行时挡住脏输入
+const WeatherArgs = z.object({
+  city: z.string().min(1, '城市不能为空'),
+});
+
+async function run(userInput: string) {
+  // 上下文堆在这里：用户、模型、工具结果全部进同一数组
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: 'user', content: userInput },
+  ];
+
+  // ④ 自主循环，上限 5 轮，防模型失控烧钱
+  for (let step = 0; step &lt; 5; step++) {
+    const res = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages,
+      tools, // 关键：把工具交出去
+    });
+    const msg = res.choices[0].message;
+    messages.push(msg); // 模型这轮输出（可能含 tool_calls）必须入栈，保持连贯
+
+    // ⑤ 模型不再要求调工具 → 直接回答，结束
+    if (!msg.tool_calls || msg.tool_calls.length === 0) {
+      console.log('最终回答：', msg.content);
+      return;
+    }
+
+    // ⑥ 逐个执行工具调用并回填
+    for (const call of msg.tool_calls) {
+      const raw = JSON.parse(call.function.arguments);
+      // 校验先于执行：非法参数不进真实系统，把错误还给模型让它纠正
+      const parsed = WeatherArgs.safeParse(raw);
+      if (!parsed.success) {
+        messages.push({
+          role: 'tool',
+          tool_call_id: call.id, // 必须回传，否则 400
+          content: `参数错误：${parsed.error.message}`,
+        });
+        continue;
+      }
+      const result = getWeather(parsed.data.city);
+      messages.push({
+        role: 'tool',
+        tool_call_id: call.id,
+        content: result,
+      });
+    }
+    // ⑦ 带上工具结果再问模型，看是否还需继续
+  }
+}
+
+run('北京现在天气怎么样？');
+</code></pre><p>运行方式（需先配置 <code>OPENAI_API_KEY</code> 到 <code>.env</code>）：</p>
+<pre><code class="language-bash">npm i openai dotenv zod
+npx tsx native-agent.ts
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">原生 SDK 是你最后的退路</span></div><div class="co-body"><p>  无论上什么框架，底层都还是这套循环。遇到框架诡异行为时，最快的定位方式就是：
+  暂时绕开框架，用原生 SDK 复现最小场景。能跑通，说明是框架问题；跑不通，说明你没理解协议。</p>
+</div></div><h2 id="3-方案二-langchain-langgraph">3. 方案二：LangChain / LangGraph</h2>
+<h3 id="是什么">是什么</h3>
+<p>LangChain 是最早流行的 LLM 应用框架，提供&quot;链（Chain）&quot;&quot;记忆&quot;&quot;工具&quot;&quot;回调&quot;等通用抽象，让你用组合方式搭应用。
+LangGraph 是它的&quot;升级形态&quot;，把流程建模成<strong>有状态的图（StateGraph）</strong>：节点是计算步骤，边是流转条件，支持循环、分支、人工介入，更适合做复杂的 Agent 编排。</p>
+<h3 id="何时用">何时用</h3>
+<ul>
+<li>需要结构化、可观测、可持久化的多步流程，且不想自己维护状态机。</li>
+<li>用到 LangChain 生态里的现成组件（文档加载器、向量库接入、大量集成）。</li>
+<li>Agent 流程有明显的&quot;图结构&quot;：分支、回退、human-in-the-loop。</li>
+</ul>
+<h3 id="何时不用">何时不用</h3>
+<ul>
+<li>任务很简单，一条线性循环就够（原生 SDK 更轻）。</li>
+<li>你对&quot;模型到底发了什么、状态怎么变的&quot;需要完全掌控。</li>
+<li>团队版本管理严格、难以承受第三方 API 频繁变动。</li>
+</ul>
+<h3 id="stategraph-思路-示意">StateGraph 思路（示意）</h3>
+<p>LangGraph 的核心是：定义一个<strong>共享状态（State）</strong>，节点读写它，边按条件决定下一步去哪。
+下面只展示结构思路，<strong>不是可复制的真实 API</strong>，真实写法请以官方文档为准：</p>
+<pre><code class="language-ts">// ⚠️ 结构示意，真实 API 请查官方文档（LangGraph API 变动较快）
+// const { StateGraph } = require('@langchain/langgraph');
+//
+// 1) 定义状态：整张图共享的"黑板"
+// const State = { messages: [], step: 0 };
+//
+// 2) 定义节点：每个节点是 (state) =&gt; 部分更新
+// function callModel(state) {
+//   const ai = llm.invoke(state.messages);   // 调模型
+//   return { messages: [ai] };               // 返回增量，框架自动合并
+// }
+// function callTool(state) {
+//   const result = execute(state.messages);  // 执行工具
+//   return { messages: [result] };
+// }
+//
+// 3) 组装图：节点 + 边（含条件分支，形成循环）
+// const g = new StateGraph(State)
+//   .addNode('agent', callModel)
+//   .addNode('tools', callTool)
+//   .addEdge('__start__', 'agent')
+//   .addConditionalEdges('agent', route, { tools: 'tools', end: '__end__' })
+//   .addEdge('tools', 'agent'); // 工具结果回来，再进 agent，形成循环
+//
+// 4) 编译并运行，框架负责状态持久化与断点恢复
+// const app = g.compile();
+// app.invoke({ messages: [userMsg] });
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">API 易变，切勿照抄旧代码</span></div><div class="co-body"><p>  LangChain / LangGraph 的 API 在 2024–2025 年经历多次较大重构，<code>StateGraph</code>、
+  导入路径、<code>compile()</code> 形态都可能随版本变化。<strong>本文片段仅为思路示意，落地前务必核对你安装版本的官方文档与迁移指南。</strong></p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">抽象重，但生态真香</span></div><div class="co-body"><p>  LangChain 被吐槽&quot;抽象过厚、调试晦涩&quot;，但它最大的价值是<strong>集成丰富</strong>：几百个第三方服务的连接器开箱即用。
+  如果省下的集成成本 &gt; 你承受的抽象成本，它依然划算。</p>
+</div></div><h2 id="4-方案三-llamaindex">4. 方案三：LlamaIndex</h2>
+<h3 id="是什么">是什么</h3>
+<p>LlamaIndex（原 LlamaIndex）起家于 <strong>RAG（检索增强生成）</strong>，核心是&quot;数据接入 → 建索引 → 检索 → 喂给模型&quot;这条链路。
+它把文档切割、向量化、检索、重排、与模型对话的衔接做得非常完整，后来也扩展出 Agent 能力（如 <code>QueryEngine</code>、<code>Agent</code>、工具化检索）。</p>
+<h3 id="何时用">何时用</h3>
+<ul>
+<li>你的 Agent 主要价值在于**&quot;基于私有知识作答&quot;**：内部文档、代码库、数据库问答。</li>
+<li>需要复杂的检索策略：混合检索、重排、多索引路由、元数据过滤。</li>
+<li>知识库规模大、需要持续增量更新。</li>
+</ul>
+<h3 id="何时不用">何时不用</h3>
+<ul>
+<li>任务与&quot;检索知识&quot;无关（纯工具编排、对话机器人）。</li>
+<li>只需要简单向量检索，自己用向量库 SDK 几行就能搞定。</li>
+<li>对运行时体积敏感，LlamaIndex 本体偏重。</li>
+</ul>
+<h3 id="思路骨架-示意">思路骨架（示意）</h3>
+<pre><code class="language-ts">// ⚠️ 结构示意，真实 API 请查官方文档（LlamaIndex 各语言版本差异较大）
+// 1) 载入并构建索引：文档 → 切分 → 向量化 → 存入索引
+// const docs = await loadData('./kb');        // 读文档/PDF/网页
+// const index = await VectorStoreIndex.fromDocuments(docs);
+//
+// 2) 把索引变成可对话的查询引擎，或直接包成 Agent 的工具
+// const queryEngine = index.asQueryEngine();
+// const answer = await queryEngine.query('退款政策里超时怎么算？');
+//
+// 3) 进阶：把"检索"注册为 Agent 的一个工具，让其按需查知识库
+// const retrieverTool = index.asTool({ name: 'search_kb', ... });
+// agent.use(retrieverTool);
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">RAG 不等于把文档丢进去就行</span></div><div class="co-body"><p>  LlamaIndex 能省去造检索轮子的功夫，但<strong>切分策略、重排、是否该用元数据过滤</strong>仍是工程活。
+  框架负责&quot;能检索&quot;，不负责&quot;检索得好&quot;。上线前务必评估召回质量。</p>
+</div></div><h2 id="5-方案四-autogen">5. 方案四：AutoGen</h2>
+<h3 id="是什么">是什么</h3>
+<p>微软出品的 <strong>AutoGen</strong> 主打<strong>对话式多 Agent</strong>：你定义多个&quot;会说话&quot;的 Agent（如助理、评审、执行者），它们通过互相发消息来协作完成任务；<code>GroupChat</code> 让一群 Agent 在一个群里轮流发言，由一个&quot;群管理员&quot;决定下一步谁说。</p>
+<h3 id="何时用">何时用</h3>
+<ul>
+<li>任务天然适合&quot;多个专家对话求解&quot;：代码生成 + 代码审查、头脑风暴、辩论式决策。</li>
+<li>想快速跑通多 Agent 协作的 demo，体验&quot;群体智能&quot;。</li>
+<li>需要人在环（UserProxyAgent 可把决策交回人类）。</li>
+</ul>
+<h3 id="何时不用">何时不用</h3>
+<ul>
+<li>流程必须严格可控、可审计（对话式编排的&quot;谁先说、说几轮&quot;较不确定）。</li>
+<li>成本敏感：多 Agent 多轮对话，token 消耗与延迟会显著放大。</li>
+<li>任务其实是单 Agent 线性能解决的。</li>
+</ul>
+<h3 id="思路骨架-示意">思路骨架（示意）</h3>
+<pre><code class="language-ts">// ⚠️ 结构示意，真实 API 请查官方文档（AutoGen v0.4 与旧版 API 差异极大）
+// const { AssistantAgent, UserProxyAgent, GroupChat, GroupChatManager } = require('autogen');
+//
+// 1) 定义角色 Agent：各有系统提示与能力
+// const coder = new AssistantAgent('coder',  { system_message: '你是资深工程师，写代码' });
+// const critic = new AssistantAgent('critic', { system_message: '你只做代码审查，挑问题' });
+// const user = new UserProxyAgent('user', { human_input_mode: 'NEVER', code_execution: true });
+//
+// 2) 组群聊天：把多个 Agent 拉进一个群，由 manager 调度发言顺序
+// const group = new GroupChat({ agents: [user, coder, critic], max_round: 10 });
+// const manager = new GroupChatManager(group);
+//
+// 3) 发起对话：user 把需求丢进群，群里自动轮转直到收敛
+// user.initiate_chat(manager, message: '用 Python 写个快速排序并测试');
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">v0.4 是分水岭</span></div><div class="co-body"><p>  AutoGen 在 0.4 版本做了核心架构重写，旧教程的 <code>UserProxyAgent</code> / <code>GroupChat</code> 写法大量失效。
+  <strong>入手前先确认你装的版本，并以该版本的官方示例为准</strong>，不要混用不同大版本的代码。</p>
+</div></div><h2 id="6-方案五-crewai">6. 方案五：CrewAI</h2>
+<h3 id="是什么">是什么</h3>
+<p>CrewAI 以<strong>角色扮演式多 Agent</strong> 为核心隐喻：你定义一组有&quot;人设&quot;的 <code>Agent</code>，给它们分配 <code>Task</code>，再用 <code>Crew</code> 把它们编排成一支&quot;团队&quot;去协作。
+相比 AutoGen 的&quot;群聊&quot;，CrewAI 更强调<strong>流程化协作</strong>（谁先干、产出交给谁），像在排一场分工明确的项目。</p>
+<h3 id="何时用">何时用</h3>
+<ul>
+<li>喜欢&quot;给 Agent 设定角色 + 分工任务&quot;的直观心智模型。</li>
+<li>业务流程清晰可拆：研究员 → 写手 → 审校，这种流水线式协作。</li>
+<li>想要比 AutoGen 群聊更可控的执行顺序。</li>
+</ul>
+<h3 id="何时不用">何时不用</h3>
+<ul>
+<li>任务并不需要多个角色，单 Agent 即可。</li>
+<li>需要极细粒度的图状控制流（那种场景 LangGraph 更合适）。</li>
+<li>团队不愿引入又一个快速发展的框架依赖。</li>
+</ul>
+<h3 id="思路骨架-示意">思路骨架（示意）</h3>
+<pre><code class="language-ts">// ⚠️ 结构示意，真实 API 请查官方文档（CrewAI 版本间 API 也有调整）
+// const { Agent, Task, Crew } = require('crewai');
+//
+// 1) 定义角色 Agent：每个都有人设、目标、可用工具
+// const researcher = new Agent({ role: '研究员', goal: '搜集资料', tools: [search] });
+// const writer = new Agent({ role: '写手', goal: '把资料写成报告' });
+//
+// 2) 定义任务，并声明依赖关系（谁的输出喂给谁）
+// const t1 = new Task({ description: '调研 X 技术', agent: researcher });
+// const t2 = new Task({ description: '基于调研写报告', agent: writer, context: [t1] });
+//
+// 3) 组建 Crew 并开跑：框架按依赖顺序调度，前一个 Agent 的产出作为后一个的上下文
+// const crew = new Crew({ agents: [researcher, writer], tasks: [t1, t2] });
+// const result = await crew.kickoff();
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">CrewAI vs AutoGen：两种多 Agent 哲学</span></div><div class="co-body"><p>  AutoGen 像&quot;开个会大家讨论&quot;，过程灵活但难控；
+  CrewAI 像&quot;排好工种的流水线&quot;，顺序明确但灵活度低。
+  选哪个，取决于你的任务是&quot;需要碰撞&quot;还是&quot;需要分工&quot;。</p>
+</div></div><h2 id="7-五维对比表">7. 五维对比表</h2>
+<p>把五个方案放在同一张表，从五个维度横评：</p>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>控制力</th>
+<th>上手成本</th>
+<th>生态/集成</th>
+<th>适合场景</th>
+<th>主要风险</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>原生 SDK</strong></td>
+<td>★★★★★ 最高</td>
+<td>★★ 需自己造轮子</td>
+<td>★ 靠自己接</td>
+<td>学习、简单任务、强可控需求</td>
+<td>重复造轮子、工程量大</td>
+</tr>
+<tr>
+<td><strong>LangChain/LangGraph</strong></td>
+<td>★★★</td>
+<td>★★★ 概念多</td>
+<td>★★★★★ 最丰富</td>
+<td>复杂有状态流程、要现成集成</td>
+<td>抽象重、API 易变、调试难</td>
+</tr>
+<tr>
+<td><strong>LlamaIndex</strong></td>
+<td>★★★</td>
+<td>★★★</td>
+<td>★★★★ RAG 向强</td>
+<td>知识库问答、RAG</td>
+<td>本体偏重、非 RAG 场景价值低</td>
+</tr>
+<tr>
+<td><strong>AutoGen</strong></td>
+<td>★★ 对话难控</td>
+<td>★★★★ 概念少</td>
+<td>★★★</td>
+<td>多 Agent 对话求解、人在环</td>
+<td>版本断层、成本/延迟放大</td>
+</tr>
+<tr>
+<td><strong>CrewAI</strong></td>
+<td>★★★ 流程可控</td>
+<td>★★★★ 直观</td>
+<td>★★★</td>
+<td>角色分工流水线、流程化协作</td>
+<td>灵活度有限、框架较新</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">怎么读这张表</span></div><div class="co-body"><p>  &quot;控制力&quot;和&quot;上手成本&quot;通常是<strong>反向关系</strong>：越省事，越把控制权交出去。
+  没有&quot;最好&quot;，只有&quot;对你的场景最合适&quot;。下一节给决策信号。</p>
+</div></div><h2 id="8-选型决策-什么时候该上框架">8. 选型决策：什么时候该上框架</h2>
+<p>我们的默认路径很朴素：</p>
+<ol>
+<li><strong>先用原生 SDK 打底</strong>。把 M1 的闭环、M2 的思考策略自己写一遍。你获得的不是代码，而是&quot;读得懂底层&quot;的能力——这是后面评估任何框架的基准线。</li>
+<li><strong>当某个痛点反复出现，且框架正好解决它，再引入</strong>。下面是&quot;该上框架&quot;的明确信号：</li>
+</ol>
+<table>
+<thead>
+<tr>
+<th>你遇到的信号</th>
+<th>优先考虑</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>要接几十种数据源 / 服务，集成成本高</td>
+<td>LangChain</td>
+</tr>
+<tr>
+<td>流程是图状：分支、回退、断点恢复、人在环</td>
+<td>LangGraph</td>
+</tr>
+<tr>
+<td>核心是&quot;基于私有知识作答&quot;、检索质量决定成败</td>
+<td>LlamaIndex</td>
+</tr>
+<tr>
+<td>任务需要多个专家&quot;讨论&quot;求解</td>
+<td>AutoGen</td>
+</tr>
+<tr>
+<td>任务是角色分工的流水线</td>
+<td>CrewAI</td>
+</tr>
+<tr>
+<td>任务一条循环就够，你只想快点跑通</td>
+<td><strong>不上框架，用原生 SDK</strong></td>
+</tr>
+</tbody></table>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">一个反直觉的事实</span></div><div class="co-body"><p>  很多&quot;上了框架&quot;的项目，最后 80% 的代码仍在处理框架覆盖不到的东西：
+  鉴权、限流、日志、错误恢复、业务校验。<strong>框架省的是&quot;通用部分&quot;，省不掉&quot;你的部分&quot;。</strong>
+  所以不要因为&quot;怕写代码&quot;而选框架，而要因为&quot;它真能省该类代码&quot;而选。</p>
+</div></div><h2 id="9-踩坑提醒">9. 踩坑提醒</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">不要为简单任务上重框架</span></div><div class="co-body"><p>  最典型的浪费：一个&quot;用户问一句、调一个工具、回一句&quot;的机器人，硬套 LangGraph + 向量库 + 多 Agent。
+  结果是依赖翻倍、延迟翻倍、bug 翻倍，能力却没增加。先问自己：<strong>原生 SDK 能不能 50 行写完？</strong> 能，就别上。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">框架版本漂移会咬人</span></div><div class="co-body"><p>  上面四个框架（尤其 LangChain/LangGraph、AutoGen、CrewAI）都在快速演进。
+  落地的第一件事是<strong>锁定版本并写进 lockfile</strong>，并把关键调用封装在你自己的薄层里——
+  这样将来升级，改动集中在薄层，而不是散落业务各处。切勿 <code>npm install xxx@latest</code> 随手升级到生产。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">抽象泄漏时，你还得回到底层</span></div><div class="co-body"><p>  框架报错、行为诡异、工具没按预期触发——这些时刻，框架的&quot;贴心封装&quot;会瞬间消失，
+  露出底下 raw 的 messages、tool_calls、状态码。那时救场的，正是你用原生 SDK 练出来的基本功。
+  <strong>所以先学底层，再上框架，顺序别反。</strong></p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">别把框架当黑盒信任</span></div><div class="co-body"><p>  无论用哪个框架，最终发给模型的仍是 <code>messages</code> + <code>tools</code>。框架可能默默改你的 prompt、
+  重复注入系统消息、或把工具结果格式化掉。生产前务必打开日志，看清楚<strong>实际发了什么</strong>——
+  很多&quot;模型变笨了&quot;的锅，其实是框架在中间动了手脚。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>选型本质是权衡<strong>控制力 vs 上手成本</strong>：越省事越交权，没有银弹。</li>
+<li>五类方案定位不同：原生 SDK（地基）、LangChain/LangGraph（复杂编排+生态）、LlamaIndex（RAG）、AutoGen（对话式多 Agent）、CrewAI（角色流水线）。</li>
+<li>默认路径：<strong>先用原生 SDK 打底 → 出现明确痛点且框架正好解决 → 再引入</strong>，并把框架调用包在薄层里。</li>
+<li>三大坑：简单任务别上重框架、锁版本防漂移、抽象泄漏时靠底层基本功救场。</li>
+<li>框架省&quot;通用部分&quot;，省不掉&quot;你的部分&quot;；别把它当黑盒，要看清实际发出的请求。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  选定了&quot;用什么搭&quot;，下一个绕不开的工程问题是：<strong>Agent 怎么记住过去、管理跨轮次的状态？</strong>
+  这就是 <strong>M4 记忆与状态</strong> 要解决的——短期上下文、长期记忆、以及如何避免上下文被撑爆。</p>
+</div></div></div>
+    <nav class="art-pager">
+    <span></span>
+    <a class="art-pagerLink art-pagerRight" href="framework-langchain.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">LangChain 实战：从 Runnable 到 LCEL 的编排心智</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

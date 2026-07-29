@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Next.js App Router · AgentLab</title>
+  <meta name="description" content="深入 Next.js App Router：React Server Components、Server/Client 组件边界、路由与流式渲染、缓存模型与部署，配可运行骨架与踩坑清单。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="Next.js App Router · AgentLab"/>
+  <meta property="og:description" content="深入 Next.js App Router：React Server Components、Server/Client 组件边界、路由与流式渲染、缓存模型与部署，配可运行骨架与踩坑清单。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#frontend">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🎨</span>
+        <span class="art-moduleName">前端工程</span>
+        <span class="art-diff">高级</span>
+        <span class="art-dur">42 分钟</span>
+      </div>
+      <h1 class="art-title">Next.js App Router</h1>
+      <p class="art-desc">深入 Next.js App Router：React Server Components、Server/Client 组件边界、路由与流式渲染、缓存模型与部署，配可运行骨架与踩坑清单。</p>
+      <div class="art-tags"><span class="art-tag">#Next.js</span><span class="art-tag">#AppRouter</span><span class="art-tag">#RSC</span><span class="art-tag">#服务端渲染</span><span class="art-tag">#缓存</span></div>
+    </div>
+    <div class="prose"><h1>Next.js App Router</h1>
+<p>Next.js 13 引入的 <strong>App Router</strong> 是一次范式转变：默认全部基于 <strong>React Server Components（RSC）</strong>，把「服务端渲染」从框架黑盒变成 React 一等公民。它同时解决了 SEO、首屏、数据获取与缓存，但也带来一个新手最易踩的雷：<strong>Server 组件与 Client 组件的边界</strong>。</p>
+<p>本篇面向有经验开发者：讲清 RSC 心智模型、边界规则、路由/流式、缓存策略与部署，并给出可运行骨架。</p>
+<h2 id="1-为什么是-app-router-rsc">1. 为什么是 App Router / RSC</h2>
+<p>Pages Router（旧）的 <code>getServerSideProps</code> 把数据获取塞进特殊函数，组件仍是客户端组件，整页 JS 都要下发。App Router 用 RSC 从根本上改变：<strong>组件可以只在服务端运行，不向浏览器发送任何 JS</strong>。</p>
+<pre><code class="language-text">传统 CSR：       浏览器下载全部组件 JS → 客户端 fetch 数据 → 渲染
+Pages Router：   服务端跑 getServerSideProps → 下发 HTML + 全部组件 JS → 注水
+App Router RSC： 服务端跑 Server 组件（含数据获取）→ 下发 HTML + 仅 Client 组件的 JS
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">核心认知</span></div><div class="co-body"><p>  RSC 不是「服务端渲染」的同义词，而是「组件可以选择在服务端运行、且不进 bundle」。
+  Server 组件能直接读数据库/调内部 API，结果以 RSC payload（一种流式序列化格式）传给客户端，
+  浏览器只收到渲染所需的 HTML 与 Client 组件代码。</p>
+</div></div><h2 id="2-目录即路由-app-约定">2. 目录即路由：app/ 约定</h2>
+<p>App Router 用文件系统定义路由，<code>app</code> 目录下的每个文件夹是一个路由段。</p>
+<pre><code class="language-text">app/
+  layout.tsx          根布局（必须，包裹所有页面，可放 &lt;html&gt;/&lt;body&gt;）
+  page.tsx            对应 / 的页面
+  loading.tsx         路由级 Suspense 兜底（自动包一层）
+  error.tsx           路由级错误边界（'use client'）
+  template.tsx        每次导航都重新挂载的布局
+  blog/
+    page.tsx          /blog
+    [slug]/page.tsx   /blog/:slug 动态路由（generateStaticParams 可预渲染）
+</code></pre><pre><code class="language-tsx">// app/layout.tsx —— 根布局（Server 组件，可 async）
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    &lt;html lang="zh"&gt;
+      &lt;body&gt;{children}&lt;/body&gt;
+    &lt;/html&gt;
+  );
+}
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">layout 是嵌套的</span></div><div class="co-body"><p>  路由段自动嵌套 layout：<code>app/blog/[slug]/page.tsx</code> 同时被 <code>app/layout.tsx</code>、
+  <code>app/blog/layout.tsx</code> 包裹。公共 UI（导航、侧栏）放上层 layout，避免重复。</p>
+</div></div><h2 id="3-server-组件-vs-client-组件">3. Server 组件 vs Client 组件</h2>
+<p>这是 App Router 最重要的心智边界。</p>
+<h3 id="3-1-默认是-server-组件">3.1 默认是 Server 组件</h3>
+<code>app</code> 下的组件**默认是 Server 组件**：没有 <code>'use client'</code> 指令。它能：
+<ul>
+<li><code>async</code>、直接 <code>await</code> 数据；</li>
+<li>直接读数据库、读文件系统、调私密后端（密钥不进浏览器）；</li>
+<li>不绑定事件、<code>useState</code>、浏览器 API。</li>
+</ul>
+<pre><code class="language-tsx">// app/posts/page.tsx —— Server 组件，直接取数（无 'use client'）
+import { db } from '@/lib/db';
+export default async function PostsPage() {
+  const posts = await db.post.findMany(); // 服务端直接查库，零客户端 JS
+  return (
+    &lt;ul&gt;
+      {posts.map((p) =&gt; (
+        &lt;li key={p.id}&gt;{p.title}&lt;/li&gt;
+      ))}
+    &lt;/ul&gt;
+  );
+}
+</code></pre><h3 id="3-2-client-组件-加-39-use-client-39">3.2 Client 组件：加 &#39;use client&#39;</h3>
+<p>需要交互（onClick、useState、useEffect、浏览器 API）时，在该文件顶部加 <code>'use client'</code>，<strong>该组件及其所有子孙</strong>变成 Client 组件（进入客户端 bundle）。</p>
+<pre><code class="language-tsx">// app/components/Counter.tsx
+'use client'; // 指令必须放文件最顶部，其前不能有其它代码/注释以外的语句
+import { useState } from 'react';
+export default function Counter() {
+  const [n, setN] = useState(0);
+  return &lt;button onClick={() =&gt; setN(n + 1)}&gt;{n}&lt;/button&gt;;
+}
+</code></pre><h3 id="3-3-边界规则-最容易错">3.3 边界规则（最容易错）</h3>
+<pre><code class="language-tsx">// ❌ 错误：Server 组件里不能 import 并使用 Client 的 Hook
+// ✅ 正确：Server 组件可 import 并渲染 Client 组件（作为子节点传下去）
+// app/page.tsx (Server)
+import Counter from '@/components/Counter'; // Client 组件
+export default function Page() {
+  return &lt;Counter /&gt;; // 把 Client 组件当黑盒渲染，OK
+}
+
+// ❌ 错误：把 Server 组件（含服务端逻辑）直接 import 进 Client 组件并当子组件渲染
+// ✅ 正确：需把 Server 组件的渲染结果作为 children/prop 从上层 Server 传入
+</code></pre><table>
+<thead>
+<tr>
+<th>维度</th>
+<th>Server 组件</th>
+<th>Client 组件</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>指令</td>
+<td>默认，无</td>
+<td>文件顶部 <code>'use client'</code></td>
+</tr>
+<tr>
+<td>能否 async/直接 await</td>
+<td>能</td>
+<td>不能（客户端无服务端上下文）</td>
+</tr>
+<tr>
+<td>能否用 useState/onClick</td>
+<td>不能</td>
+<td>能</td>
+</tr>
+<tr>
+<td>是否进客户端 bundle</td>
+<td>否</td>
+<td>是</td>
+</tr>
+<tr>
+<td>能 import 对方吗</td>
+<td>能 import Client 组件渲染</td>
+<td>不能反向把 Server 组件当子节点</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">边界红线</span></div><div class="co-body"><ol>
+<li><code>'use client'</code> 只往下传染（子孙都变 Client），不会往上；</li>
+<li>Server 组件<strong>不能</strong>作为 Client 组件的子节点直接传入（它含服务端逻辑无法序列化）；</li>
+<li>需要「Client 里嵌 Server 取数」时，用 <strong>Server Actions</strong> 或把 Server 渲染结果通过<code>children</code> prop 从上层 Server 组件注入。违反会报序列化/模块错误。</li>
+</ol>
+</div></div><h2 id="4-数据获取与流式渲染">4. 数据获取与流式渲染</h2>
+<p>Server 组件里直接 <code>await</code>，配合 <code>loading.tsx</code>（Suspense）实现<strong>流式</strong>：慢的部分边出边渲染。</p>
+<pre><code class="language-tsx">// app/dashboard/page.tsx
+import { Suspense } from 'react';
+import { SlowChart } from './SlowChart';
+import { QuickStats } from './QuickStats';
+
+export default function Dashboard() {
+  return (
+    &lt;div&gt;
+      &lt;QuickStats /&gt; {/* 快，先出 */}
+      &lt;Suspense fallback={&lt;p&gt;图表加载中…&lt;/p&gt;}&gt;
+        {/* 慢组件独立 Suspense，先吐 fallback，数据到了再替换 */}
+        &lt;SlowChart /&gt;
+      &lt;/Suspense&gt;
+    &lt;/div&gt;
+  );
+}
+</code></pre><pre><code class="language-tsx">// app/dashboard/SlowChart.tsx (Server)
+export async function SlowChart() {
+  const data = await fetchExpensiveReport(); // 耗时查询
+  return &lt;Chart data={data} /&gt;;
+}
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">流式提升感知性能</span></div><div class="co-body"><p>  把页面拆成「快区块 + 慢区块」，给慢区块单独 <code>Suspense</code>。首屏立即出现骨架/部分内容，
+  用户感知更快，不必等最慢的接口。比整页 spinner 体验好得多。</p>
+</div></div><h2 id="5-缓存模型-四个维度">5. 缓存模型：四个维度</h2>
+<p>App Router 有四种缓存，理解它们才不会「改了代码/数据却看不到更新」。</p>
+<table>
+<thead>
+<tr>
+<th>缓存</th>
+<th>层级</th>
+<th>默认</th>
+<th>控制方式</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Request Memoization</td>
+<td>单次请求内重复 fetch 去重</td>
+<td>开</td>
+<td>自动</td>
+</tr>
+<tr>
+<td>Data Cache</td>
+<td>跨请求持久化 <code>fetch</code> 结果</td>
+<td>持久</td>
+<td><code>fetch(url, { cache: 'no-store' | 'force-cache', next: { revalidate } })</code></td>
+</tr>
+<tr>
+<td>Full Route Cache</td>
+<td>整页静态化</td>
+<td>静态路由缓存</td>
+<td><code>dynamic = 'force-dynamic'</code></td>
+</tr>
+<tr>
+<td>Router Cache</td>
+<td>客户端路由跳转缓存</td>
+<td>开</td>
+<td><code>router.refresh()</code></td>
+</tr>
+</tbody></table>
+<pre><code class="language-tsx">// 默认 fetch 会被 Data Cache 缓存（等价于 cache:'force-cache'）
+fetch('https://api.x.com/posts');
+
+// 每次都重新请求（不缓存）：实时数据
+fetch('https://api.x.com/price', { cache: 'no-store' });
+
+// 增量静态再生：最多每 60 秒重新验证一次
+fetch('https://api.x.com/news', { next: { revalidate: 60 } });
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">缓存导致的陈旧数据</span></div><div class="co-body"><p>  改了后端数据但页面没变，多半是 Data Cache / Full Route Cache 命中。排查顺序：
+  是否用了 <code>cache:'no-store'</code>、是否设了 <code>revalidate</code>、路由是否 <code>dynamic</code>、
+  客户端 <code>router.refresh()</code> 是否触发。生产环境尤其要规划好 revalidate 策略。</p>
+</div></div><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">动态路由预渲染</span></div><div class="co-body"><p>  对 <code>[slug]</code> 动态路由用 <code>generateStaticParams</code> 返回已知 slug 列表，
+  可在构建期把这些页预渲染成静态（ISR），兼顾 SEO 与性能；未列出的按需渲染。</p>
+</div></div><h2 id="6-server-actions-服务端突变">6. Server Actions：服务端突变</h2>
+<p>App Router 允许把「写操作」直接定义成 Server Action（函数加 <code>'use server'</code>），从表单/客户端直接调用，无需手写 API 路由。</p>
+<pre><code class="language-tsx">// app/actions.ts —— 'use server' 文件，所有导出都是服务端动作
+'use server';
+import { db } from '@/lib/db';
+import { revalidatePath } from 'next/cache';
+
+export async function createPost(formData: FormData) {
+  const title = formData.get('title');
+  await db.post.create({ data: { title: String(title) } });
+  revalidatePath('/posts'); // 写完后让该路由缓存失效，立即反映新数据
+}
+</code></pre><pre><code class="language-tsx">// app/posts/new/page.tsx (Server 或 Client 均可调用)
+import { createPost } from '@/app/actions';
+export default function NewPost() {
+  return (
+    &lt;form action={createPost}&gt; {/* 原生 form action 直接绑定 Server Action */}
+      &lt;input name="title" /&gt;
+      &lt;button type="submit"&gt;发布&lt;/button&gt;
+    &lt;/form&gt;
+  );
+}
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">Server Action 安全边界</span></div><div class="co-body"><p>  Server Action 是公开可调用端点，必须像 API 一样做<strong>鉴权与参数校验</strong>（Zod 等）。
+  不要在 Action 里信任客户端传入的 id/权限，服务端要重新校验当前用户是否有权操作。</p>
+</div></div><h2 id="7-元数据与-seo">7. 元数据与 SEO</h2>
+<p>App Router 用 <code>metadata</code> 导出（或 <code>generateMetadata</code>）声明 SEO 信息，框架自动注入 <code>&lt;head&gt;</code>。</p>
+<pre><code class="language-tsx">// 静态元数据
+export const metadata = { title: '博客', description: '...' };
+
+// 动态元数据（基于 params）
+export async function generateMetadata({ params }: { params: { slug: string } }) {
+  const post = await getPost(params.slug);
+  return { title: post.title }; // 注入 &lt;title&gt;
+}
+</code></pre><h2 id="8-部署">8. 部署</h2>
+<p>Next.js 有两种运行形态，影响缓存与并发能力：</p>
+<table>
+<thead>
+<tr>
+<th>形态</th>
+<th>说明</th>
+<th>适用</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Node.js Server</td>
+<td><code>next start</code>，完整功能（流式、缓存、中间件）</td>
+<td>自托管、长连接</td>
+</tr>
+<tr>
+<td>静态导出</td>
+<td><code>output: 'export'</code>，纯静态 HTML</td>
+<td>纯内容站、CDN</td>
+</tr>
+<tr>
+<td>Serverless / Edge</td>
+<td>Vercel 等平台按路由拆分函数</td>
+<td>弹性伸缩、全球边缘</td>
+</tr>
+</tbody></table>
+<pre><code class="language-bash"># 生产构建 + 启动（Node 形态）
+npm run build   # 生成 .next，含静态与动态路由预渲染
+npm run start   # 以生产模式启动服务
+
+# Docker 多阶段（思路骨架，细节以官方 docker 示例为准）
+# FROM node:18-alpine AS base
+# ... 多阶段构建，最终镜像仅含运行时，最小化体积
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">选 Node 还是 Serverless</span></div><div class="co-body"><p>  需要中间件、长连接、完整缓存控制 → Node Server；追求弹性与零运维 → Vercel Serverless。
+  自托管用 Docker 多阶段构建，注意把 <code>.next</code>、node_modules 生产依赖、静态资源打进最终层。</p>
+</div></div><h2 id="9-中间件与路由处理器">9. 中间件与路由处理器</h2>
+<p>除了页面，App Router 还提供两个服务端能力：拦截请求的 <strong>Middleware</strong> 与处理 API 的 <strong>Route Handlers</strong>。</p>
+<h3 id="9-1-middleware-请求拦截">9.1 Middleware：请求拦截</h3>
+<p>在 <code>middleware.ts</code>（项目根或 src 下）对所有匹配的请求做鉴权、重定向、改写。运行在 Edge 运行时，延迟极低。</p>
+<pre><code class="language-ts">// middleware.ts —— 思路骨架，API 以官方文档为准
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+
+export function middleware(req: NextRequest) {
+  const token = req.cookies.get('token')?.value;
+  // 未登录访问受保护路由 → 重定向到登录
+  if (!token &amp;&amp; req.nextUrl.pathname.startsWith('/dashboard')) {
+    return NextResponse.redirect(new URL('/login', req.url));
+  }
+  return NextResponse.next();
+}
+
+// 仅对这些路径跑中间件，避免全量拦截拖累性能
+export const config = { matcher: ['/dashboard/:path*'] };
+</code></pre><h3 id="9-2-route-handlers-替代-api-路由">9.2 Route Handlers：替代 API 路由</h3>
+<p>在 <code>app/api/xxx/route.ts</code> 里导出具名 HTTP 方法，处理客户端/第三方请求，等价于旧版 <code>pages/api</code>。</p>
+<pre><code class="language-ts">// app/api/posts/route.ts
+import { NextResponse } from 'next/server';
+
+export async function GET() {
+  const posts = await getPosts(); // 服务端取数，密钥不暴露给浏览器
+  return NextResponse.json(posts); // 自带 JSON 序列化与正确 Content-Type
+}
+
+export async function POST(req: Request) {
+  const body = await req.json();
+  // 务必校验 + 鉴权（见 Server Action 安全边界）
+  const created = await createPost(body);
+  return NextResponse.json(created, { status: 201 });
+}
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">Route Handler vs Server Action</span></div><div class="co-body"><p>  给「浏览器/第三方前端」用的标准 HTTP 接口用 Route Handler；
+  给「同站表单/客户端组件直接触发」的写操作，优先 Server Action（更少样板、自动序列化）。</p>
+</div></div><h2 id="10-错误处理与路由参数">10. 错误处理与路由参数</h2>
+<code>error.tsx</code> 提供路由级错误边界，必须标 <code>'use client'</code>，捕获下层渲染期错误并降级展示：<pre><code class="language-tsx">// app/blog/error.tsx
+'use client';
+export default function Error({ reset }: { error: Error; reset: () =&gt; void }) {
+  return (
+    &lt;div&gt;
+      &lt;p&gt;出错了：{error.message}&lt;/p&gt;
+      &lt;button onClick={reset}&gt;重试&lt;/button&gt; {/* reset 重新渲染该路由段 */}
+    &lt;/div&gt;
+  );
+}
+</code></pre><p>动态路由通过 <code>params</code>（路径段）与 <code>searchParams</code>（查询串）取参，二者在 Server 组件里可直接 <code>await</code>：</p>
+<pre><code class="language-tsx">// app/blog/[slug]/page.tsx (Server)
+export default async function Post({
+  params,
+  searchParams,
+}: {
+  params: { slug: string };
+  // searchParams 是普通对象（非 Promise 时）；新版可能为 Promise，以官方文档为准
+  searchParams: { preview?: string };
+}) {
+  const post = await getPost(params.slug);
+  const isPreview = searchParams.preview === '1';
+  return &lt;Article post={post} preview={isPreview} /&gt;;
+}
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">error.tsx 不能捕获自身 layout 的错误</span></div><div class="co-body">  <code>error.tsx</code> 只捕获其**子段**的错误，不捕获同目录 <code>layout.tsx</code> 的错误。
+<p>  根布局出错需要更上层的兜底（如全局 error.tsx 或监控告警）。</p>
+</div></div><h2 id="11-常见坑与最佳实践">11. 常见坑与最佳实践</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">把客户端状态传给 Server 组件</span></div><div class="co-body"><p>  Server 组件无法读取浏览器里的 <code>useState</code>/Context 值。需要「客户端交互结果驱动服务端取数」，
+  用路由参数（searchParams）、Server Action 或把取数下沉到 Client 组件内 fetch。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">'use client' 范围失控</span></div><div class="co-body"><p>  在顶层文件加 `&#39;use client&#39; 会让整个子树变 Client，JS 体积暴涨，丧失 RSC 优势。
+  原则：让 Client 组件「尽量小、靠叶子」，Server 组件留在上层做数据编排。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">在 Server 组件用浏览器 API</span></div><div class="co-body">  <code>window</code>/<code>localStorage</code>/<code>document</code> 在 Server 组件里不存在（服务端无 DOM）。
+<p>  这些只能放 <code>'use client'</code> 组件或 <code>useEffect</code> 内。把「环境判断」想清楚再写。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">性能基线建议</span></div><div class="co-body"><p>  默认 Server 组件；仅叶子交互组件标 <code>'use client'</code>；数据获取尽量上移到 Server 组件直接 await；
+  慢区块用 Suspense 流式；合理设置 <code>revalidate</code> 而非 <code>no-store</code> 全量禁用缓存。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>App Router 默认 RSC：Server 组件在服务端运行、不进 bundle，能直接 await 数据/读库。</li>
+<li>边界铁律：<code>'use client'</code> 只往下传染；Server 组件可作 Client 的子节点渲染，反之不可。</li>
+<li>路由即目录；<code>layout/page/loading/error</code> 各司其职；Suspense 实现流式提升感知性能。</li>
+<li>四层缓存（Request/Data/Full Route/Router）决定数据新鲜度，按场景选 <code>no-store</code>/<code>revalidate</code>。</li>
+<li>Server Action 处理写操作，但必须做鉴权与校验；部署按需求选 Node / Serverless / 静态导出。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  Next.js 是 React 全栈化的代表；若你偏爱 Vue 生态的全栈方案，
+  可对照 <strong>fe-nuxtjs（Nuxt3 全栈）</strong>——思路相通但实现不同。</p>
+</div></div><h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>Next.js App Router 官方文档：<a href="https://nextjs.org/docs/app">https://nextjs.org/docs/app</a></li>
+<li>React Server Components 说明：<a href="https://nextjs.org/docs/app/building-your-application/rendering/server-components">https://nextjs.org/docs/app/building-your-application/rendering/server-components</a></li>
+<li>缓存机制总览：<a href="https://nextjs.org/docs/app/building-your-application/caching">https://nextjs.org/docs/app/building-your-application/caching</a></li>
+<li>Server Actions 文档：<a href="https://nextjs.org/docs/app/building-your-application/data-fetching/server-actions">https://nextjs.org/docs/app/building-your-application/data-fetching/server-actions</a></li>
+<li>Next.js 部署指南：<a href="https://nextjs.org/docs/app/building-your-application/deploying">https://nextjs.org/docs/app/building-your-application/deploying</a></li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="fe-react.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">React Hooks 实战</span></a>
+    <a class="art-pagerLink art-pagerRight" href="fe-nuxtjs.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">Nuxt3 全栈框架实战</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

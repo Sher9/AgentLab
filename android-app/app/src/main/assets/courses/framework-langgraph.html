@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>LangGraph 编排：把 Agent 显式建模成状态图 · AgentLab</title>
+  <meta name="description" content="拆解 LangGraph 的状态图心智——节点/边/状态/条件路由/检查点/Human-in-loop/子图多 Agent，对比 LangChain 链，给出可运行骨架与高频踩坑。框架类以官方文档为准，API 易变。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="LangGraph 编排：把 Agent 显式建模成状态图 · AgentLab"/>
+  <meta property="og:description" content="拆解 LangGraph 的状态图心智——节点/边/状态/条件路由/检查点/Human-in-loop/子图多 Agent，对比 LangChain 链，给出可运行骨架与高频踩坑。框架类以官方文档为准，API 易变。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#frameworks">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🏗️</span>
+        <span class="art-moduleName">框架</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">40 分钟</span>
+      </div>
+      <h1 class="art-title">LangGraph 编排：把 Agent 显式建模成状态图</h1>
+      <p class="art-desc">拆解 LangGraph 的状态图心智——节点/边/状态/条件路由/检查点/Human-in-loop/子图多 Agent，对比 LangChain 链，给出可运行骨架与高频踩坑。框架类以官方文档为准，API 易变。</p>
+      <div class="art-tags"><span class="art-tag">#LangGraph</span><span class="art-tag">#状态图</span><span class="art-tag">#检查点</span><span class="art-tag">#Human-in-loop</span><span class="art-tag">#多 Agent</span><span class="art-tag">#框架</span></div>
+    </div>
+    <div class="prose"><h1>LangGraph 编排：把 Agent 显式建模成状态图</h1>
+<p>上一篇 LangChain 讲清了『线性/半线性流水线』怎么用 LCEL 优雅表达。但真实 Agent 常常不是直线的：它要<strong>绕回上一步重试</strong>、要<strong>等待人工确认</strong>再继续、要在多个节点间<strong>共享一份可变状态</strong>、还可能在<strong>循环里反复调工具</strong>直到满足退出条件。</p>
+<p>这些『有状态、可循环、可调人』的特征，用 <code>for</code> 循环硬写能成，但越写越像一团意大利面。LangGraph 的解法是：把整个流程<strong>显式建模成一张图</strong>——节点是计算单元，边是流转规则，状态在节点间流动并被持续更新，图还能被『暂停/恢复』（检查点）。</p>
+<p>本篇假设你已会写原生 Agent 主循环、了解 LangChain 的 Runnable 心智。<strong>重点放在 LangGraph 独有的概念：状态、条件边、检查点、Human-in-loop</strong>，以及它和 LangChain 链的本质区别。代码骨架以 TS 为主，并标注『以官方文档为准，API 易变』——<strong>先理解图建模思路，再对照你所用版本核对接口</strong>，不要当定版代码复制。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">先想清楚要不要上图</span></div><div class="co-body"><p>  LangGraph 解决的是『流程复杂到有状态、有循环、要等人』的场景。如果你的 Agent 是
+  直线 RAG 或单次工具调用，LangChain 链甚至原生循环更轻。上图有学习成本：
+  你得先学会『用图而不是用代码顺序』去思考流程。值得，当且仅当复杂度配得上它。</p>
+</div></div><h2 id="1-心智模型-agent-是一张状态机">1. 心智模型：Agent 是一张状态机</h2>
+<p>LangGraph 的核心隐喻是<strong>状态图（State Graph）</strong>。把它和你想熟悉的『程序』对照：</p>
+<table>
+<thead>
+<tr>
+<th>程序概念</th>
+<th>LangGraph 对应</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>变量/上下文</td>
+<td><strong>State</strong>（一个在节点间传递、被累加更新的对象）</td>
+</tr>
+<tr>
+<td>函数</td>
+<td><strong>Node</strong>（接收 State，返回对 State 的更新）</td>
+</tr>
+<tr>
+<td><code>if/else</code> 分支</td>
+<td><strong>Conditional Edge</strong>（根据 State 决定下一步走哪）</td>
+</tr>
+<tr>
+<td><code>for/while</code> 循环</td>
+<td><strong>回边（Edge 指回前面的节点）</strong></td>
+</tr>
+<tr>
+<td>断点续跑 / 调试</td>
+<td><strong>Checkpointer（检查点）</strong></td>
+</tr>
+<tr>
+<td>人工介入</td>
+<td><strong>Interrupt / Human-in-loop</strong></td>
+</tr>
+</tbody></table>
+<p>最关键的区别：在普通程序里，流程由『代码执行顺序』隐式决定；在 LangGraph 里，流程由<strong>图的边显式声明</strong>。这带来一个巨大好处——<strong>流程可见、可持久化、可暂停</strong>。你能把图『存盘』到某一步，几小时后再从那一步恢复，且不丢失任何状态。</p>
+<h2 id="2-state-在节点间流动的可变对象">2. State：在节点间流动的可变对象</h2>
+<p>State 是整张图的『共享黑板』。每个节点读它、改它，改动会合并回全局 State，传给下一个节点。LangGraph 通常用 <strong>TypedDict 或 Pydantic 模型</strong>声明 State 的形状，并指定每个字段是『覆盖』还是『累加追加』（Reducer）。</p>
+<pre><code class="language-ts">// 思路骨架：声明一张图的 State（伪代码，API 易变）
+import { Annotation } from '@langchain/langgraph'; // 仅示意 import 路径
+
+// Annotation 用来声明 State 字段；.reduce 决定如何合并多节点的写入
+const State = Annotation.Root({
+  // messages：对话/工具消息列表，用 reducer 『追加』而非覆盖
+  messages: Annotation&lt;{ role: string; content: string }[]&gt;({
+    reducer: (a, b) =&gt; a.concat(b), // 多个节点都往里加消息 → 拼接
+    default: () =&gt; [],
+  }),
+  // step：当前走到第几步，普通覆盖即可
+  step: Annotation&lt;number&gt;({
+    reducer: (_a, b) =&gt; b, // 后写覆盖前写
+    default: () =&gt; 0,
+  }),
+});
+// 之后每个 node 的签名都是：(state) =&gt; Partial&lt;State&gt;
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">区分覆盖与追加</span></div><div class="co-body"><p>  State 字段最易踩的坑就是合并语义。messages 这类『越积越多』的必须配 reducer 追加，
+  否则后一个节点直接把前一个节点的消息清空，模型上下文瞬间丢失。凡是『列表/历史』，
+  几乎都该用追加 reducer；凡是『当前状态标记』才用覆盖。声明时想清楚合并语义，
+  能避免一大类『状态莫名其妙没了』的 bug。</p>
+</div></div><h2 id="3-node-与-edge-计算单元与流转规则">3. Node 与 Edge：计算单元与流转规则</h2>
+<p>Node 是一个 <code>(state) =&gt; 部分更新</code> 的函数；Edge 决定『节点 A 跑完去哪』。最基本的边是『固定边』（A 永远去 B）；更有用的是『条件边』——根据 State 动态选下一跳，相当于图的 <code>if/else</code>。</p>
+<pre><code class="language-ts">// 思路骨架：定义节点与条件边（伪代码，API 易变）
+import { StateGraph } from '@langchain/langgraph';
+
+// ① 建图，绑定 State 形状
+const graph = new StateGraph(State);
+
+// ② 加节点：每个 node 接收当前 state，返回要合并回去的局部更新
+graph.addNode('call_model', async (state) =&gt; {
+  const reply = await invokeModel(state.messages); // 调模型（封装自厂商 SDK）
+  return { messages: [reply], step: state.step + 1 }; // 只返回『改动』，框架负责合并
+});
+
+graph.addNode('call_tool', async (state) =&gt; {
+  const result = await runLastToolCall(state.messages);
+  return { messages: [result] }; // 工具结果追加进 messages
+});
+
+// ③ 条件边：模型这轮还要不要调工具？决定去 call_tool 还是 END
+function routeAfterModel(state: typeof State.State) {
+  const last = state.messages[state.messages.length - 1];
+  if (last.tool_calls &amp;&amp; last.tool_calls.length &gt; 0) return 'call_tool';
+  return END; // 不再调工具 → 结束
+}
+
+// ④ 把边接起来：起点 → 模型 → (条件) → 工具 → 回到模型（形成循环）
+graph.addEdge(START, 'call_model');
+graph.addConditionalEdges('call_model', routeAfterModel); // 条件分流
+graph.addEdge('call_tool', 'call_model'); // 工具跑完再回模型：这就是『Agent 循环』
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">回边就是 Agent 循环</span></div><div class="co-body"><p>  注意 <code>call_tool → call_model</code> 这条<strong>回边</strong>：它让『模型决定调工具、工具结果回填、模型再看』
+  这个闭环被显式画在图里。这正是 M1 里那个 <code>for</code> 循环在 LangGraph 中的等价物，
+  只是现在循环结构看得见、可观测、可被检查点暂停。理解这条回边，就理解了 LangGraph 编排 Agent 的本质。</p>
+</div></div><h2 id="4-checkpointer-把图-存盘-与恢复">4. Checkpointer：把图『存盘』与恢复</h2>
+<p>普通程序一停，内存全没。LangGraph 的检查点机制让图在<strong>每一步之后都把 State 快照存起来</strong>（内存、Redis、Postgres 皆可）。于是你可以：中途暂停、几小时后从断点恢复、甚至『时间旅行』回退到某一步重试。</p>
+<pre><code class="language-ts">// 思路骨架：用检查点实现断点续跑（伪代码，API 易变）
+import { MemorySaver } from '@langchain/langgraph'; // 生产换成 Redis/Postgres 实现
+
+// ① 准备一个检查点后端（这里用内存，演示；生产要持久化后端）
+const checkpointer = new MemorySaver();
+
+// ② 编译图时挂上检查点；thread_id 标识『这一次会话/这一次运行』的状态流
+const app = graph.compile({ checkpointer });
+
+// ③ 第一次跑：带 thread_id，框架每步自动存快照
+await app.invoke(
+  { messages: [{ role: 'user', content: '北京天气？' }] },
+  { configurable: { thread_id: 'run_001' } }
+);
+
+// ④ 之后可从同 thread_id 接着跑——框架自动带上之前存的状态
+await app.invoke(
+  { messages: [{ role: 'user', content: '那上海呢？' }] }, // 新消息，旧上下文自动拼接
+  { configurable: { thread_id: 'run_001' } }
+);
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">检查点后端必须持久化</span></div><div class="co-body"><p>  示例用 <code>MemorySaver</code> 仅演示。生产若进程重启，内存检查点随进程消失，『断点续跑』变『从头再来』。
+  涉及长任务、要 Human-in-loop 等待审批的场景，<strong>必须用 Redis/Postgres 等持久化检查点</strong>，
+  否则服务一重启，正在等人确认的流程直接丢失，用户只看到超时。</p>
+</div></div><h2 id="5-human-in-loop-在图里-等人">5. Human-in-loop：在图里『等人』</h2>
+<p>许多生产 Agent 不能全自治：退款要审批、发邮件要确认、关键决策要人拍板。LangGraph 用 <code>interrupt()</code> 在节点里『打断』图的执行——把当前 State 存进检查点，把控制权交还给你，等你用 <code>continue</code>（带人工输入）把图唤醒，从打断点继续。</p>
+<pre><code class="language-ts">// 思路骨架：在节点里插入人工确认（伪代码，API 易变）
+import { interrupt } from '@langchain/langgraph';
+
+graph.addNode('human_approve', async (state) =&gt; {
+  // ① 在这里打断：图暂停，state 已存检查点，控制权回到调用方
+  const decision = interrupt({ // 把『需要人确认』的信号抛给外层
+    question: '确认要执行退款吗？',
+    payload: state.pendingRefund,
+  });
+  // ② 只有人 resume 并传入 decision 后，下面的代码才会继续
+  if (decision === 'reject') return { messages: [{ role: 'tool', content: '已取消' }] };
+  return { messages: [{ role: 'tool', content: '已批准' }] };
+});
+
+// 外层调用：第一次跑到 interrupt 会『挂起』并返回待确认信息
+const r1 = await app.invoke(input, { configurable: { thread_id: 'run_002' } });
+// r1 里含 interrupt 抛出的 question；人处理后：
+const r2 = await app.invoke(
+  null, // 不需要新输入，只带人工决策
+  { configurable: { thread_id: 'run_002' }, resume: 'approve' } // resume 唤醒图
+);
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">把人当图的一个节点</span></div><div class="co-body"><p>  Human-in-loop 的正确心智是：人就是一个『慢速、异步的节点』。图在 <code>interrupt</code> 处暂停、
+  存盘、等待外部注入；注入后从同一点恢复。这让『人机协作』和『纯自动步骤』统一在同一张图里，
+  而不是在业务代码里散落一堆 <code>if (needApprove) await waitForHuman()</code>。</p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">interrupt 前后状态要一致</span></div><div class="co-body">  <code>interrupt</code> 抛出后、人 resume 前，图处于『已暂停但 State 已存』状态。若这段时间里
+<p>  底层 State schema 或节点逻辑改了，恢复可能拿到不兼容的旧 State。对策：检查点带版本/ schema 校验，
+  升级图定义时处理好旧检查点的迁移，否则恢复即崩。</p>
+</div></div><h2 id="6-子图与多-agent-一张图里套一张图">6. 子图与多 Agent：一张图里套一张图</h2>
+<p>当单个 Agent 不够，需要『主管 Agent 派活给多个专家 Agent』（见 M5 多 Agent 协作），LangGraph 用**子图（Subgraph）**表达：把一个编译好的图作为『节点』嵌进上层图。上层图只看到子图这个节点，子图内部自己是一张完整状态图。</p>
+<pre><code class="language-ts">// 思路骨架：把子图当节点嵌入（伪代码，API 易变）
+
+// ① 先编译一个『研究员子图』（内部也是完整的 StateGraph）
+const researcherApp = researcherGraph.compile({ checkpointer });
+
+// ② 把整个子图作为节点挂到『主管图』上
+supervisorGraph.addNode('researcher', researcherApp); // 子图直接是节点
+supervisorGraph.addNode('writer', writerApp);
+
+// ③ 主管用条件边做『路由』：根据当前任务决定派给研究员还是写手
+function routeTask(state) {
+  if (state.taskType === 'research') return 'researcher';
+  if (state.taskType === 'write') return 'writer';
+  return END;
+}
+supervisorGraph.addConditionalEdges('supervisor', routeTask);
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">子图 = 封装边界</span></div><div class="co-body"><p>  子图的价值是『关注点分离』：主管图不必知道研究员内部怎么检索、怎么调工具，
+  只关心『给它任务、拿回结果』。这和你写代码时把一团逻辑抽成函数是一个道理，
+  只是现在封装单位从『函数』升级成了『一张可暂停、自带状态的图』。</p>
+</div></div><h2 id="7-对比-langgraph-vs-langchain-链-vs-原生循环">7. 对比：LangGraph vs LangChain 链 vs 原生循环</h2>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>原生 <code>for</code> 循环</th>
+<th>LangChain (LCEL)</th>
+<th>LangGraph</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>循环/回边</td>
+<td>手写 <code>for/while</code></td>
+<td>不擅长，要自己兜</td>
+<td><strong>原生一等公民（回边）</strong></td>
+</tr>
+<tr>
+<td>共享可变状态</td>
+<td>手写变量</td>
+<td>隐式、靠 chaining</td>
+<td><strong>显式 State + reducer</strong></td>
+</tr>
+<tr>
+<td>暂停/恢复</td>
+<td>自己存、自己读</td>
+<td>不支持</td>
+<td><strong>检查点原生支持</strong></td>
+</tr>
+<tr>
+<td>人工介入</td>
+<td>自己写 await</td>
+<td>不支持</td>
+<td><strong>interrupt 原生支持</strong></td>
+</tr>
+<tr>
+<td>流程可见性</td>
+<td>藏在代码顺序里</td>
+<td>线性可见</td>
+<td><strong>图结构显式可见</strong></td>
+</tr>
+<tr>
+<td>多 Agent</td>
+<td>自己编排</td>
+<td>弱</td>
+<td><strong>子图天然支持</strong></td>
+</tr>
+<tr>
+<td>学习成本</td>
+<td>最低</td>
+<td>中</td>
+<td>最高</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">选谁一目了然</span></div><div class="co-body"><p>  规则其实简单：流程是直线的 → 原生或 LangChain 链；流程有<strong>循环 + 状态 + 等待人 +
+  要断点续跑</strong>中任何一条 → LangGraph。不要为了『显得高级』用 LangGraph 写一条直线，
+  也不要为了『不用学图』用 <code>for</code> 循环硬扛多 Agent 协作。</p>
+</div></div><h2 id="8-高频踩坑">8. 高频踩坑</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">回边没设上限，烧钱死循环</span></div><div class="co-body"><p>  图的回边（<code>call_tool → call_model</code>）等同于 Agent 主循环。若条件边永远不返回 <code>END</code>，
+  图会无限循环调模型。<strong>必须</strong>在条件路由里加『步数上限』或『明确退出条件』，
+  并在编译时考虑 <code>recursion_limit</code>。和 M1 讲『循环上限』是同一个红线，只是换成了图的语境。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">State 合并语义配错，状态神秘消失</span></div><div class="co-body"><p>  默认覆盖语义会让你前一步写入的 messages 被后一步整块覆盖。凡是要『累积』的字段
+  （消息、历史、中间产物）必须用追加 reducer；否则调试时你会发现『明明写了，怎么没了』。
+  声明 State 时逐字段确认合并语义，是 LangGraph 第一号坑。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">检查点用内存，重启即丢</span></div><div class="co-body"><p>  前文强调过：演示用 <code>MemorySaver</code>，生产换持久化后端。涉及 Human-in-loop 长等待、
+  或希望用户关掉页面再回来还能续，内存检查点必崩。这是上线前必须替换的硬指标。</p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">interrupt 后改了图定义，恢复即崩</span></div><div class="co-body"><p>  暂停等待人工的图，其检查点存的是旧 State。若你趁等待期间改了 State schema 或节点，
+  resume 时旧 State 可能不兼容。对策：检查点版本化、升级时做迁移，或干脆对『在途流程』
+  做兼容兜底（恢复失败则开新 thread）。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">把简单流程画成巨图</span></div><div class="co-body"><p>  图的隐形代价是『心智 overhead』：每加一个节点/边都要想清楚 State 怎么流。
+  一个本可 30 行循环写完的流程，硬拆成 8 节点图，反而更难读。图的复杂度要配得上
+  流程本身的复杂度——别为了用图而用图（参考本分类『原生 vs 框架抉择』）。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">用 Studio / 可视化调试图</span></div><div class="co-body"><p>  LangGraph 生态提供可视化工具（如 LangGraph Studio / 本地 UI）把图结构、每一步 State、
+  检查点画出来，调试循环和 Human-in-loop 极有帮助。图的价值之一本就是『可见』，
+  善用它，比在代码里 <code>console.log</code> 高效得多。</p>
+</div></div><h2 id="9-适用-不适用场景">9. 适用 / 不适用场景</h2>
+<p><strong>适用：</strong></p>
+<ul>
+<li>需要<strong>多轮工具调用循环</strong>且要可观测、可暂停的 Agent；</li>
+<li><strong>Human-in-loop</strong>：退款/发信/关键决策需人工审批的长流程；</li>
+<li><strong>断点续跑</strong>：任务可能跨进程重启、跨长时间（如 overnight 批处理）；</li>
+<li><strong>多 Agent 协作</strong>：主管-专家分工，用子图清晰封装各 Agent；</li>
+<li>流程需要被『审计回放』——检查点天然保留每步快照。</li>
+</ul>
+<p><strong>不适用：</strong></p>
+<ul>
+<li>单次/线性 RAG、固定流水线——LangChain 链更轻；</li>
+<li>极简脚本、一次性任务——原生代码更直接、依赖更小；</li>
+<li>对依赖体积/冷启动极敏感的 Serverless 边缘部署；</li>
+<li>团队尚不熟『图建模』思维、且流程并不复杂的场景（先用手写循环更稳）。</li>
+</ul>
+<h2 id="小结">小结</h2>
+<ul>
+<li>LangGraph 把 Agent 显式建模成<strong>状态图</strong>：State 是共享黑板，Node 是计算单元，Edge（尤其回边）是流转规则。</li>
+<li>回边 = Agent 循环；条件边 = 图的 <code>if/else</code>；State 的合并语义（追加 vs 覆盖 reducer）是第一号坑。</li>
+<li><strong>检查点</strong>让图可暂停/恢复/回放，生产必须用持久化后端；<strong>interrupt</strong> 把人当成图的异步节点，实现 Human-in-loop。</li>
+<li>子图把多 Agent 协作封装成『节点套节点』，主管图只关心路由与结果。</li>
+<li>对比结论：有循环+状态+等人+续跑 → LangGraph；直线 → LangChain 链/原生。</li>
+<li>红线：回边设上限、State 合并语义配对、检查点持久化、interrupt 后兼容旧 State、别为用图而用图。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  LangGraph 解决『怎么编排』，但『什么时候该手写、什么时候该上框架』是另一个决策问题，
+  见本分类《原生 vs 框架抉择 framework-native-vs-fw》。另外多 Agent 协作的系统设计，
+  可回看 AI Agent 分类的《M5 多 Agent 协作》。</p>
+</div></div><h2 id="10-落地清单-安装与最小依赖">10. 落地清单：安装与最小依赖</h2>
+<p>LangGraph 基于 LangChain 核心，依赖要配对版本。最小 TS 清单（<strong>版本号以你落地时为准，先锁版</strong>）：</p>
+<pre><code class="language-bash">npm i @langchain/core          # 共享的 Runnable / 消息类型
+npm i @langchain/langgraph     # 图、State、Checkpointer、interrupt
+npm i @langchain/openai        # 模型集成（按需替换厂商）
+npm i -D tsx
+npx tsx your-graph.ts
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">LangGraph 与 LangChain 版本要配套</span></div><div class="co-body">  <code>@langchain/langgraph</code> 对 <code>@langchain/core</code> 有版本区间要求，乱装易出现
+<p>  『Annotation/Reduce 行为不一致』之类诡异问题。装完先跑通第 2 节最小 State 示例，
+  确认 <code>Annotation.Root</code>、reducer 行为符合预期，再往上叠节点与检查点。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">先画一张最小循环图</span></div><div class="co-body"><p>  验证环境：建一个 <code>START → call_model →（条件）END</code> 的最小图，先用固定边跑通，
+  再加回边形成循环，再挂检查点，最后加 interrupt。一步步加，每步都能跑，
+  比一次性写完一整张大图再调省十倍时间。</p>
+</div></div><h2 id="11-端到端串联-把一张图从设计画到代码">11. 端到端串联：把一张图从设计画到代码</h2>
+<p>把前面概念收束成一个完整心智：设计一个『会调工具、必要时等人确认、可断点续跑』的研究 Agent。先在纸上画节点与边，再翻译成代码骨架。</p>
+<pre><code>设计（先画这张图，再写代码）：
+  START
+    └─&gt; call_model      （模型决定：直接答 / 调工具 / 求确认）
+          ├─(有 tool_calls)─&gt; call_tool ──(回边)──&gt; call_model
+          ├─(需人工确认)────&gt; human_approve ──(resume)──&gt; call_model
+          └─(都不要)────────&gt; END
+
+代码骨架（伪代码，API 易变）：
+  const g = new StateGraph(State);
+  g.addNode('call_model', callModelNode);
+  g.addNode('call_tool', callToolNode);
+  g.addNode('human_approve', humanApproveNode); // 内含 interrupt
+  g.addEdge(START, 'call_model');
+  g.addConditionalEdges('call_model', routeAfterModel); // 三路分流
+  g.addEdge('call_tool', 'call_model');     // 回边：Agent 循环
+  g.addEdge('human_approve', 'call_model'); // 人确认后回模型
+  const app = g.compile({ checkpointer });   // 挂持久化检查点
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">设计先于编码</span></div><div class="co-body"><p>  用 LangGraph 的最大收益是『流程先想清、再落地』。动手前务必先画上面的节点/边草图，
+  标出：哪些边是回边（循环）、哪条边要条件、哪里要 interrupt、State 里哪些字段要追加。
+  草图对了，代码只是把图翻译一遍；草图错了，代码越写越乱。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">routeAfterModel 必须覆盖所有出口</span></div><div class="co-body"><p>  条件路由函数要能返回 <code>END</code> 或某个真实存在的节点名。若返回了未定义的节点名，
+  图编译或运行会直接报错；若永远不返回 <code>END</code>，回边导致死循环（见第 8 节红线）。
+  把『退出条件』写在路由函数第一行，优先于任何分支。</p>
+</div></div><h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>LangGraph 官方文档（StateGraph、Annotation/Reducer、Checkpointer、interrupt，以官方为准，API 易变）</li>
+<li>LangGraph 版本 Release Notes（核对 <code>@langchain/core</code> 配套要求与 <code>Annotation</code> API 变化）</li>
+<li>LangGraph Studio / 可视化调试文档：把图结构和每步 State 画出来</li>
+<li>本分类《LangChain 实战 framework-langchain》：从链到图的递进前提</li>
+<li>本分类《主流框架选型 m3-frameworks》：LangGraph 与 LangChain / AutoGen / CrewAI 对比</li>
+<li>AI Agent 分类《M5 多 Agent 协作》：子图所服务的多 Agent 系统设计</li>
+<li>AI Agent 分类《M1 工具调用》：回边所等价的那个 <code>for</code> 循环原型</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="framework-langchain.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">LangChain 实战：从 Runnable 到 LCEL 的编排心智</span></a>
+    <a class="art-pagerLink art-pagerRight" href="framework-llamaindex.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">LlamaIndex 实战：数据框架视角的 RAG 与 Agent</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

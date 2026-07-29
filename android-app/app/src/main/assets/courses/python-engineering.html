@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Python 工程化：测试、Lint、打包、日志与配置 · AgentLab</title>
+  <meta name="description" content="用 pytest 写测试、ruff/mypy 统一质量门禁、打包发布、logging 与配置管理，构建可维护可交付的 Python 项目。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="Python 工程化：测试、Lint、打包、日志与配置 · AgentLab"/>
+  <meta property="og:description" content="用 pytest 写测试、ruff/mypy 统一质量门禁、打包发布、logging 与配置管理，构建可维护可交付的 Python 项目。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#python">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🐍</span>
+        <span class="art-moduleName">Python</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">40 分钟</span>
+      </div>
+      <h1 class="art-title">Python 工程化：测试、Lint、打包、日志与配置</h1>
+      <p class="art-desc">用 pytest 写测试、ruff/mypy 统一质量门禁、打包发布、logging 与配置管理，构建可维护可交付的 Python 项目。</p>
+      <div class="art-tags"><span class="art-tag">#工程化</span><span class="art-tag">#pytest</span><span class="art-tag">#ruff</span><span class="art-tag">#mypy</span><span class="art-tag">#打包</span><span class="art-tag">#日志</span></div>
+    </div>
+    <div class="prose"><h1>Python 工程化：测试、Lint、打包、日志与配置</h1>
+<p>能跑的脚本 ≠ 可维护的项目。当代码要从「我本地能跑」变成「团队能协作、CI 能交付、线上能排查」，就需要一整套工程化动作：自动化测试、统一的风格与类型门禁、可复现的打包、结构化的日志、分层可控的配置。这一篇把这条链路从头到尾串一遍（虚拟环境与 <code>pyproject</code> 已在 Python 核心篇讲过，这里专注交付侧）。</p>
+<h2 id="1-为什么要工程化">1. 为什么要工程化</h2>
+<table>
+<thead>
+<tr>
+<th>痛点</th>
+<th>工程化解法</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>「我本地好好的」</td>
+<td>锁版本 + CI 复现环境</td>
+</tr>
+<tr>
+<td>改 A 坏 B</td>
+<td>自动化测试 + 类型检查兜底</td>
+</tr>
+<tr>
+<td>风格争吵</td>
+<td>工具统一 lint/format</td>
+</tr>
+<tr>
+<td>线上出问题没法查</td>
+<td>结构化日志 + 配置可观测</td>
+</tr>
+<tr>
+<td>别人装不上</td>
+<td>标准打包 + 清晰的依赖声明</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">工程化的本质</span></div><div class="co-body"><p>  不是堆工具，而是把「人容易忘、容易错」的事交给机器反复自动做。目标是：任何人在任何机器上，
+  跑同一条命令都能得到一致、可验证、可回滚的结果。</p>
+</div></div><h2 id="2-pytest-自动化测试">2. pytest：自动化测试</h2>
+<p>pytest 是事实标准的测试框架，写测试就是写 <code>test_*.py</code> 里的 <code>test_*</code> 函数，断言用原生 <code>assert</code>。</p>
+<pre><code class="language-python"># test_calc.py
+def add(a, b):
+    return a + b
+
+def test_add():
+    assert add(1, 2) == 3
+    assert add(-1, 1) == 0
+</code></pre><h3 id="2-1-fixture-准备与清理">2.1 fixture：准备与清理</h3>
+<code>fixture</code> 用来注入测试上下文（建连接、造数据），可复用且自动收尾。它是 pytest 最强大的能力。<pre><code class="language-python">import pytest
+
+@pytest.fixture
+def sample_data():
+    data = {"items": [1, 2, 3]}
+    yield data        # 测试拿到的就是 data；结束后走后面清理
+    data.clear()      # 相当于 teardown
+
+def test_len(sample_data):
+    assert len(sample_data["items"]) == 3
+</code></pre><h3 id="2-2-参数化-一套逻辑测多组输入">2.2 参数化：一套逻辑测多组输入</h3>
+<pre><code class="language-python">import pytest
+
+@pytest.mark.parametrize("a,b,expect", [
+    (1, 2, 3),
+    (0, 0, 0),
+    (-1, 1, 0),
+])
+def test_add(a, b, expect):
+    assert add(a, b) == expect
+</code></pre><h3 id="2-3-mock-隔离外部依赖">2.3 mock：隔离外部依赖</h3>
+<p>测「调用外部 API 的函数」时，不该真打网络。用 <code>unittest.mock</code> 替换掉依赖：</p>
+<pre><code class="language-python">from unittest.mock import patch
+
+def fetch_price(symbol: str) -&gt; float:
+    # 真实实现会请求行情服务
+    ...
+
+@patch("__main__.fetch_price", return_value=100.0)
+def test_portfolio(mock_fetch):
+    assert fetch_price("AAPL") == 100.0
+    mock_fetch.assert_called_once_with("AAPL")   # 验证调用行为，而不关心返回值来源
+</code></pre><h3 id="2-4-覆盖率">2.4 覆盖率</h3>
+<pre><code class="language-bash">pip install pytest-cov
+pytest --cov=myapp --cov-report=term-missing
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">测什么最划算</span></div><div class="co-body"><p>  优先覆盖「业务逻辑分支」和「边界条件」（空输入、越界、异常路径），而不是给每行都凑覆盖率。
+  覆盖率数字只是信号，不是目标——100% 覆盖的废测试毫无意义。</p>
+</div></div><h2 id="3-ruff-mypy-质量门禁双保险">3. ruff + mypy：质量门禁双保险</h2>
+<p>风格交给工具，类型交给检查器。两者都零运行时开销，只在开发/CI 阶段跑。</p>
+<h3 id="3-1-ruff-lint-format-一把梭">3.1 ruff：lint + format 一把梭</h3>
+<p><a href="https://docs.astral.sh/ruff/">ruff</a> 是 Rust 写的极快工具，集 lint（原 flake8）、import 排序（原 isort）、格式化（部分 black）于一身：</p>
+<pre><code class="language-bash">pip install ruff
+ruff check --fix .     # 检查并自动修复
+ruff format .          # 按 black 风格格式化
+</code></pre><p>在 <code>pyproject.toml</code> 里统一配置，团队共享同一份规则：</p>
+<pre><code class="language-toml">[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "C4"]   # pycodestyle/pyflakes/isort/bugbear/flake8-comprehensions
+ignore = ["E501"]                      # 行过长交给 formatter 处理
+</code></pre><h3 id="3-2-mypy-静态类型检查">3.2 mypy：静态类型检查</h3>
+<p>类型注解写了不检查就等于零。mypy 在运行前找出「把 <code>None</code> 当字符串用」「传错类型」等问题：</p>
+<pre><code class="language-bash">pip install mypy
+mypy src/ --strict
+</code></pre><pre><code class="language-toml">[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unused_ignores = true
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">用 pre-commit 卡住质量</span></div><div class="co-body"><p>  装 <code>pre-commit</code>，在 git commit 时自动跑 ruff/mypy，风格或类型不对直接拦下，
+  保证进仓库的代码永远是被校验过的。这是低成本高回报的工程习惯：
+  <pre><code class="language-yaml">  # .pre-commit-config.yaml
+  repos:
+    - repo: https://github.com/astral-sh/ruff-pre-commit
+      rev: v0.4.0
+      hooks: [{ id: ruff, args: [--fix] }, { id: ruff-format }]
+  </code></pre></p>
+</div></div><h2 id="4-打包与发布">4. 打包与发布</h2>
+<p>当项目要作为库被别人 <code>pip install</code>，或要打成可分发产物，用标准 <code>build</code> + <code>twine</code>。</p>
+<pre><code class="language-bash">pip install build twine
+python -m build            # 在含 pyproject.toml 的根目录，生成 wheel + sdist 到 dist/
+twine check dist/*         # 上传前先校验元数据
+twine upload dist/*        # 上传到 PyPI
+</code></pre><h3 id="4-1-声明入口与依赖">4.1 声明入口与依赖</h3>
+<pre><code class="language-toml">[project]
+name = "agentlab-demo"
+version = "0.1.0"
+dependencies = ["fastapi&gt;=0.110,&lt;0.121"]
+
+[project.scripts]          # 安装后生成命令行入口
+agentlab = "agentlab.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+</code></pre><h3 id="4-2-版本与可复现">4.2 版本与可复现</h3>
+<ul>
+<li>遵循 <a href="https://semver.org/lang/zh-CN/">语义化版本</a>：<code>MAJOR.MINOR.PATCH</code>，破坏性变更升 MAJOR。</li>
+<li>生产依赖写上限：<code>fastapi&gt;=0.110,&lt;0.121</code>，避免自动升级到不兼容大版本。</li>
+<li>提交 <code>uv.lock</code>/<code>poetry.lock</code>，CI 用 <code>uv sync</code>/<code>poetry install</code> 精确还原。</li>
+</ul>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">别把敏感信息打进包</span></div><div class="co-body"><p>  打包前确保 <code>.env</code>、密钥、测试数据被 <code>.gitignore</code> / <code>MANIFEST.in</code> 排除，
+  否则会随 wheel 一起分发出去。CI 里用仓库 secrets 而非明文。</p>
+</div></div><h2 id="5-logging-别再用-print-排查问题">5. logging：别再用 print 排查问题</h2>
+<code>print</code> 无法控制级别、无法定向、无法带上下文。<code>logging</code> 是标准答案。<pre><code class="language-python">import logging
+
+# 基础配置：级别 + 格式（含时间、模块、级别）
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+
+log = logging.getLogger(__name__)   # 用模块名做 logger 名，便于按模块过滤
+log.info("服务启动，端口=%s", 8000)
+log.warning("重试第 %d 次", 3)
+</code></pre><h3 id="5-1-分级与输出">5.1 分级与输出</h3>
+<table>
+<thead>
+<tr>
+<th>级别</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>DEBUG</code></td>
+<td>开发期细节，线上默认关</td>
+</tr>
+<tr>
+<td><code>INFO</code></td>
+<td>正常流程里程碑</td>
+</tr>
+<tr>
+<td><code>WARNING</code></td>
+<td>可恢复的异常/降级</td>
+</tr>
+<tr>
+<td><code>ERROR</code></td>
+<td>影响单次请求但服务活着</td>
+</tr>
+<tr>
+<td><code>CRITICAL</code></td>
+<td>服务级故障</td>
+</tr>
+</tbody></table>
+<h3 id="5-2-结构化日志-线上推荐">5.2 结构化日志（线上推荐）</h3>
+<p>JSON 格式日志便于被 Loki/ELK 检索：</p>
+<pre><code class="language-python">import json, logging
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        return json.dumps({
+            "ts": self.formatTime(record),
+            "level": record.levelname,
+            "msg": record.getMessage(),
+            "module": record.name,
+        }, ensure_ascii=False)
+
+# handler.setFormatter(JsonFormatter())  # 挂到 handler 上
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">不要在日志里打密钥</span></div><div class="co-body"><p>  请求参数、token、PII 可能经过 logger。务必做脱敏（mask），否则日志系统会变成
+  泄露面。用 <code>%s</code> 占位符而非 f-string，避免敏感信息在被记录前就拼进字符串。</p>
+</div></div><h2 id="6-配置管理">6. 配置管理</h2>
+<p>配置应「代码外置、环境决定」，绝不硬编码。常见三级来源（优先级从低到高）：默认值 → 配置文件 → 环境变量。</p>
+<h3 id="6-1-用-pydantic-settings-做类型安全的配置">6.1 用 pydantic-settings 做类型安全的配置</h3>
+<pre><code class="language-python">from pydantic_settings import BaseSettings, SettingsConfigDict
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="APP_", env_file=".env")
+
+    db_url: str = "sqlite:///local.db"   # 默认值；可被 APP_DB_URL 覆盖
+    debug: bool = False
+    max_workers: int = 4
+
+settings = Settings()   # 自动从环境变量/ .env 读取并按类型解析
+print(settings.db_url)
+</code></pre><h3 id="6-2-分层与-12-factor">6.2 分层与 12-Factor</h3>
+<ul>
+<li><strong>12-Factor App</strong> 原则：配置存于环境变量，不在代码里。</li>
+<li>敏感配置只走环境变量/密钥管理服务（Vault），不进仓库。</li>
+<li>不同环境（dev/test/prod）用同一份代码 + 不同配置，而非不同分支。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">配置与代码的边界</span></div><div class="co-body"><p>  把「会变的东西」（地址、阈值、开关）放配置；把「逻辑」留代码。功能开关（feature flag）
+  用配置驱动，可灰度、可回滚，不必重新发版。</p>
+</div></div><h2 id="7-ci-cd-让机器尽早反复地发现错">7. CI/CD：让机器尽早反复地发现错</h2>
+<p>工程化的终点是「每次提交自动验证」。一个最小 GitHub Actions 流水线：</p>
+<pre><code class="language-yaml"># .github/workflows/ci.yml
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install uv
+      - run: uv sync --dev
+      - run: uv run ruff check .
+      - run: uv run mypy src
+      - run: uv run pytest --cov --cov-fail-under=80
+</code></pre><p>流程闭环：<strong>装依赖（基于 lock）→ lint → type-check → 测试（带覆盖率门槛）</strong>。任一环挂了，PR 就不让合。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">CI 的哲学</span></div><div class="co-body"><p>  CI 不是「证明代码对」，而是「尽早、反复地发现错」。把能自动化的检查都丢给 CI，
+  人只做机器做不了的审阅。本地 pre-commit + 远端 CI 双保险最佳。</p>
+</div></div><h2 id="8-常见坑与最佳实践">8. 常见坑与最佳实践</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">把 pytest 当成了 print 调试</span></div><div class="co-body"><p>  测试里写 <code>print</code> 然后人眼核对，等于没测试。断言必须机器可判定，
+  且一个测试只验证一个行为，失败时一眼能定位。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">fixture 改了全局状态忘记还原</span></div><div class="co-body"><p>  fixture 里连接数据库、开端口，若 <code>yield</code> 后没清理，会污染后续测试导致偶发失败
+  （flaky test）。所有外部资源都要在 teardown 里释放。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">mypy 没设 strict 等于半裸奔</span></div><div class="co-body"><p>  默认 mypy 较宽松，会放过 <code>Any</code> 隐式扩散。至少开 <code>disallow_untyped_defs</code>，
+  关键模块上 <code>--strict</code>，让类型真正起作用。</p>
+</div></div><h2 id="9-适用与不适用">9. 适用与不适用</h2>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>工程化强度</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>一次性脚本</td>
+<td>轻量：venv + 基础 pytest 即可</td>
+</tr>
+<tr>
+<td>团队协作库/服务</td>
+<td>全量：lock + lint + type + CI + 打包</td>
+</tr>
+<tr>
+<td>快速实验</td>
+<td>先跑通，但 commit 前过一遍 ruff，省后续返工</td>
+</tr>
+</tbody></table>
+<h2 id="小结">小结</h2>
+<ul>
+<li>虚拟环境与 <code>pyproject</code> 隔离/声明依赖（见 Python 核心篇）；工程化专注交付侧。</li>
+<li>pytest 三板斧：<code>fixture</code> 管上下文、<code>parametrize</code> 覆盖多输入、<code>mock</code> 隔离外部依赖；覆盖率只是信号。</li>
+<li>质量门禁：<code>ruff</code> 一把梭 lint+format，<code>mypy</code> 做静态类型；<code>pre-commit</code> 在提交时自动卡。</li>
+<li>打包用 <code>build</code>+<code>twine</code>；遵循语义化版本、依赖写上界、提交 lock 文件、排除敏感信息。</li>
+<li>日志用 <code>logging</code> 而非 <code>print</code>；线上用结构化 JSON 日志且务必脱敏。</li>
+<li>配置外置、按环境区分，用 <code>pydantic-settings</code> 做类型安全读取，敏感项只走环境变量。</li>
+<li>CI 跑「装依赖→lint→type→测试」闭环，让机器尽早反复地发现错。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">合集回顾</span></div><div class="co-body"><p>  Python 三篇至此闭环：核心语法（python-core）→ 异步 Web 服务（python-fastapi）
+  → 工程化交付（本篇）。从会写到能交付，才算真正「会用 Python 做工程」。</p>
+</div></div><h2 id="延伸阅读">延伸阅读</h2>
+<ul>
+<li><a href="https://docs.pytest.org/">pytest 官方文档</a> —  fixtures / parametrize / mock 权威参考</li>
+<li><a href="https://docs.astral.sh/ruff/">ruff 文档</a> — lint 规则与配置</li>
+<li><a href="https://mypy.readthedocs.io/">mypy 文档</a> — 静态类型检查进阶</li>
+<li><a href="https://docs.python.org/3/howto/logging.html">Python logging 指南</a> — 结构化日志实战</li>
+<li><a href="https://docs.pydantic.dev/latest/concepts/pydantic_settings/">pydantic-settings</a> — 类型安全配置</li>
+<li><a href="https://12factor.net/zh_cn/">12-Factor App（中文）</a> — 云端应用方法论</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="python-fastapi.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">FastAPI 实战：路由、依赖注入、校验、异步与 OpenAPI</span></a>
+    <a class="art-pagerLink art-pagerRight" href="python-async.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">asyncio 异步编程：事件循环、协程与并发原语</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

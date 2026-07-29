@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>基于 OpenAPI 封装工具：把 REST API 变成 Agent 可调用的工具 · AgentLab</title>
+  <meta name="description" content="讲清如何用 OpenAPI/Swagger 规范把任意 REST 接口自动转成结构化工具（供 Agent 函数调用），覆盖生成策略、鉴权注入、限流与缓存，并给出可运行骨架、方案对比与踩坑。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="基于 OpenAPI 封装工具：把 REST API 变成 Agent 可调用的工具 · AgentLab"/>
+  <meta property="og:description" content="讲清如何用 OpenAPI/Swagger 规范把任意 REST 接口自动转成结构化工具（供 Agent 函数调用），覆盖生成策略、鉴权注入、限流与缓存，并给出可运行骨架、方案对比与踩坑。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#tooldev">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🔧</span>
+        <span class="art-moduleName">工具开发</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">22 分钟</span>
+      </div>
+      <h1 class="art-title">基于 OpenAPI 封装工具：把 REST API 变成 Agent 可调用的工具</h1>
+      <p class="art-desc">讲清如何用 OpenAPI/Swagger 规范把任意 REST 接口自动转成结构化工具（供 Agent 函数调用），覆盖生成策略、鉴权注入、限流与缓存，并给出可运行骨架、方案对比与踩坑。</p>
+      <div class="art-tags"><span class="art-tag">#OpenAPI</span><span class="art-tag">#工具封装</span><span class="art-tag">#鉴权</span><span class="art-tag">#限流</span><span class="art-tag">#函数调用</span></div>
+    </div>
+    <div class="prose"><h1>基于 OpenAPI 封装工具：把 REST API 变成 Agent 可调用的工具</h1>
+<p>Agent 的函数调用需要一份结构化『工具清单』（名字、描述、参数 schema）。现实里大量能力已经以 <strong>REST API</strong> 形态存在，且多数附带 <strong>OpenAPI（Swagger）规范</strong>。与其手写工具定义，不如<strong>从 OpenAPI 反向生成</strong>——既省人工，又和真实接口保持同步。本篇讲清这条链路：生成工具、注入鉴权、做限流兜底。</p>
+<h2 id="1-原理-openapi-即工具契约">1. 原理：OpenAPI 即工具契约</h2>
+<p>OpenAPI 文档本质是一份机器可读的『接口说明书』：每个 <code>path</code> + <code>operation</code> 对应一个 API 端点，带有 <code>summary</code>、参数（<code>parameters</code>/<code>requestBody</code>）、响应结构。把它映射成工具只需三步：</p>
+<pre><code>OpenAPI 文档
+  → 遍历 paths/{path}/{method}，每个 operation 变成一个 tool
+  → operationId/summary 作为工具名与描述
+  → parameters + requestBody 的 JSON Schema 作为工具参数 schema
+  → 运行期：Agent 选中某工具 → 按 schema 填参 → 拼成 HTTP 请求发出去
+</code></pre><p>关键点：工具的『参数 schema』直接复用 OpenAPI 里现成的 JSON Schema，<strong>单一事实来源</strong>——接口改了文档，工具自动跟着改，不用手动同步两份。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">生成的是『调用胶水』不是魔法</span></div><div class="co-body"><p>  生成的工具只是把『模型填的参』翻译成『HTTP 请求』再返回响应文本。
+  真正的业务逻辑仍在远端服务。你的代码只负责『协议翻译 + 鉴权 + 限流』三层。</p>
+</div></div><h2 id="2-从-openapi-生成工具">2. 从 OpenAPI 生成工具</h2>
+<p>两条路：<strong>代码生成</strong>（编译期产出 TS 客户端 + 推导工具 schema）与<strong>运行时解析</strong>（直接读 spec 动态构造请求）。实战推荐后者更灵活，配合 <code>openapi-fetch</code> 做类型安全的请求。</p>
+<pre><code class="language-ts">// openapi-tools.ts —— 运行时把 OpenAPI 端点变成可调用工具（骨架）
+import createClient from 'openapi-fetch';
+import type { paths } from './gen/schema'; // 由 openapi-typescript 生成，以官方为准
+
+// ① 建一个类型安全的 HTTP 客户端（自动按 paths 推导参数与响应）
+const client = createClient&lt;paths&gt;({ baseUrl: 'https://api.example.com' });
+
+// ② 把某个端点声明成 Agent 工具（名字+描述+schema 由你/代码生成决定）
+export const weatherTool = {
+  name: 'get_weather',
+  description: '查询城市天气，调用 GET /weather', // 来自 OpenAPI 的 summary
+  parameters: {
+    type: 'object',
+    properties: {
+      city: { type: 'string', description: '城市名' },
+    },
+    required: ['city'],
+  } as const,
+  // ③ 真正的『执行』：把参数翻译成 HTTP 调用
+  async execute(args: { city: string }) {
+    const { data, error } = await client.GET('/weather', { params: { query: args } });
+    if (error) throw new Error(JSON.stringify(error));
+    return JSON.stringify(data); // 回传给模型的是字符串
+  },
+};
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">手写映射也行，但别手抄 schema</span></div><div class="co-body"><p>  若不想引入代码生成，至少用 <code>openapi-typescript</code> 把 spec 转成 TS 类型，
+  参数 schema 从类型里抽，避免人工手抄 JSON Schema 导致与接口漂移。</p>
+</div></div><h2 id="3-鉴权注入">3. 鉴权注入</h2>
+<p>API 几乎都要鉴权。把凭证集中管理，在请求层统一注入，而不是散落在每个工具里：</p>
+<pre><code class="language-ts">// auth.ts —— 在客户端层统一挂鉴权，工具侧无感知
+const client = createClient&lt;paths&gt;({
+  baseUrl: 'https://api.example.com',
+  headers: () =&gt; {
+    // 从环境变量/密钥管理取，绝不硬编码进仓库
+    const token = process.env.API_TOKEN!;
+    return { Authorization: `Bearer ${token}` };
+  },
+});
+
+// 多套凭证（如用户级 OAuth）时，按调用上下文切 header
+function withUserToken(userToken: string) {
+  return createClient&lt;paths&gt;({ baseUrl: 'https://api.example.com',
+    headers: { Authorization: `Bearer ${userToken}` } });
+}
+</code></pre><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">凭证绝不能进工具描述</span></div><div class="co-body"><p>  工具描述、参数 schema 会被原样塞进模型 prompt。绝对不要把 API Key、Token 写进
+  <code>description</code> 或任何回传给模型的内容。鉴权只在『服务端请求层』完成，模型只见结果。</p>
+</div></div><h2 id="4-限流-保护上游不被打爆">4. 限流：保护上游不被打爆</h2>
+<p>Agent 可能在循环里连续调工具，瞬时把上游 API 打满触发 429。在工具执行层加<strong>令牌桶</strong>限流与退避：</p>
+<pre><code class="language-ts">// rate-limit.ts —— 简单令牌桶（骨架，生产可换 limiter 类库）
+class TokenBucket {
+  private tokens: number;
+  constructor(private cap: number, private refillPerSec: number) {
+    this.tokens = cap;
+  }
+  async take(): Promise&lt;void&gt; {
+    while (this.tokens &lt;= 0) {
+      await new Promise((r) =&gt; setTimeout(r, 1000 / this.refillPerSec)); // 等补充
+    }
+    this.tokens--; // 取走一个令牌
+  }
+}
+
+const bucket = new TokenBucket(10, 2); // 容量 10，每秒补 2
+
+async function rateLimitedExecute(fn: () =&gt; Promise&lt;string&gt;): Promise&lt;string&gt; {
+  await bucket.take(); // 限流闸门
+  try {
+    return await fn();
+  } catch (e: any) {
+    if (e?.status === 429) {
+      await new Promise((r) =&gt; setTimeout(r, 1000)); // 遇限流退避
+      return rateLimitedExecute(fn); // 重试一次（真实场景加最大重试）
+    }
+    throw e;
+  }
+}
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">限流要按 upstream 配额来</span></div><div class="co-body"><p>  令牌桶的容量/补充速率必须对齐上游 API 的配额文档，而不是拍脑袋。
+  多个工具共享同一上游时，限流应放在『客户端单例』层，避免各工具各限各的、整体仍超配。</p>
+</div></div><h2 id="5-对比-手写-vs-代码生成-vs-api-网关">5. 对比：手写 vs 代码生成 vs API 网关</h2>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>同步成本</th>
+<th>类型安全</th>
+<th>适用</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>手写工具定义</td>
+<td>高，易漂移</td>
+<td>无</td>
+<td>仅一两个接口、一次性</td>
+</tr>
+<tr>
+<td>运行时解析 OpenAPI</td>
+<td>低，随文档变</td>
+<td>中（动态）</td>
+<td>接口多、常变动、要快速接入</td>
+</tr>
+<tr>
+<td>代码生成（openapi-typescript）</td>
+<td>中，需重跑生成</td>
+<td>高（编译期）</td>
+<td>长期维护、要强类型</td>
+</tr>
+<tr>
+<td>API 网关统一封装</td>
+<td>低，网关侧做</td>
+<td>取决于网关</td>
+<td>多 Agent 共用、要集中鉴权/限流</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">生成 + 网关是黄金组合</span></div><div class="co-body"><p>  用代码生成拿到类型安全的客户端，再在网关/客户端单例层统一做鉴权与限流，
+  工具侧只关心『业务语义』。这样 Agent 的工具清单既准又稳。</p>
+</div></div><h2 id="6-常见坑">6. 常见坑</h2>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">spec 和线上不一致</span></div><div class="co-body"><p>  很多团队的 OpenAPI 文档是『美术作品』——和真实接口对不上。生成工具前先
+  对几个核心端点做实测，确认 <code>summary</code>、参数、响应真实可用，否则工具会『看起来对、跑就错』。</p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">把大响应全塞回模型</span></div><div class="co-body"><p>  列表接口可能返回上万行。把整个响应当 tool 结果回填，既烧 token 又可能超上下文。
+  执行层应做截断/摘要（如只留前 N 条 + 总数），必要时让模型再翻页。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">忽略错误响应结构</span></div><div class="co-body"><p>  OpenAPI 的 <code>error</code> 响应常常 schema 不全。拿到非 2xx 时把错误结构规范化后再回填，
+  让模型知道『是参数错还是配额错』，而不是吞成一个模糊的失败。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">给工具描述加『何时用』</span></div><div class="co-body"><p>  同 m1 经验：工具描述回答『WHEN』。生成时把 OpenAPI 的 <code>summary</code>/<code>description</code>
+  补齐成『用户会怎么问』的措辞，提升模型直选命中率。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>OpenAPI 是现成的工具契约：遍历端点即可生成『名字 + 描述 + 参数 schema』，与接口单一事实来源。</li>
+<li>执行层只做三件事：协议翻译、鉴权注入、限流兜底；业务仍在远端。</li>
+<li>鉴权只在服务端请求层做，凭证绝不进 prompt；限流按上游配额设，放客户端单例层共享。</li>
+<li>红线：spec 先实测、响应要截断、错误要规范化、凭证不泄露。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  工具封装好、能被 Agent 调用后，下一个问题是：怎么把这些工具『安全地放进沙箱执行』，
+  防止任意代码/命令越权——见 <strong>tool-sandbox（工具沙箱与安全执行）</strong>。</p>
+</div></div><h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>OpenAPI Specification 官方文档（paths/operation/parameters 语义，以官方为准）</li>
+<li><code>openapi-typescript</code> 与 <code>openapi-fetch</code> 文档（类型安全客户端，API 易变请核对版本）</li>
+<li>各上游 API 的配额/限流文档（令牌桶参数以此为据）</li>
+<li>模型函数调用工具定义规范（参数 schema 与回填格式，见 m1-tool-calling）</li>
+<li>12-Factor App 的『Config 与 Credentials』原则：密钥外置、绝不进代码</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="tool-mcp.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">MCP 协议与开发：给 Agent 接上标准插座</span></a>
+    <a class="art-pagerLink art-pagerRight" href="tool-sandbox.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">工具沙箱与安全执行：让 Agent 放心『动手』</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>预训练基础：从语料到基座模型 · AgentLab</title>
+  <meta name="description" content="讲清 LLM 预训练的三大支柱——数据、目标函数、规模定律，并用因果语言建模把训练闭环讲透，最后厘清预训练与微调的边界，给你能落地的概念骨架。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="预训练基础：从语料到基座模型 · AgentLab"/>
+  <meta property="og:description" content="讲清 LLM 预训练的三大支柱——数据、目标函数、规模定律，并用因果语言建模把训练闭环讲透，最后厘清预训练与微调的边界，给你能落地的概念骨架。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#llm">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🧠</span>
+        <span class="art-moduleName">LLM大模型</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">25 分钟</span>
+      </div>
+      <h1 class="art-title">预训练基础：从语料到基座模型</h1>
+      <p class="art-desc">讲清 LLM 预训练的三大支柱——数据、目标函数、规模定律，并用因果语言建模把训练闭环讲透，最后厘清预训练与微调的边界，给你能落地的概念骨架。</p>
+      <div class="art-tags"><span class="art-tag">#预训练</span><span class="art-tag">#规模定律</span><span class="art-tag">#因果语言建模</span><span class="art-tag">#语料</span><span class="art-tag">#基座模型</span></div>
+    </div>
+    <div class="prose"><h1>预训练基础：从语料到基座模型</h1>
+<p>你手里的 GPT / Claude / Llama，本质上都是『预训练出来的』。预训练是让模型从无标注文本里学会『语言规律 + 世界知识』的过程，产出的叫<strong>基座模型（base model）</strong>。这一篇不堆公式，只把工程上最该懂的三件事讲透：<strong>喂什么数据、学什么目标、规模怎么影响能力</strong>，并厘清它和微调的关系。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">本篇定位</span></div><div class="co-body"><p>  预训练是『重资源、重工程』的环节，绝大多数团队不会从零预训练，而是基于开源基座做微调（见 llm-finetune）。
+  所以本篇以概念与决策为主，训练循环用伪代码骨架呈现，真实超参以官方文档为准。</p>
+</div></div><h2 id="1-预训练到底在做什么">1. 预训练到底在做什么</h2>
+<p>一句话：<strong>给定前面一堆 token，预测下一个 token</strong>。模型在海量文本上反复做这件事，逐渐内化语法、事实、推理模式。它不直接『理解』，而是学到『统计上最合理的续写』——这正是后面所有能力（对话、推理、工具调用）的地基。</p>
+<p>预训练产出的基座模型有两个特征，新手常踩坑：</p>
+<ul>
+<li>它是『续写机器』，<strong>不会</strong>听话地回答问题。你给它『法国的首都是』，它大概率续出『巴黎』，但给它『请回答：法国的首都是？』，它可能继续编故事——因为它没被教过『按指令作答』。</li>
+<li>它天然有『下一词预测』倾向，需要<strong>微调 / 对齐</strong>（SFT、RLHF）才能变成可用的助手。</li>
+</ul>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">别直接拿基座模型当产品</span></div><div class="co-body"><p>  很多团队第一次下载 Llama 基座后，发现它『答非所问』就以为是模型不行。其实基座本就该续写，
+  对齐（指令微调）是单独一步。把 base 模型当聊天模型用，是预训练认知的第一课。</p>
+</div></div><h2 id="2-数据-预训练的燃料">2. 数据：预训练的燃料</h2>
+<p>数据质量直接决定模型上限。工程上关注四个维度：</p>
+<h3 id="2-1-数据来源">2.1 数据来源</h3>
+<ul>
+<li><strong>网页文本</strong>：Common Crawl 衍生的 C4、RefinedWeb、FineWeb 等，量大但噪声多，需清洗。</li>
+<li><strong>书籍 / 百科</strong>：BookCorpus、Wikipedia，质量高、长程依赖好。</li>
+<li><strong>代码</strong>：GitHub 语料（The Stack），提升推理与结构能力。</li>
+<li><strong>学术 / 专业</strong>：arXiv、PubMed，强化垂直领域知识。</li>
+</ul>
+<h3 id="2-2-去重与清洗">2.2 去重与清洗</h3>
+<p>重复数据会让模型『死记』而非泛化。常规操作：</p>
+<ul>
+<li><strong>精确去重</strong>：按文档哈希去掉完全重复。</li>
+<li><strong>近似去重</strong>：MinHash + LSH 去掉高度相似文档（这是工业级流水线的标配）。</li>
+<li><strong>质量过滤</strong>：用分类器 / 启发式规则剔除低质（乱码、导航栏、垃圾 SEO）。</li>
+<li><strong>毒性与隐私过滤</strong>：去个人身份信息（PII）、降毒性内容。</li>
+</ul>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">数据规模的数量级</span></div><div class="co-body"><p>  Llama 2 训练语料约 2T tokens；现代前沿模型普遍在数 T 到十数 T tokens。
+  但对垂直场景，几百万到几十亿高质量 tokens 的继续预训练（continued pretraining）就常有收益。</p>
+</div></div><h3 id="2-3-数据配比">2.3 数据配比</h3>
+<p>不同来源的比例不是拍脑袋：代码占比高→推理强；多语料→跨语言能力好。配比实验是预训练里最烧钱也最关键的『玄学』环节之一。</p>
+<h2 id="3-目标函数-模型到底在优化什么">3. 目标函数：模型到底在优化什么</h2>
+<p>主流采用<strong>因果语言建模（Causal Language Modeling, CLM）</strong>：</p>
+<pre><code>输入序列:  [x₁, x₂, x₃, ..., xₙ]
+目标:      预测 x₂|x₁,  x₃|x₁x₂,  ...,  xₙ|x₁..xₙ₋₁
+损失:      每个位置的交叉熵之和取平均
+</code></pre><p>模型一次看到整个序列（靠注意力掩码保证第 i 个位置只能看到前 i 个 token），但只在『预测下一个』上算损失。这种『自监督』无需人工标注，所以能吃到互联网级数据。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">为什么是因果而非掩码</span></div><div class="co-body"><p>  BERT 用的掩码语言建模（MLM，预测被遮住的词）适合理解类任务；
+  而 GPT 系的因果 LM 适合生成。现代生成式大模型几乎清一色选因果 LM，因为它天然适配『续写 / 对话 / 推理链』。</p>
+</div></div><h3 id="3-1-训练循环伪代码骨架">3.1 训练循环伪代码骨架</h3>
+<p>下面是一段<strong>概念级</strong>训练循环（不可直接运行，真实实现见 PyTorch + Transformers / Megatron，以官方文档为准）：</p>
+<pre><code class="language-python"># pretrain_loop.py —— 预训练主循环（思路骨架，非可运行生产代码）
+# 以官方文档为准：实际分布式训练涉及 FSDP/DeepSpeed、梯度累积、混合精度等
+
+for batch in dataloader:            # batch = 一堆 token 序列 [B, T]
+    logits = model(batch.input_ids) # 前向：输出每个位置的词表分布 [B, T, V]
+    # 因果 LM：用『错位』的目标——输入 x，预测 x 的下一个
+    loss = cross_entropy(
+        logits[:, :-1, :],          # 预测侧：位置 1..T-1
+        batch.input_ids[:, 1:],     # 目标侧：位置 2..T（即下一个 token）
+    )
+    loss.backward()                 # 反向传播，算出每个参数梯度
+    optimizer.step()                # 沿梯度更新参数
+    optimizer.zero_grad()           # 清空梯度，准备下一批
+</code></pre><p>要点：<strong>目标错位一行</strong>（<code>input_ids[:, 1:]</code>）就是因果 LM 的全部秘密——模型永远在『用前文的表示，去猜后一个词』。</p>
+<h2 id="4-规模定律-能力随规模涌现">4. 规模定律：能力随规模涌现</h2>
+<p><strong>Scaling Laws（规模定律）</strong> 指出：在足够大的范围内，模型的<strong>测试损失</strong>随参数量、数据量、算力的增加而<strong>可预测地下降</strong>，近似幂律关系。工程含义很硬：</p>
+<ul>
+<li>想让损失降一点，参数量 / 数据量可能要翻几倍——这是个『烧钱换能力』的权衡。</li>
+<li><strong>三者要匹配</strong>：盲目堆参数但数据不够 → 过拟合；数据堆满但参数太小 → 学不下。经验法则是『参数 : 数据 tokens』大致 1:10 到 1:20。</li>
+</ul>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">规模定律不是万能保险</span></div><div class="co-body"><p>  损失下降 ≠ 任务能力线性提升。很多『能力涌现』（如复杂推理）在规模跨过阈值后才明显，
+  但也可能只是评测指标非线性造成的观感。把它当『预算规划工具』，而非『能力保证书』。</p>
+</div></div><h2 id="5-预训练-vs-微调-边界在哪">5. 预训练 vs 微调：边界在哪</h2>
+<p>这是本篇最核心的一张表，决定你该往哪投资源：</p>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>预训练（Pretraining）</th>
+<th>微调（Fine-tuning，见 llm-finetune）</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>数据</td>
+<td>海量无标注文本（T 级 tokens）</td>
+<td>高质量有标注样本（千～百万级）</td>
+</tr>
+<tr>
+<td>目标</td>
+<td>通用语言/知识建模（CLM）</td>
+<td>适配特定任务/风格/格式</td>
+</tr>
+<tr>
+<td>成本</td>
+<td>极高（千卡×天～月）</td>
+<td>低到中（单卡～几卡×小时）</td>
+</tr>
+<tr>
+<td>产出</td>
+<td>基座模型 base</td>
+<td>指令模型 / 领域模型</td>
+</tr>
+<tr>
+<td>谁来做</td>
+<td>大厂 / 顶级实验室</td>
+<td>普通团队也可行</td>
+</tr>
+<tr>
+<td>是否需对齐</td>
+<td>否（产出续写器）</td>
+<td>是（SFT/RLHF 让其听话）</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">决策树</span></div><div class="co-body"><p>  问自己：是要『造一个新模型』，还是『让现成模型更懂我的业务』？
+  99% 的团队答案是后者——直接基于开源基座做 SFT / LoRA，别碰全量预训练。
+  只有当领域语料极度特殊（如罕见语种、专有化学符号）且现成模型完全空白时，才考虑继续预训练。</p>
+</div></div><h2 id="6-常见坑">6. 常见坑</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">数据泄漏</span></div><div class="co-body"><p>  评测集（如公开基准）若混入训练语料，指标会虚高、上线即翻车。工业流程必须做
+  『训练/评测去污染（decontamination）』——用 n-gram 重叠检测并剔除。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">注意</span></div><div class="co-body"><p> 数据数量&quot;&gt;
+  低质冗余数据堆再多，也比不过精心过滤的干净语料。先做去重和质量过滤，再谈规模。
+  很多人迷信『数据越多越好』，结果模型学会了复读噪声。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">继续预训练会冲掉原能力</span></div><div class="co-body"><p>  在基座上做领域继续预训练时，若不加『重放（replay）』原分布数据，
+  模型可能在学新领域的同时『忘记』通用能力（灾难性遗忘）。务必混训一部分通用数据。</p>
+</div></div><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">tokenizer 要配套</span></div><div class="co-body"><p>  预训练时选的 tokenizer（词表、BPE 规则）和模型绑定。换 tokenizer 等于换输入空间，
+  旧权重无法直接复用。垂直场景若自定义 tokenizer，需从预训练起步或谨慎做 embedding 映射。</p>
+</div></div><h2 id="7-用-zod-校验预训练样本格式">7. 用 Zod 校验预训练样本格式</h2>
+<p>虽然预训练本身不是 OpenAI API 调用，但当你<strong>准备 / 验收训练数据</strong>时，可以用 Zod 守住格式关。下面是一段 Node 侧校验 JSONL 样本骨架（沿用 OpenAI SDK 项目的 Zod 习惯）：</p>
+<pre><code class="language-ts">// validate_pretrain_sample.ts —— 校验单条预训练样本结构
+import { z } from 'zod';
+
+// 一条预训练样本：明文文本即可（CLM 不需要标注）
+const PretrainSample = z.object({
+  text: z.string().min(1, '文本不能为空'),
+  // 可选元信息：来源域，便于后续配比与去重分析
+  domain: z.enum(['web', 'book', 'code', 'academic']).optional(),
+});
+
+// 真实场景：逐行读 JSONL，逐条 safeParse，非法行落盘待人工看
+function validateLine(line: string): boolean {
+  const parsed = PretrainSample.safeParse(JSON.parse(line));
+  if (!parsed.success) {
+    console.error('坏样本:', parsed.error.message);
+    return false;
+  }
+  return true;
+}
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">把校验前移</span></div><div class="co-body"><p>  数据校验越靠前（采集即校验）成本越低。等到训练跑了一半才发现 5% 样本是乱码，
+  烧毁的 GPU 小时是真金白银。Zod 这种轻量校验，建议在入库管线里就挡一道。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>预训练 = 在海量文本上做因果语言建模（预测下一个 token），产出『续写型』基座模型。</li>
+<li>三支柱：<strong>数据（去重+质量+配比）</strong>、<strong>目标（CLM + 错位一行）</strong>、<strong>规模（Scaling Laws 的幂律权衡）</strong>。</li>
+<li>预训练与微调是不同量级的不同环节：前者造基座、后者做适配；99% 团队应从微调入手。</li>
+<li>红线：防数据泄漏、重质量轻数量、继续预训练要防遗忘、tokenizer 与模型绑定、校验前移。</li>
+</ul>
+<h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>Kaplan et al. <em>Scaling Laws for Neural Language Models</em>（规模定律原始论文）</li>
+<li>Hoffmann et al. <em>Chinchilla</em>（参数/数据配比的『计算最优』扩展）</li>
+<li>Penedo et al. <em>RefinedWeb / FineWeb</em>（工业级网页语料清洗流水线）</li>
+<li>Llama 2 / Llama 3 技术报告（预训练数据配比、 tokenizer、继续预训练实践）</li>
+<li>HuggingFace Transformers / Megatron-LM 文档（真实分布式训练实现，以官方为准）</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="llm-tokenizer.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">分词器：BPE/WordPiece、计费与跨语言</span></a>
+    <a class="art-pagerLink art-pagerRight" href="llm-finetune.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">微调实战：SFT 与 LoRA 从数据到上线</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>
