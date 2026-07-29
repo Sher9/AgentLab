@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>流式输出体验 · AgentLab</title>
+  <meta name="description" content="用 SSE 实现 Agent 的流式输出：打字机效果、客户端取消、服务端背压，给出可运行骨架与对比、踩坑。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="流式输出体验 · AgentLab"/>
+  <meta property="og:description" content="用 SSE 实现 Agent 的流式输出：打字机效果、客户端取消、服务端背压，给出可运行骨架与对比、踩坑。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#product">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">💡</span>
+        <span class="art-moduleName">产品工程</span>
+        <span class="art-diff">入门</span>
+        <span class="art-dur">20 分钟</span>
+      </div>
+      <h1 class="art-title">流式输出体验</h1>
+      <p class="art-desc">用 SSE 实现 Agent 的流式输出：打字机效果、客户端取消、服务端背压，给出可运行骨架与对比、踩坑。</p>
+      <div class="art-tags"><span class="art-tag">#流式</span><span class="art-tag">#SSE</span><span class="art-tag">#打字机</span><span class="art-tag">#取消</span><span class="art-tag">#背压</span></div>
+    </div>
+    <div class="prose"><h1>流式输出体验</h1>
+<p>Agent 生成一段回答可能要好几秒。如果等它<strong>全部生成完</strong>才一次性吐给用户，用户面对的是一段死寂的等待，弃用率会飙升。流式输出（边生成边显示）能把『首字延迟』从几秒压到几百毫秒，是 Agent 产品最划算的体验升级之一。</p>
+<p>这一篇讲清 SSE 协议、打字机效果、取消、背压，并给出可运行骨架。</p>
+<h2 id="1-为什么要流式">1. 为什么要流式</h2>
+<ul>
+<li><strong>首字延迟（TTFT）</strong>：用户秒见反馈，焦虑骤降；</li>
+<li><strong>可感知进度</strong>：字在动，说明『它还活着』；</li>
+<li><strong>可取消</strong>：看到方向不对，中途就能停，省 token。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">流式是体验杠杆</span></div><div class="co-body"><p>  同样一个 5 秒的回答，流式让用户『第 0.3 秒就开始读』，一次性返回让用户
+  『前 5 秒干瞪眼』。成本几乎不变，体验差一个量级。</p>
+</div></div><h2 id="2-sse-协议基础">2. SSE 协议基础</h2>
+<p>服务端推送用 <strong>SSE（Server-Sent Events）</strong> 最省事：基于 HTTP、文本协议、原生 <code>EventSource</code> 可消费（注意：要发自定义结构化事件时，前端用 <code>fetch</code> + <code>ReadableStream</code> 更灵活，见第 7 节）。</p>
+<p>每条消息格式：<code>data: &lt;内容&gt;\n\n</code>（两个换行分隔）。响应头固定三项：</p>
+<pre><code>Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+</code></pre><h2 id="3-打字机效果">3. 打字机效果</h2>
+<p>『打字机』不是真的逐字慢生成，而是<strong>后端按 chunk 推送、前端按收到顺序追加渲染</strong>。chunk 可以按 token、按词、或按句切；太快显得抖，太慢显得卡，通常按模型原生 token 流即可。</p>
+<h2 id="4-取消-abort">4. 取消（Abort）</h2>
+<p>用户点『停止』，前端要 <code>reader.cancel()</code> 切断流；<strong>后端也必须 abort</strong> 下游的模型调用，否则它还在后台烧 token。两端都必须断，缺一不可。</p>
+<pre><code class="language-ts">// stream-cancel.ts —— 后端用 AbortController 贯穿取消（骨架）
+import http from 'node:http';
+
+const server = http.createServer((req, res) =&gt; {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+  });
+
+  // 客户端断开（关页面/点停止）时触发，立刻停掉后续推送
+  const ac = new AbortController();
+  req.on('close', () =&gt; ac.abort());
+
+  (async () =&gt; {
+    try {
+      for (const ch of '这是一段流式回答，边生成边推送。') {
+        if (ac.signal.aborted) break; // 已取消，停止推送
+        res.write(`data: ${ch}\n\n`);
+        await new Promise((r) =&gt; setTimeout(r, 40));
+      }
+      res.write('data: [DONE]\n\n');
+    } finally {
+      res.end();
+    }
+  })();
+});
+
+server.listen(3000, () =&gt; console.log('SSE on :3000'));
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">只断前端不断后端等于白断</span></div><div class="co-body"><p>  前端 <code>reader.cancel()</code> 只断了『接收』，后端若没监听 <code>req.close</code> 去 <code>abort</code>，
+  模型调用继续跑、token 继续烧。取消必须端到端。</p>
+</div></div><h2 id="5-背压-backpressure">5. 背压（Backpressure）</h2>
+<p>背压指：<strong>生产者（后端）推送速度 &gt; 消费者（前端/网络）消费速度</strong>时，数据在中间堆积。SSE 基于 TCP，操作系统有发送缓冲；但若后端疯狂 <code>write</code> 而客户端慢，内存会涨。</p>
+<p>应对：</p>
+<ul>
+<li>用 <code>res.write</code> 的返回值判断：返回 <code>false</code> 表示底层缓冲已满，应暂停推送、等 <code>'drain'</code> 事件再继续；</li>
+<li>控制 chunk 节奏，避免一次性灌爆缓冲；</li>
+<li>客户端卡死/断开时靠第 4 节的 <code>close</code> 事件及时停。</li>
+</ul>
+<pre><code class="language-ts">// backpressure.ts —— 尊重 res.write 返回值的背压处理（骨架）
+function pushChunk(res: http.ServerResponse, chunk: string): Promise&lt;void&gt; {
+  const ok = res.write(`data: ${chunk}\n\n`);
+  if (ok) return Promise.resolve();           // 缓冲未满，继续
+  // 缓冲满：等 drain 再继续，避免内存无限增长
+  return new Promise((resolve) =&gt; res.once('drain', resolve));
+}
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">背压是生产隐形坑</span></div><div class="co-body"><p>  本地测试永远『很快』，背压从不暴露；上线遇到慢网络/弱网手机，
+  缓冲堆积直接 OOM。把 <code>write</code> 返回值当信号，是流式服务的及格线。</p>
+</div></div><h2 id="6-对比-一次性返回-vs-流式">6. 对比：一次性返回 vs 流式</h2>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>一次性返回</th>
+<th>流式输出</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>首字延迟</td>
+<td>全部生成完才返回</td>
+<td>首 token 即显示</td>
+</tr>
+<tr>
+<td>可取消</td>
+<td>难（已全算完）</td>
+<td>易（中途断流）</td>
+</tr>
+<tr>
+<td>实现复杂度</td>
+<td>低</td>
+<td>中（需 SSE + 客户端解析）</td>
+</tr>
+<tr>
+<td>用户焦虑</td>
+<td>高</td>
+<td>低</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">不是所有场景都该流式</span></div><div class="co-body"><p>  结构化数据抽取、工具结果这类『要么全有要么全无』的内容，流式无意义；
+  真正受益的是『自然语言长回答』。别为流式而流式。</p>
+</div></div><h2 id="7-可运行骨架-前端消费-sse">7. 可运行骨架：前端消费 SSE</h2>
+<p>后端见第 4、5 节。前端用 <code>fetch</code> + <code>ReadableStream</code> 读取（比 <code>EventSource</code> 更灵活，能拿到结构化事件并取消）：</p>
+<pre><code class="language-ts">// client.ts —— 前端流式消费 + 取消（骨架）
+async function streamChat(onToken: (s: string) =&gt; void, signal: AbortSignal) {
+  const res = await fetch('/agent/run', { signal }); // 传入 signal 用于取消
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const parts = buf.split('\n\n');      // 按 SSE 分隔符切
+    buf = parts.pop() ?? '';
+    for (const p of parts) {
+      const data = p.replace(/^data: /, '').trim();
+      if (data === '[DONE]') return;
+      onToken(data);                      // 追加渲染 → 打字机效果
+    }
+  }
+}
+
+// 取消：AbortController 一 abort，fetch 中断，后端也收到 close
+const ac = new AbortController();
+streamChat((t) =&gt; console.log('收到:', t), ac.signal);
+// 用户点停止 → ac.abort();
+</code></pre><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">客户端解析要容错</span></div><div class="co-body"><p>  网络分包可能把一条 <code>data:</code> 切成两半。务必用缓冲区 <code>buf</code> 累积、按 <code>\n\n</code> 完整切分后再 <code>JSON.parse</code>，
+  否则半包解析直接抛错白屏。</p>
+</div></div><h2 id="踩坑与最佳实践">踩坑与最佳实践</h2>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">忘记设 no-cache 被代理缓存</span></div><div class="co-body"><p>  SSE 默认可能被中间代理/CDN 缓冲。务必 <code>Cache-Control: no-cache</code>，
+  必要时加 <code>X-Accel-Buffering: no</code>（Nginx）关掉缓冲，否则前端迟迟收不到。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">连接超时断流</span></div><div class="co-body"><p>  部分网关对长连接有时长上限，超时就掐断。长任务要加心跳注释行（如 <code>: ping\n\n</code>）
+  保活，或改用分块任务 + 轮询进度。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">首字优化优先于速度</span></div><div class="co-body"><p>  用户感知最强的是『多久看到第一个字』，其次才是总时长。优先压 TTFT
+  （先推思考/工具状态），再优化整体。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>流式把首字延迟从秒级压到百毫秒级，是性价比最高的体验升级。</li>
+<li>SSE 用 <code>text/event-stream</code> + <code>data: ...\n\n</code>；客户端用 <code>fetch</code>+<code>ReadableStream</code> 更灵活。</li>
+<li>打字机 = 后端按 chunk 推、前端追加渲染；取消必须端到端（前端 <code>cancel</code> + 后端 <code>abort</code>）。</li>
+<li>背压靠 <code>res.write</code> 返回值 + <code>drain</code> 事件，防止缓冲堆积 OOM。</li>
+<li>红线：不忘 <code>no-cache</code>、长连接心跳保活、客户端半包容错、别为结构化数据强行流式。</li>
+</ul>
+<h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>MDN：Server-Sent Events 与 <code>EventSource</code> 规范</li>
+<li>WHATWG Fetch 标准：<code>ReadableStream</code> 与 <code>AbortController</code> 用法</li>
+<li>Node.js <code>http.ServerResponse</code>：<code>write</code> 返回值与 <code>drain</code> 事件（背压）</li>
+<li>Nginx：<code>X-Accel-Buffering</code> 关闭 SSE 缓冲的配置说明</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="product-ux.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">Agent 产品交互设计</span></a>
+    <a class="art-pagerLink art-pagerRight" href="product-hitl.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">人在回路：让 Agent 可控可信任</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

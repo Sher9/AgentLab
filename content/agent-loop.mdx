@@ -1,0 +1,237 @@
+---
+title: Agent 主循环与控制流：事件驱动、上限、超时与中断
+description: 拆解 Agent 主循环的事件驱动模型，讲透步骤上限、超时/中断、并发执行与错误恢复的设计要点，给出带护栏的可运行骨架与常见坑。
+category: AI Agent
+order: 6
+difficulty: 进阶
+duration: 22 分钟
+tags: [主循环, 控制流, 超时, 中断, 并发, 错误恢复]
+date: 2026-07-29
+---
+
+# Agent 主循环与控制流
+
+M1 给了你『工具调用四步闭环』的最小骨架；M2 讲了 Agent 该按什么策略思考。但真正把 Agent 跑稳，靠的是**主循环（control loop）这层控制流**：它决定每一步转多久、卡住怎么办、能不能并行、出错怎么救。
+
+这一篇只聊循环本身——不绑定某个框架，把事件驱动循环、步骤上限、超时/中断、并发执行、错误恢复讲透，并给你一份带护栏的 TS 骨架。
+
+## 1. 为什么循环需要一个『控制层』
+
+工具调用的朴素写法是 `for` 里套一次模型调用。但生产环境会逼你加一堆控制：
+
+- 模型偶尔死循环（反复调同一个工具还不肯收手）→ 必须**步骤上限**；
+- 一次往返可能卡 30 秒（模型慢 + 工具慢）→ 必须有**超时**；
+- 用户点了『停止』→ 必须能**中断**；
+- 多个无依赖工具 → 应该**并发**而非串行；
+- 某个工具 500 了 → 不能让整个 Agent 抛错退出。
+
+这些都不是『业务功能』，却是 Agent 能不能上的分水岭。控制层就是为此存在的。
+
+<Callout type="note" title="循环是 Agent 的中枢">
+  模型是无状态的『下一步预测器』，它不知道『我已经转了 8 圈』。
+  『何时停、何时并行、何时救』这些元决策，全靠你的循环代码，而不是模型。
+  把循环想成操作系统调度器：模型只是其中一个可被抢占的任务。
+</Callout>
+
+## 2. 主循环的两种形态
+
+### 2.1 轮询式（pull）循环
+
+最常见的形态：你在代码里兜一个 `while/for`，每轮主动去问模型一次，自己决定走不走下一步。
+
+```
+while 未达终态 且 步数 < 上限:
+    响应 = 问模型(上下文, 工具)
+    if 响应无 tool_calls: 输出答案，结束
+    结果 = 执行工具(响应.tool_calls)
+    上下文 += 结果
+```
+
+优点是逻辑直观、易调试；缺点是每次都是『你拉模型』，天然是同步节奏。
+
+### 2.2 事件驱动（push）循环
+
+把循环拆成**事件处理器**：模型返回、工具完成、超时触发、用户中断，都是事件。一个调度器按事件推进状态机。
+
+```
+on 模型返回: 若无 tool_calls → 终态；否则派发工具任务
+on 工具完成: 收集结果，凑齐一批后再次问模型
+on 超时: 中断当前批，进入降级
+on 用户中断: 立即置为终态，取消在途任务
+```
+
+优点是能自然支持并发、超时、中断、流式；缺点是状态机略复杂。生产级 Agent 几乎都走这条。
+
+<Callout type="tip" title="从轮询起步，事件收尾">
+  原型阶段用轮询式最省事，能跑通闭环即可；
+  一旦你需要并发工具、真超时、可被用户打断，就值得重构为事件驱动。
+  两种形态共享同一套『上下文 + 工具执行』内核，迁移成本不高。
+</Callout>
+
+## 3. 步骤上限：别让模型烧钱失控
+
+每轮循环都是一次模型调用，失控就是钱和时间的无底洞。
+
+```ts
+const MAX_STEPS = 12; // 经验值：绝大多数任务 3~8 步内可解
+
+async function run(userInput: string) {
+  const messages = [{ role: 'user', content: userInput }];
+  for (let step = 0; step < MAX_STEPS; step++) {
+    const res = await client.chat.completions.create({ model: 'gpt-4o-mini', messages, tools });
+    const msg = res.choices[0].message;
+    messages.push(msg);
+    if (!msg.tool_calls?.length) return msg.content; // 终态：直接回答
+    await runTools(msg.tool_calls, messages);        // 执行并回填
+  }
+  // 走到这里说明触顶：优雅降级，而非抛异常
+  return '任务步骤过多，已暂停。请拆分需求或明确约束后重试。';
+}
+```
+
+<Callout type="warn" title="上限要可观测">
+  触顶不是正常路径。每次触顶都应记一条日志（带上 userInput 摘要与已用步数），
+  它往往是『工具定义不清』或『任务过大』的信号，值得回头优化，而不是默默吞掉。
+</Callout>
+
+## 4. 超时与中断：让循环可被抢占
+
+### 4.1 单次调用超时
+
+模型或工具都可能长时间不返回。给每次调用加超时，超时就取消：
+
+```ts
+// 给任意 Promise 套一个超时；到点到 AbortController 取消模型请求
+function withTimeout<T>(p: Promise<T>, ms: number, signal?: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('timeout')), ms);
+    p.then(resolve, reject).finally(() => clearTimeout(t));
+    signal?.addEventListener('abort', () => {
+      clearTimeout(t);
+      reject(new Error('aborted'));
+    });
+  });
+}
+
+const res = await withTimeout(
+  client.chat.completions.create({ model: 'gpt-4o-mini', messages, tools }, { signal }),
+  20_000 // 单次 20s 上限，超时走降级
+);
+```
+
+### 4.2 用户中断
+
+Web/长任务场景下，用户点了停止。用 `AbortController` 贯穿到模型与工具调用：
+
+```ts
+const ac = new AbortController();
+// 用户点停止时：ac.abort()
+// 模型调用与工具调用都接收同一个 signal，收到 abort 立即抛错并清理
+```
+
+<Callout type="danger" title="中断后务必清理在途工具">
+  用户中断时，若你只 abort 了模型调用却没取消在途工具，
+  那些工具（发邮件、写库）可能仍跑完，造成『用户以为停了、其实动作已发出』的事故。
+  把 signal 透传到每一个副作用工具调用，是并发执行的最低要求。
+</Callout>
+
+## 5. 并发执行：无依赖工具一起跑
+
+M1 提过：无依赖工具用 `Promise.all` 并行。放到循环里，关键在『凑齐一批再回填』。
+
+```ts
+async function runTools(calls: ToolCall[], messages: Message[]) {
+  // 仅当工具间无依赖时才并行；有依赖的工具交给模型下一轮串联
+  const settled = await Promise.allSettled(
+    calls.map((c) => invokeTool(c.function.name, JSON.parse(c.function.arguments), signal))
+  );
+  for (let i = 0; i < calls.length; i++) {
+    const r = settled[i];
+    const content = r.status === 'fulfilled'
+      ? r.value
+      : `工具执行失败：${(r.reason as Error).message}`;
+    messages.push({ role: 'tool', tool_call_id: calls[i].id, content });
+  }
+}
+```
+
+<Callout type="warn" title="并发会放大下游压力">
+  并行 N 个工具 = N 次副作用同时打到下游。若工具调的是同一个脆弱服务，
+  并发可能直接把它打挂。并发前先确认下游能扛住瞬时 QPS，必要时加信号量限流。
+</Callout>
+
+## 6. 错误恢复：把失败变成一次『tool 结果』
+
+工具失败的兜底思路与 M1 一致：可重试的退避重试，不可重试的降级回填，绝不抛 500。
+
+```ts
+async function invokeTool(name: string, args: unknown, signal: AbortSignal): Promise<string> {
+  for (let i = 0; i < 3; i++) {
+    try {
+      return await execute(name, args, signal);
+    } catch (err: any) {
+      const retryable = err?.code === 'ECONNRESET' || err?.status >= 500;
+      if (retryable && i < 2) {
+        await new Promise((r) => setTimeout(r, 2 ** i * 300)); // 指数退避
+        continue;
+      }
+      throw err; // 非重试类 / 重试耗尽 → 由上层转成 tool 结果回填
+    }
+  }
+  throw new Error('retry exhausted');
+}
+```
+
+## 7. 与轮询式对比：何时上事件驱动
+
+| 维度 | 轮询式 | 事件驱动 |
+|------|--------|----------|
+| 实现复杂度 | 低，一个循环搞定 | 中，需状态机/调度器 |
+| 并发工具 | 需手动 `Promise.all` | 天然支持批量事件 |
+| 真超时/中断 | 难，需层层透传 signal | 天然，事件可取消 |
+| 流式/边跑边吐 | 弱 | 强 |
+| 适用 | 原型、简单 Agent | 生产、长任务、可打断 |
+
+<Callout type="note" title="控制层与思考策略解耦">
+  主循环是『怎么跑』，M2 的 ReAct/Plan-and-Execute 是『怎么想』，二者正交。
+  同一套循环内核，既能驱动 ReAct 也能驱动 Plan-and-Execute，只是工具集与提示不同。
+  别把控制流和推理策略写死耦合在一起。
+</Callout>
+
+## 8. 常见坑
+
+<Callout type="danger" title="没有步骤上限">
+  不设上限 = 把钱包交给模型的随机性。任何走循环的 Agent，MAX_STEPS 是必选项。
+</Callout>
+
+<Callout type="warn" title="超时只包了模型没包工具">
+  只给模型调用加超时，工具内部仍是阻塞的，整体仍可能卡死。
+  工具调用同样要走带超时的执行路径。
+</Callout>
+
+<Callout type="warn" title="并发但共享可变状态">
+  多工具并行执行时，若都往同一份上下文/全局变量写，会产生竞态。
+  工具应是纯函数式的『输入→输出』，副作用集中在对外的有限接口。
+</Callout>
+
+<Callout type="warn" title="中断后还在计费">
+  abort 后模型可能已部分生成、工具可能已部分执行。做好幂等，
+  避免『中断重跑』导致重复副作用（重复发消息、重复扣款）。
+</Callout>
+
+## 小结
+
+- 主循环是 Agent 的中枢控制层，负责停、并行、超时、中断、恢复——这些元决策不靠模型。
+- 轮询式上手快、事件驱动生产稳；两者共享『上下文 + 工具执行』内核。
+- 步骤上限、单次超时、用户中断（AbortController 透传）是三个必备护栏。
+- 无依赖工具用 `Promise.all`/`allSettled` 并发，但注意下游压力与竞态。
+- 错误靠『退避重试 + 降级回填』消化，绝不因工具挂掉让 Agent 崩溃。
+- 控制层与推理策略（M2）解耦，同一套循环可驱动不同思考模式。
+
+## 延伸阅读 / 参考
+
+- OpenAI 文档：`chat.completions.create` 的 `signal` 参数与流式取消
+- MDN：`AbortController` / `AbortSignal` 中断异步任务的标准用法
+- LangGraph Checkpointer 与中断恢复：框架如何把『中断/续跑』做成一等公民
+- 论文 *ReAct* 与 *Reflexion*：循环内推理—行动—反思范式的源头
+- 公开实践：Agent 循环的步骤预算（step budget）与成本护栏设计

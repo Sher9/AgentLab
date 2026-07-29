@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>系统设计题：RAG/Agent 系统怎么设计 · AgentLab</title>
+  <meta name="description" content="用一道高频系统设计题串起架构分层、容量估算、检索与生成权衡、缓存与成本、可观测与降级。给出可运行骨架与设计决策清单，面向有经验开发者。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="系统设计题：RAG/Agent 系统怎么设计 · AgentLab"/>
+  <meta property="og:description" content="用一道高频系统设计题串起架构分层、容量估算、检索与生成权衡、缓存与成本、可观测与降级。给出可运行骨架与设计决策清单，面向有经验开发者。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#interview">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🎯</span>
+        <span class="art-moduleName">常见面试题</span>
+        <span class="art-diff">高级</span>
+        <span class="art-dur">30 分钟</span>
+      </div>
+      <h1 class="art-title">系统设计题：RAG/Agent 系统怎么设计</h1>
+      <p class="art-desc">用一道高频系统设计题串起架构分层、容量估算、检索与生成权衡、缓存与成本、可观测与降级。给出可运行骨架与设计决策清单，面向有经验开发者。</p>
+      <div class="art-tags"><span class="art-tag">#系统设计</span><span class="art-tag">#RAG</span><span class="art-tag">#Agent</span><span class="art-tag">#容量估算</span><span class="art-tag">#权衡</span></div>
+    </div>
+    <div class="prose"><h1>系统设计题：RAG/Agent 系统怎么设计</h1>
+<p>面试里常被要求『设计一个面向企业的 RAG 问答系统』或『设计一个多 Agent 客服』。这道题考察的不是某个 API，而是<strong>分层架构、容量估算、权衡取舍、失败预案</strong>。下面给一套可复用的答题框架与落地骨架。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">答题顺序建议</span></div><div class="co-body"><p>  先澄清需求（QPS、知识规模、延迟 SLA、合规要求），再画架构，再做容量估算，
+  最后讲权衡与降级。面试官最看重『你主动问了哪些约束』。</p>
+</div></div><h2 id="1-需求澄清-先问再答">1. 需求澄清（先问再答）</h2>
+<p>动手前先确认边界，避免设计空中楼阁：</p>
+<ul>
+<li><strong>规模</strong>：知识库文档量（万级/亿级）？日活与峰值 QPS？</li>
+<li><strong>质量 SLA</strong>：答案可接受延迟（秒级/亚秒级）？容忍多少幻觉率？</li>
+<li><strong>合规</strong>：是否多租户？数据能否出域？是否需审计留痕？</li>
+<li><strong>更新频率</strong>：知识多久变一次？是否需要近实时增量更新？</li>
+</ul>
+<h2 id="2-架构分层">2. 架构分层</h2>
+<p>典型 RAG/Agent 系统分四层：</p>
+<pre><code>接入层    API 网关 / 鉴权 / 限流 / 多租户路由
+   │
+检索层    切分 → 向量库 + BM25 混合检索 → 重排 → 上下文组装
+   │
+生成层    LLM 编排（prompt + 引用约束 + 结构化输出）
+   │
+支撑层    缓存（查询/embedding）、可观测（trace/成本）、降级、评测回归
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">Agent 系统多一层编排</span></div><div class="co-body"><p>  若是 Agent（而非纯 RAG），在生成层之上再加『控制器』：主循环、工具注册、
+  HITL 确认、错误恢复。把工具调用与检索解耦，便于单独扩缩容。</p>
+</div></div><h2 id="3-容量估算-面试必算">3. 容量估算（面试必算）</h2>
+<p>假设：日活 10 万，人均 5 次问答，峰值 QPS ≈ 日均请求 / 86400 × 峰值系数(5) ≈ 500 万 / 86400 × 5 ≈ <strong>290 QPS</strong>。</p>
+<table>
+<thead>
+<tr>
+<th>资源</th>
+<th>估算</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>日问答量</td>
+<td>50 万</td>
+<td>10万 × 5</td>
+</tr>
+<tr>
+<td>峰值 QPS</td>
+<td>~290</td>
+<td>含 5× 突发系数</td>
+</tr>
+<tr>
+<td>embedding 调用</td>
+<td>每次检索 1 次</td>
+<td>与问答同量级</td>
+</tr>
+<tr>
+<td>向量规模</td>
+<td>文档数 × 切块数</td>
+<td>万级文档可达千万向量</td>
+</tr>
+<tr>
+<td>缓存命中</td>
+<td>30%~50%</td>
+<td>重复/相似问题省调用</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">别忘了写入侧成本</span></div><div class="co-body"><p>  容量估算常只算『读』。知识库更新时批量 embedding 是突发算力，需离线队列削峰，
+  否则和业务查询抢 GPU/配额。</p>
+</div></div><h2 id="4-关键权衡">4. 关键权衡</h2>
+<table>
+<thead>
+<tr>
+<th>决策点</th>
+<th>选项 A</th>
+<th>选项 B</th>
+<th>取舍</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>检索</td>
+<td>纯向量</td>
+<td>向量+BM25 混合</td>
+<td>混合召回更稳，运维更重</td>
+</tr>
+<tr>
+<td>模型</td>
+<td>大模型</td>
+<td>小模型分级</td>
+<td>大模型质量高但贵，决策/抽取用小模型</td>
+</tr>
+<tr>
+<td>缓存</td>
+<td>查缓存</td>
+<td>不缓存</td>
+<td>缓存省钱但需处理语义相似与失效</td>
+</tr>
+<tr>
+<td>一致性</td>
+<td>实时检索</td>
+<td>异步更新</td>
+<td>实时准但慢，异步快但短暂不一致</td>
+</tr>
+</tbody></table>
+<pre><code class="language-ts">// design-skeleton.ts —— 系统骨架：检索+缓存+生成+降级（可运行思路）
+import OpenAI from 'openai';
+import 'dotenv/config';
+
+const client = new OpenAI();
+
+// 极简查询缓存：真实场景用 Redis，按语义哈希命中
+const cache = new Map&lt;string, string&gt;();
+
+async function answer(question: string): Promise&lt;string&gt; {
+  // ① 缓存命中直接返回，省一次检索+生成
+  if (cache.has(question)) return cache.get(question)!;
+
+  try {
+    // ② 检索（伪实现，真实换成混合检索 + 重排）
+    const chunks = [`AgentLab 用混合检索降噪`, `生成要求标注来源`];
+    const context = chunks.join('\n');
+    // ③ 生成
+    const res = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: '只基于片段作答，标注来源，不知道就说不知道。' },
+        { role: 'user', content: `片段：\n${context}\n问题：${question}` },
+      ],
+    });
+    const ans = res.choices[0].message.content ?? '暂无回答';
+    cache.set(question, ans); // ④ 写入缓存
+    return ans;
+  } catch {
+    // ⑤ 降级：模型/检索挂了，返回友好占位而非 500
+    return '系统繁忙，请稍后重试或联系人工客服。';
+  }
+}
+
+answer('AgentLab 怎么防幻觉？').then(console.log);
+</code></pre><h2 id="5-可观测与降级">5. 可观测与降级</h2>
+<ul>
+<li><strong>可观测</strong>：每个请求打 trace/span，记录检索命中、token 消耗、延迟、成本；建成本与质量看板。</li>
+<li><strong>降级</strong>：检索服务不可用时退化为『纯模型回答并标注不确定性』；模型限流时排队 + 友好提示；敏感工具全部 HITL。</li>
+</ul>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">多租户数据隔离是硬约束</span></div><div class="co-body"><p>  向量检索必须带 <code>filter(tenant_id)</code>，缓存 key 必须含租户前缀，否则会串数据——
+  这是合规红线，不是优化项。</p>
+</div></div><h2 id="6-扩展与分片">6. 扩展与分片</h2>
+<p>当向量规模到亿级、QPS 到千级，单机向量库不够用，需考虑：</p>
+<ul>
+<li><strong>分片（Sharding）</strong>：按租户或文档域把向量分到不同节点，检索时只打相关分片，降延迟。</li>
+<li><strong>副本（Replica）</strong>：读多写少，检索节点水平复制扛 QPS；写入走主节点异步同步。</li>
+<li><strong>冷热分离</strong>：高频知识放内存/高速索引，历史归档降级到磁盘，控成本。</li>
+<li><strong>异步管线</strong>：知识更新走消息队列批量 embedding，与在线查询解耦，避免突发抢占。</li>
+</ul>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">先垂直再水平</span></div><div class="co-body"><p>  多数项目远没到分片阶段。先优化切块粒度、检索阈值、缓存命中率，
+  这些往往比加机器收益更大。过早分片只会增加运维复杂度。</p>
+</div></div><h2 id="7-常见设计坑">7. 常见设计坑</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">把 RAG 当黑盒丢给框架</span></div><div class="co-body"><p>  直接套 LangChain 默认链而不理解切分/检索参数，线上召回一塌糊涂还无从调。
+  先手写过端到端骨架，再用框架封装，才知道每层的旋钮在哪。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">忽略增量更新</span></div><div class="co-body"><p>  知识库天天变，却只在首次全量建库。结果模型基于过期片段作答，且无人发现。
+  必须有增量更新 + 重建机制 + 更新后的回归评测。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">没有降级与限流</span></div><div class="co-body"><p>  检索或模型一抖动，整站 500。必须在接入层限流、生成层降级、敏感操作 HITL，
+  把『部分可用』当默认目标，而非『全有全无』。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">容量只算读不算写</span></div><div class="co-body"><p>  如前文所述，批量 embedding 是突发算力。写入侧不上队列削峰，会和在线查询抢资源。</p>
+</div></div><h2 id="8-小结">8. 小结</h2>
+<ul>
+<li>先澄清规模/延迟/合规，再分层设计：接入 → 检索 → 生成 → 支撑。</li>
+<li>容量估算算清 QPS、向量规模、缓存命中，别漏写入侧突发。</li>
+<li>权衡聚焦检索策略、模型分级、缓存、一致性四件事，每项都说清代价。</li>
+<li>工程红线：多租户隔离、缓存降级、可观测闭环、敏感操作 HITL。</li>
+</ul>
+<h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>pgvector / Qdrant / Chroma 文档：向量规模与按元数据过滤的生产部署</li>
+<li>OpenTelemetry 文档：LLM 链路追踪与 span 设计</li>
+<li>Ragas 文档：RAG 质量指标与回归评测</li>
+<li>AWS/Azure  Well-Architected 的『可靠性与成本优化』章节：降级与容量通用方法论</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="interview-agent.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">Agent/LLM 工程师面试题精讲</span></a>
+    <span></span>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

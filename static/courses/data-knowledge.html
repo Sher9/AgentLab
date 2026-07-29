@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>知识库构建：从文档解析到版本化入库 · AgentLab</title>
+  <meta name="description" content="讲透知识库构建的全链路——PDF/Word/HTML 解析、结构化抽取、元数据设计、分块耦合、版本管理、质量门禁，并对比自建与商用方案，给出生产级可运行骨架。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="知识库构建：从文档解析到版本化入库 · AgentLab"/>
+  <meta property="og:description" content="讲透知识库构建的全链路——PDF/Word/HTML 解析、结构化抽取、元数据设计、分块耦合、版本管理、质量门禁，并对比自建与商用方案，给出生产级可运行骨架。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#data">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🗄️</span>
+        <span class="art-moduleName">数据处理</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">35 分钟</span>
+      </div>
+      <h1 class="art-title">知识库构建：从文档解析到版本化入库</h1>
+      <p class="art-desc">讲透知识库构建的全链路——PDF/Word/HTML 解析、结构化抽取、元数据设计、分块耦合、版本管理、质量门禁，并对比自建与商用方案，给出生产级可运行骨架。</p>
+      <div class="art-tags"><span class="art-tag">#知识库</span><span class="art-tag">#文档解析</span><span class="art-tag">#RAG</span><span class="art-tag">#元数据</span><span class="art-tag">#版本管理</span></div>
+    </div>
+    <div class="prose"><h1>知识库构建：从文档解析到版本化入库</h1>
+<p>RAG 好不好，七分看知识库。很多 RAG 效果差的锅，不在检索模型，而在<strong>上游知识库建得烂</strong>：PDF 表格被解析成一坨乱码、Word 标题层级丢失、网页把导航栏当正文、文档改了一版旧内容还在被检索……<strong>知识库构建</strong>就是把散乱的原始文档，变成「能被精准检索、能追溯来源、能随源更新」的结构化资产。</p>
+<p>这篇面向有经验的开发者，按真实工程链路讲：<strong>解析 → 结构化 → 元数据 → 分块耦合 → 版本 → 质量门禁</strong>，最后给可运行骨架，并对比自建与商用方案。</p>
+<h2 id="1-全景-知识库构建的六段链路">1. 全景：知识库构建的六段链路</h2>
+<pre><code>源文档(PDF/Word/HTML)
+   │
+   ▼ ① 解析：抽取出文本 + 版面（标题/段落/表格/图片）
+   ▼ ② 结构化：按层级/语义组织成统一 Document 模型
+   ▼ ③ 元数据：打上 source/type/time/权限/层级 等标签
+   ▼ ④ 分块：版面感知切块，保留标题与上下文
+   ▼ ⑤ 版本：内容哈希去重、增量更新、过期软删
+   ▼ ⑥ 入库：写向量库 + 元数据表，供检索
+</code></pre><p>每一段都是一道质量关卡：解析丢字，后面全错；元数据缺字段，检索无法过滤；不分版本，知识会过期错乱。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">知识库 ≠ 把文件扔进向量库</span></div><div class="co-body"><p>  很多人以为『上传文件就能问答』。实际上直接把整篇 PDF 切块嵌进去，
+  表格、标题、页码全丢，检索命中率很低。知识库构建的本质是<strong>在嵌入之前
+  把文档还原成有结构的语义单元</strong>，嵌入只是最后一步。</p>
+</div></div><h2 id="2-文档解析-最脏最累的一层">2. 文档解析：最脏最累的一层</h2>
+<p>不同格式解析难度天差地别，先建立认知：</p>
+<table>
+<thead>
+<tr>
+<th>格式</th>
+<th>解析难度</th>
+<th>关键难点</th>
+<th>常用库（以官方文档为准）</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>TXT/Markdown</td>
+<td>极低</td>
+<td>几乎无</td>
+<td>标准库</td>
+</tr>
+<tr>
+<td>HTML</td>
+<td>低</td>
+<td>去噪（导航/广告）、保留结构</td>
+<td><code>BeautifulSoup</code> / <code>markdownify</code></td>
+</tr>
+<tr>
+<td>Word(.docx)</td>
+<td>中</td>
+<td>标题样式、表格、批注</td>
+<td><code>python-docx</code></td>
+</tr>
+<tr>
+<td>PDF（有文本层）</td>
+<td>中高</td>
+<td>版面还原、跨页表格、多栏</td>
+<td><code>PyMuPDF</code>(fitz) / <code>pdfplumber</code></td>
+</tr>
+<tr>
+<td>PDF（扫描件）</td>
+<td>高</td>
+<td>需 OCR，丢失版面</td>
+<td><code>pdf2image</code> + <code>tesseract</code></td>
+</tr>
+<tr>
+<td>图片/手写</td>
+<td>很高</td>
+<td>OCR + 版面模型</td>
+<td>商业 OCR / 多模态模型</td>
+</tr>
+</tbody></table>
+<h3 id="2-1-pdf-有文本层-vs-扫描件">2.1 PDF：有文本层 vs 扫描件</h3>
+<p>PDF 是最常见也最坑的格式。先判断有没有文本层，再选策略：</p>
+<pre><code class="language-python"># 用 PyMuPDF 检查是否含可读文本层（真实 API，以官方文档为准）
+import fitz  # PyMuPDF
+
+def has_text_layer(path: str) -&gt; bool:
+    doc = fitz.open(path)
+    text = "".join(page.get_text() for page in doc[:3])  # 抽前 3 页探一下
+    doc.close()
+    return len(text.strip()) &gt; 50  # 阈值按经验调
+
+# 有文本层：直接抽文本 + 版面
+def parse_pdf_text(path: str):
+    doc = fitz.open(path)
+    blocks = []
+    for pi, page in enumerate(doc):
+        # get_text("blocks") 返回带坐标的文本块，能区分标题/正文/表格区域
+        for b in page.get_text("blocks"):
+            x0, y0, x1, y1, txt, block_no, block_type = b
+            blocks.append({
+                "page": pi + 1,
+                "bbox": [x0, y0, x1, y1],
+                "text": txt.strip(),
+                "is_image": block_type == 1,  # 1=图片块，0=文本块
+            })
+    doc.close()
+    return blocks
+
+# 扫描件：先转图再 OCR（伪代码，OCR 引擎与参数以官方文档为准）
+# from pdf2image import convert_from_path
+# import pytesseract
+# imgs = convert_from_path(path, dpi=300)
+# text = "\n".join(pytesseract.image_to_string(im, lang="chi_sim+eng") for im in imgs)
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">跨页表格与多栏是 PDF 解析的两大坑</span></div><div class="co-body">  <code>get_text()</code> 默认按阅读顺序吐字，遇到**双栏论文**会左右串字；遇到**跨页表格**
+<p>  会断成两截。生产上要用带版面分析能力的解析器（如按 block 坐标重排、或专用
+  PDF 表格库），别指望 <code>page.get_text()</code> 一行解决。扫描件务必上 OCR，否则抽不到字。</p>
+</div></div><h3 id="2-2-word-靠样式而非靠字体">2.2 Word：靠样式而非靠字体</h3>
+<p>Word 文档的标题层级藏在**样式（Heading 1/2/3）**里，靠正则匹配「字号大」会漏判。</p>
+<pre><code class="language-python">from docx import Document  # python-docx
+
+def parse_docx(path: str):
+    doc = Document(path)
+    out = []
+    for p in doc.paragraphs:
+        style = p.style.name if p.style else ""
+        # 用样式名判断层级，比看字号可靠得多
+        level = None
+        if style.startswith("Heading"):
+            level = int(style.replace("Heading", "").strip() or 1)
+        out.append({"level": level, "text": p.text, "style": style})
+    # 表格单独抽：doc.tables
+    for t in doc.tables:
+        rows = [[c.text for c in r.cells] for r in t.rows]
+        out.append({"type": "table", "rows": rows})
+    return out
+</code></pre><h3 id="2-3-html-先去噪再取正文">2.3 HTML：先去噪再取正文</h3>
+<p>网页里导航栏、侧边栏、广告占大半，直接抽会污染知识库。</p>
+<pre><code class="language-python">from bs4 import BeautifulSoup
+
+def parse_html(html: str):
+    soup = BeautifulSoup(html, "html.parser")
+    # 去噪：删掉和正文无关的标签
+    for tag in soup(["nav", "header", "footer", "script", "style", "aside"]):
+        tag.decompose()
+    # 优先取 &lt;article&gt;/&lt;main&gt;，没有再退回 &lt;body&gt;
+    main = soup.find("article") or soup.find("main") or soup.body
+    # 保留标题层级结构，别只抽纯文本
+    return [{"tag": t.name, "text": t.get_text(strip=True)}
+            for t in main.find_all(["h1","h2","h3","p","li"]) if t.get_text(strip=True)]
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">保留结构，别只留纯文本</span></div><div class="co-body"><p>  解析目标不是『拿到一堆字』，而是『拿到带层级结构的块』。标题、段落、列表、
+  表格的层级关系，后面分块和检索都要用。一旦压成纯文本，层级信息永久丢失。</p>
+</div></div><h2 id="3-结构化-统一成-document-模型">3. 结构化：统一成 Document 模型</h2>
+<p>不同解析器产出各不相同，必须归一成统一的 <code>Document</code> 模型，下游才能一致处理。</p>
+<pre><code class="language-python">from dataclasses import dataclass, field
+from typing import Optional
+
+@dataclass
+class DocBlock:
+    """知识库的最小语义单元：一块带结构的文本"""
+    text: str
+    block_type: str = "paragraph"   # paragraph / heading / table / list
+    level: Optional[int] = None     # 标题层级
+    page: Optional[int] = None
+    bbox: Optional[list] = None
+
+@dataclass
+class Document:
+    """一篇文档归一化后的样子"""
+    doc_id: str
+    source: str                     # 原始路径/URL
+    title: str
+    blocks: list = field(default_factory=list)
+    meta: dict = field(default_factory=dict)
+</code></pre><p>统一模型的价值：<strong>下游分块、嵌入、过滤都只认 <code>Document</code>，不用关心它来自 PDF 还是 Word</strong>。新增一种格式，只要写一个 parser 产出 <code>Document</code> 即可。</p>
+<h2 id="4-元数据-检索与权限的基石">4. 元数据：检索与权限的基石</h2>
+<p>元数据决定「能不能精准过滤、能不能溯源、能不能管控权限」。常见的字段：</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>作用</th>
+<th>例子</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>source</code></td>
+<td>溯源、去重依据</td>
+<td><code>s3://kb/manual.pdf</code></td>
+</tr>
+<tr>
+<td><code>doc_type</code></td>
+<td>按类型过滤</td>
+<td><code>api_doc</code> / <code>faq</code> / <code>policy</code></td>
+</tr>
+<tr>
+<td><code>updated_at</code></td>
+<td>版本、新鲜度排序</td>
+<td><code>2026-07-29</code></td>
+</tr>
+<tr>
+<td><code>owner</code> / <code>permission</code></td>
+<td>权限隔离（多租户）</td>
+<td><code>team_a</code> / <code>public</code></td>
+</tr>
+<tr>
+<td><code>section_path</code></td>
+<td>保留层级（章/节）</td>
+<td><code>安装/环境要求</code></td>
+</tr>
+<tr>
+<td><code>content_hash</code></td>
+<td>变更检测、幂等</td>
+<td><code>sha256(...)</code></td>
+</tr>
+</tbody></table>
+<pre><code class="language-python">import hashlib, json
+
+def build_meta(source: str, blocks: list, doc_type: str) -&gt; dict:
+    # content_hash 用正文拼接算，内容一变哈希就变，是版本与去重的钥匙
+    raw = "\n".join(b.text for b in blocks)
+    h = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return {
+        "source": source,
+        "doc_type": doc_type,
+        "updated_at": "2026-07-29",
+        "content_hash": h,
+        "char_count": len(raw),
+    }
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">元数据缺失会让检索退化成全文搜</span></div><div class="co-body"><p>  没有 <code>doc_type</code>/<code>permission</code>，就做不到『只在 API 文档里搜』『只给 team_a 看』。
+  元数据是 RAG 里<strong>混合检索 + 过滤</strong>的前提。建库时多打几个字段，检索时少写一堆 hack。</p>
+</div></div><h2 id="5-分块-与解析强耦合">5. 分块：与解析强耦合</h2>
+<p>分块不是独立步骤，好坏取决于解析有没有保留结构。两个关键原则：</p>
+<ul>
+<li><strong>版面感知</strong>：按标题层级切块，让每块自带「章节标题」上下文，检索命中后模型能看懂它属于哪章。</li>
+<li><strong>重叠（overlap）</strong>：块间留 10–20% 重叠，避免一句话被切在两块导致检索不全。</li>
+</ul>
+<pre><code class="language-python">def chunk_by_heading(doc: Document, max_chars: int = 800, overlap: int = 100):
+    chunks, cur, cur_title = [], [], None
+    for b in doc.blocks:
+        if b.block_type == "heading":
+            cur_title = b.text          # 记录当前章节标题，作为上下文
+        cur.append(b.text)
+        # 当前块超长就截断另起一块，并带上标题上下文 + 尾部重叠
+        if sum(len(x) for x in cur) &gt; max_chars:
+            body = "\n".join(cur)
+            chunks.append({"title": cur_title, "text": body})
+            cur = [body[-overlap:]] if overlap else []   # 重叠尾巴作为新块开头
+    if cur:
+        chunks.append({"title": cur_title, "text": "\n".join(cur)})
+    return chunks
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">别用固定 N 字符硬切</span></div><div class="co-body"><p>  固定长度切块会切断句子、切断表格行，检索命中后模型读到半句话。
+  优先按『标题/段落/语义』切，长度只是上限兜底。表格尤其要整表保留，别拦腰切开。</p>
+</div></div><h2 id="6-版本管理-知识会过期">6. 版本管理：知识会过期</h2>
+<p>文档在变，知识库必须能跟着变，否则旧答案长期误导用户。核心三招：</p>
+<ul>
+<li><strong>内容哈希</strong>：每块算 <code>content_hash</code>，重建时只处理哈希变化的块（增量更新）。</li>
+<li><strong>软删除</strong>：源文档下架时标记 <code>deleted</code>，别物理删，保留审计与回滚。</li>
+<li><strong>可追溯</strong>：每块记 <code>source + updated_at</code>，回答时能把引用回链到原文页码。</li>
+</ul>
+<pre><code class="language-python">def diff_and_upsert(new_doc: Document, store: dict):
+    """对比新旧哈希，只更新变化的块；返回变更统计（伪代码，store 以实际向量库为准）"""
+    changed = 0
+    new_hashes = {b.meta["content_hash"] for b in new_doc.blocks}
+    # 旧块里哈希不在新集合的 → 源已删除，软删
+    for old in store.get(new_doc.doc_id, []):
+        if old["content_hash"] not in new_hashes:
+            old["deleted"] = True
+            changed += 1
+    # 新块里哈希不在旧集合的 → 新增/更新
+    old_hashes = {o["content_hash"] for o in store.get(new_doc.doc_id, [])}
+    for b in new_doc.blocks:
+        if b.meta["content_hash"] not in old_hashes:
+            store.setdefault(new_doc.doc_id, []).append(b.meta)
+            changed += 1
+    return changed
+</code></pre><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">直接覆盖会丢历史与回滚能力</span></div><div class="co-body"><p>  重建知识库若每次 truncate 全表再全量写入，一旦新解析出 bug，旧库已被清空无解。
+  用『哈希 diff + 软删』做增量，任何一次错误都能靠未删除的旧版本恢复。</p>
+</div></div><h2 id="7-质量门禁-建库也要拦脏数据">7. 质量门禁：建库也要拦脏数据</h2>
+<p>解析和入库之间要有门禁，否则坏文档污染整个库。</p>
+<pre><code class="language-python">def build_gate(doc: Document) -&gt; list[str]:
+    """返回未通过的检查项列表；非空即阻断"""
+    fails = []
+    if not doc.blocks:
+        fails.append("解析为空：可能 PDF 是扫描件忘了 OCR")
+    empty_ratio = sum(1 for b in doc.blocks if not b.text.strip()) / max(1, len(doc.blocks))
+    if empty_ratio &gt; 0.3:
+        fails.append(f"空块比例过高 {empty_ratio:.0%}：解析可能错位")
+    if doc.meta["char_count"] &lt; 50:
+        fails.append("正文过短：疑似只抽到封面/目录")
+    return fails
+</code></pre><h2 id="8-可运行骨架-端到端">8. 可运行骨架（端到端）</h2>
+<p>下面把前面几段拼成一条最小可跑的链路：解析 HTML + PDF → 统一 Document → 元数据 → 分块 → 质量门禁 → 打印结果（落库部分按你的向量库替换）。</p>
+<pre><code class="language-python">import hashlib, fitz
+from dataclasses import dataclass, field
+from typing import Optional
+
+@dataclass
+class DocBlock:
+    text: str
+    block_type: str = "paragraph"
+    level: Optional[int] = None
+    page: Optional[int] = None
+
+@dataclass
+class Document:
+    doc_id: str
+    source: str
+    title: str
+    blocks: list = field(default_factory=list)
+    meta: dict = field(default_factory=dict)
+
+def parse_pdf(path: str) -&gt; Document:
+    doc = fitz.open(path)
+    blocks = []
+    for pi, page in enumerate(doc):
+        for b in page.get_text("blocks"):
+            x0, y0, x1, y1, txt, _, btype = b
+            if txt.strip():
+                blocks.append(DocBlock(text=txt.strip(),
+                                       block_type="image" if btype == 1 else "paragraph",
+                                       page=pi + 1))
+    doc.close()
+    raw = "\n".join(b.text for b in blocks)
+    return Document(
+        doc_id=path, source=path, title=path.split("/")[-1], blocks=blocks,
+        meta={"content_hash": hashlib.sha256(raw.encode()).hexdigest(),
+              "char_count": len(raw)},
+    )
+
+def chunk_by_heading(doc: Document, max_chars: int = 800):
+    chunks, cur, title = [], [], None
+    for b in doc.blocks:
+        if b.block_type == "heading":
+            title = b.text
+        cur.append(b.text)
+        if sum(len(x) for x in cur) &gt; max_chars:
+            chunks.append({"title": title, "text": "\n".join(cur)})
+            cur = []
+    if cur:
+        chunks.append({"title": title, "text": "\n".join(cur)})
+    return chunks
+
+def build_gate(doc: Document) -&gt; list:
+    fails = []
+    if not doc.blocks:
+        fails.append("解析为空")
+    if doc.meta["char_count"] &lt; 50:
+        fails.append("正文过短")
+    return fails
+
+# 跑一条：先门禁再分块
+doc = parse_pdf("sample.pdf")          # 换成你的文件
+fails = build_gate(doc)
+if fails:
+    raise RuntimeError(f"知识库门禁未通过：{fails}")
+chunks = chunk_by_heading(doc)
+print(f"解析 {len(doc.blocks)} 块，切成 {len(chunks)} 个检索块")
+# 下一步：for c in chunks: embed(c.text) → upsert 进向量库（见 RAG 章节）
+</code></pre><h2 id="9-对比-自建解析-vs-商用知识库平台">9. 对比：自建解析 vs 商用知识库平台</h2>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>自建（PyMuPDF + 自写管道）</th>
+<th>商用平台（如各云厂商 KB 服务）</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>可控性</td>
+<td>高，逻辑全自己掌握</td>
+<td>低，黑盒，难调解析细节</td>
+</tr>
+<tr>
+<td>开发成本</td>
+<td>高，要处理各种格式坑</td>
+<td>低，开箱即用</td>
+</tr>
+<tr>
+<td>成本模型</td>
+<td>算力自担，边际低</td>
+<td>按量/席位收费</td>
+</tr>
+<tr>
+<td>适配特殊格式</td>
+<td>容易（自己写 parser）</td>
+<td>难（等平台支持）</td>
+</tr>
+<tr>
+<td>维护负担</td>
+<td>自己扛</td>
+<td>平台扛</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">选型的经验法则</span></div><div class="co-body"><p>  文档格式标准、量不大、要快速验证 → 直接用商用平台或开源 RAG 框架的 loader。
+  格式杂（扫描件/双栏论文/内部特殊格式）、对解析质量极度敏感、数据合规不能出内网
+  → 自建解析链路，至少 PDF 这块要自己掌控。</p>
+</div></div><h2 id="10-延伸-和下游的衔接">10. 延伸：和下游的衔接</h2>
+<p>建好的知识库直接喂给 RAG 链路：块文本做 embedding 写入向量库，元数据用于<strong>混合检索的过滤条件</strong>，块里的 <code>source/page</code> 用于回答<strong>溯源引用</strong>。知识库质量直接决定 RAG 上限——解析丢一字，检索少一分；版本不更新，答案会过期。</p>
+<h2 id="小结">小结</h2>
+<ul>
+<li>知识库构建是六段链路：解析 → 结构化 → 元数据 → 分块 → 版本 → 入库，每段都是质量关。</li>
+<li>PDF 先判文本层；有文本层用版面块解析，扫描件必须 OCR；跨页表格与多栏是两大坑。</li>
+<li>Word 靠<strong>样式</strong>判标题层级，HTML 先<strong>去噪</strong>再取正文，且全程<strong>保留结构</strong>别压成纯文本。</li>
+<li>归一化成统一 <code>Document</code> 模型，下游只认模型不认来源，扩展性最好。</li>
+<li>元数据是过滤/权限/溯源的前提：source、doc_type、permission、content_hash 必打。</li>
+<li>分块要版面感知 + 重叠，别固定长度硬切；表格整表保留。</li>
+<li>版本靠 content_hash 增量更新 + 软删，别每次全量覆盖，否则丢了回滚能力。</li>
+<li>建库也要质量门禁（空解析/空块率/过短），失败即阻断。</li>
+</ul>
+<h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>PyMuPDF（fitz）文档：<a href="https://pymupdf.readthedocs.io/">https://pymupdf.readthedocs.io/</a></li>
+<li>pdfplumber（PDF 表格解析）：<a href="https://github.com/jsvine/pdfplumber">https://github.com/jsvine/pdfplumber</a></li>
+<li>python-docx 文档：<a href="https://python-docx.readthedocs.io/">https://python-docx.readthedocs.io/</a></li>
+<li>BeautifulSoup 文档：<a href="https://www.crummy.com/software/BeautifulSoup/bs4/doc/">https://www.crummy.com/software/BeautifulSoup/bs4/doc/</a></li>
+<li>RAG 切分策略（rag-chunking 章节）：./rag-chunking.mdx</li>
+<li>混合检索与元数据过滤（rag-hybrid 章节）：./rag-hybrid.mdx</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="data-clean.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">数据清洗与质量门禁</span></a>
+    <a class="art-pagerLink art-pagerRight" href="data-vector-pipeline.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">向量数据管线：批量嵌入、去重、更新与同步</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,172 @@
+---
+title: Docker 命令行与镜像优化
+description: 搞懂镜像分层原理、.dockerignore、多阶段构建与常用命令，对比不同优化策略的体积与构建速度差异，给出可运行骨架与踩坑清单。
+category: 开发工具
+order: 4
+difficulty: 进阶
+duration: 24 分钟
+tags: [Docker, 镜像优化, 多阶段构建, 分层, CLI]
+date: 2026-07-29
+---
+
+# Docker 命令行与镜像优化
+
+镜像是 Docker 的核心产物，也是最常见的『体积爆炸』源头：一个 Hello World 镜像动辄上 GB。这一篇从**分层原理**讲起，落到 `.dockerignore`、多阶段构建与高频命令，帮你把镜像压到最小、构建提到最快。
+
+<Callout type="note" title="面向有经验者">
+  假定你用过 `docker run/build`，本篇聚焦原理与优化，不重复『容器是什么』。
+</Callout>
+
+## 1. 镜像分层原理
+
+Docker 镜像由若干**只读层（layer）**堆叠而成，每层是上一层的差异（diff）。`Dockerfile` 里**每条指令产生一层**（部分指令如 `ENV`/`WORKDIR` 也会成层）。关键推论：
+
+- **层的复用**：基础层相同则共享缓存，多镜像间省空间、省拉取；
+- **层顺序决定缓存命中**：被频繁变动的文件（如源码）应放在后面，稳定的依赖放前面；
+- **层越多体积越大**：每层的冗余文件（如构建缓存）都会进最终镜像。
+
+<Callout type="tip" title="用 dive 看层">
+  工具 `dive <image>` 可视化每一层新增了什么文件、占多大，是定位『体积刺客』的利器。
+</Callout>
+
+## 2. .dockerignore：构建上下文的第一道闸
+
+`docker build` 会先把**整个上下文目录**打包发给守护进程，再执行 Dockerfile。不加 `.dockerignore`，`.git`、`node_modules`、本地缓存全被传上去，既慢又可能泄露。
+
+```dockerignore
+# .dockerignore —— 类比 .gitignore，但作用于构建上下文
+node_modules
+.git
+*.log
+dist
+.env
+Dockerfile
+docker-compose.yml
+```
+
+<Callout type="warn" title="漏掉 .dockerignore 的代价">
+  没有它，`COPY . .` 会把宿主机 `node_modules`（可能与目标镜像架构不符）拷进去，
+  覆盖镜像内正确装好的依赖，引发诡异运行时错误。务必先 ignore 再 COPY。
+</Callout>
+
+## 3. 多阶段构建：把构建环境与运行环境拆开
+
+最经典的优化。第一阶段用『重』镜像（含编译器、SDK）构建产物，第二阶段用『轻』镜像只拷贝产物，最终镜像不含构建工具链。
+
+```dockerfile
+# 阶段一：用完整 Node 镜像编译/打包
+FROM node:20 AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci                # 仅装依赖
+COPY . .
+RUN npm run build         # 产出 dist/
+
+# 阶段二：用极小的运行时镜像
+FROM node:20-alpine
+WORKDIR /app
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+CMD ["node", "dist/main.js"]
+```
+
+<Callout type="tip" title="alpine 省空间也有代价">
+  `alpine` 基于 musl libc，部分依赖（如某些原生模块、Puppeteer）需 glibc 会编译失败。
+  此时用 `debian-slim` 折中：体积比完整版小很多，兼容性更好。
+</Callout>
+
+## 4. 层顺序与缓存优化
+
+依赖比源码稳定，先拷依赖清单装好，再拷源码——这样改源码时依赖层命中缓存，不必重装。
+
+```dockerfile
+WORKDIR /app
+COPY package*.json ./      # ① 先拷清单
+RUN npm ci                 # ② 装依赖（稳定，缓存命中率高）
+COPY . .                   # ③ 再拷源码（频繁变，放最后）
+```
+
+| 顺序策略 | 效果 |
+|----------|------|
+| 依赖在前、源码在后 | 改源码不触发重装，构建快 |
+| 合并多条 `RUN` | 减少层数（如 `RUN apt-get update && apt-get install -y xxx && rm -rf /var/lib/apt/lists/*`） |
+| 一条 `RUN` 内清理缓存 | 同层删临时文件才真正减小体积，下一层删无效 |
+
+<Callout type="warn" title="RUN 里要顺手清理">
+  在 `RUN apt-get install` 同一行里 `rm -rf /var/lib/apt/lists/*`，缓存才不进层。
+  若分两行，第一行已把列表写进层，第二行删的是新层，体积照旧。
+</Callout>
+
+## 5. 常用命令骨架
+
+```bash
+# 构建并打标签，利用构建缓存
+docker build -t myapp:1.0 .
+
+# 查看镜像体积，按大小排序
+docker images --format "{{.Size}}\t{{.Repository}}" | sort -h
+
+# 运行并映射端口、限制资源
+docker run -p 8080:8080 --memory=512m --cpus=1 myapp:1.0
+
+# 清理悬空镜像与容器（省磁盘）
+docker image prune -f
+docker container prune -f
+
+# 进入运行中容器排查
+docker exec -it <容器id> sh
+```
+
+## 6. 优化策略对比
+
+| 策略 | 体积收益 | 复杂度 | 说明 |
+|------|----------|--------|------|
+| `.dockerignore` | 中 | 低 | 减上下文、防误拷 |
+| 多阶段构建 | 高 | 中 | 剔除构建工具链 |
+| `alpine`/`slim` 基础镜像 | 高 | 低~中 | 注意 libc 兼容 |
+| 合并 RUN + 层内清理 | 中 | 低 | 减层数与冗余 |
+| `--squash`（实验） | 中 | 低 | 压成单层，但失缓存优势 |
+| distroless | 最高 | 高 | 只含运行时与依赖，无 shell |
+
+<Callout type="note" title="没有银弹">
+  选策略看场景：交付给 K8s 的内部服务用多阶段+alpine 足够；对安全性极敏感的用 distroless；
+  本地调试镜像则需要 shell，别盲目追求最小。
+</Callout>
+
+## 7. 常见坑
+
+<Callout type="danger" title="latest 标签导致不可复现">
+  基础镜像写 `FROM node:latest` 会让每次构建拉到不同版本，生产环境必用**固定版本/摘要**
+  （如 `node:20.11.0-alpine` 或 `@sha256:...`），保证可复现与回滚。
+</Callout>
+
+<Callout type="warn" title="root 用户跑容器">
+  容器内默认 root，一旦被攻破危害宿主。在 Dockerfile 加 `USER node` 或运行时
+  `--user 1000` 降权。配合只读根文件系统 `--read-only` 进一步收敛攻击面。
+</Callout>
+
+<Callout type="warn" title="把密钥 COPY 进镜像">
+  把 `.env` 烤进镜像会随镜像分发泄露。用运行时挂载（`-v`/secret）或编排层注入环境变量，
+  且 `.dockerignore` 务必忽略 `.env`。
+</Callout>
+
+<Callout type="warn" title="缓存陷阱：COPY 全量在前">
+  若把 `COPY . .` 写在 `RUN npm ci` 之前，任意源码改动都会让依赖层缓存失效、全量重装。
+  顺序永远是『先稳定、后易变』。
+</Callout>
+
+## 小结
+
+- 镜像即分层差异，层顺序决定缓存命中；稳定依赖前置、易变源码后置。
+- `.dockerignore` 是构建提速与防泄露的第一道闸，永远先写。
+- 多阶段构建把构建链与运行时拆分，是压体积最有效手段；`alpine` 注意 libc 兼容。
+- 固定基础镜像版本、降权运行、密钥勿入镜像；`dive` 帮你定位体积刺客。
+- 没有一刀切的最小镜像，按交付场景选策略。
+
+## 延伸阅读 / 参考
+
+- Docker 官方文档：Best practices for writing Dockerfiles
+- `dive` 工具仓库（镜像层可视化分析）
+- GoogleContainerTools/distroless（极简运行时镜像）
+- 各语言官方镜像的 `-alpine` / `-slim` 变体说明
+- OCI 镜像规范（理解层、manifest 与 digest 的底层结构）

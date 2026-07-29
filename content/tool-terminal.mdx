@@ -1,0 +1,185 @@
+---
+title: 终端与 Shell 效率
+description: 掌握 zsh/fish、tmux、别名、fzf 与任务调度，理解 Shell 启动流程与效率杠杆，给出可运行配置骨架与踩坑清单。
+category: 开发工具
+order: 5
+difficulty: 进阶
+duration: 22 分钟
+tags: [终端, Shell, zsh, tmux, fzf, 效率]
+date: 2026-07-29
+---
+
+# 终端与 Shell 效率
+
+终端是开发者最高频的操作界面。把 Shell 配顺手，每天省下的时间以小时计。这一篇覆盖**解释器选型（zsh/fish）**、**会话复用（tmux）**、**别名与函数**、**模糊查找（fzf）** 与 **任务调度**，并给出可落地配置。
+
+<Callout type="note" title="目标读者">
+  假定你会基本命令行操作。本篇讲『怎么配得更高效』，而非『cd/ls 怎么用』。
+</Callout>
+
+## 1. 启动流程：login / interactive / non-interactive
+
+理解 Shell 读哪些配置文件，才能把别名、环境变量放对地方，避免『为什么没生效』。
+
+- **login shell**：登录时启动，读 `/etc/profile` 与 `~/.bash_profile`（bash）/`~/.zprofile`（zsh）；
+- **interactive non-login**：开新终端标签，读 `~/.bashrc` / `~/.zshrc`；
+- **non-interactive**：脚本执行，读 `BASH_ENV` 指定的文件。
+
+<Callout type="tip" title="放哪儿有讲究">
+  环境变量、`PATH` 这类**对所有程序生效**的，放 login 配置；别名、提示符、函数这类
+  **仅交互用**的，放 rc 配置。混乱放置会导致『ssh 进去有、本地没有』或反过来。
+</Callout>
+
+## 2. zsh vs fish：选型对比
+
+| 维度 | zsh（配 Oh My Zsh） | fish |
+|------|----------------------|------|
+| 学习成本 | 兼容 bash 语法，迁移平滑 | 自有语法，与 bash 不完全兼容 |
+| 自动补全 | 强（社区插件多） | 开箱极强、预测式补全 |
+| 配置方式 | 改 `.zshrc` + 插件 | 内置 `fish_config` 网页配置 |
+| 脚本兼容 | 能直接跑 bash 脚本 | 需改写，不适合当系统脚本 Shell |
+| 性能 | 插件多时启动略慢 | 启动快 |
+
+<Callout type="note" title="建议">
+  日常交互用 fish（补全爽、配置简单），但把 `#!/usr/bin/env bash` 的系统脚本留给 bash/zsh，
+  避免 fish 语法不兼容导致的脚本翻车。
+</Callout>
+
+## 3. tmux：会话不离线
+
+`tmux` 让远程会话在断开 SSH 后继续存活，且在单屏内分屏、多窗口。对服务器开发、长时间任务不可或缺。
+
+```bash
+# 新建名为 dev 的会话
+tmux new -s dev
+
+# 分离（保持运行）：快捷键 Ctrl+b 然后按 d
+# 重新连接
+tmux attach -t dev
+
+# 左右分屏：Ctrl+b 然后按 %
+# 上下分屏：Ctrl+b 然后按 "
+# 在窗格间切换：Ctrl+b 然后按方向键
+```
+
+```bash
+# ~/.tmux.conf 常用配置：用更直观的前缀与鼠标
+set -g prefix C-a                 # 前缀改 Ctrl+a（替代默认 Ctrl+b）
+set -g mouse on                   # 鼠标选中/滚动分屏
+bind r source-file ~/.tmux.conf \; display 『配置已重载』  # 注意中文引号
+```
+
+<Callout type="warn" title="tmux 里的后台任务别裸跑">
+  即便用 tmux，长时间进程崩溃仍会丢输出。关键任务配合 `nohup ... &` 或 `systemd` 托管，
+  并把日志重定向到文件，方便事后 `tail` 排查。
+</Callout>
+
+## 4. 别名与函数：把长命令缩短
+
+别名适合静态替换，函数适合带参数/逻辑的操作。
+
+```bash
+# ~/.zshrc / ~/.bashrc 中
+alias gs='git status'
+alias ll='ls -lh --color=auto'
+
+# 函数：一键进入并激活项目（带参数）
+work() {
+  cd "$HOME/projects/$1" && source .venv/bin/activate
+}
+
+# 函数：按名字杀进程
+killp() {
+  pkill -f "$1" && echo "已终止匹配 $1 的进程"
+}
+```
+
+<Callout type="tip" title="alias 不够时用函数">
+  别名只是文本替换、无法处理参数位置；需要拼接、判断、循环时直接写函数，
+  比一长串 alias 更清晰可维护。
+</Callout>
+
+## 5. fzf：模糊查找一切
+
+`fzf` 是命令行模糊查找器，配合几行配置能秒级搜文件、历史命令、git 分支。
+
+```bash
+# 在 ~/.zshrc 启用 fzf 键位（安装后自动注入，亦可手动）
+[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
+
+# 常用：Ctrl+t 搜文件插入路径；Ctrl+r 搜历史命令
+# 自定义：用 fzf 选 git 分支并切换
+gco() {
+  local b
+  b=$(git branch --format='%(refname:short)' | fzf) && git checkout "$b"
+}
+```
+
+<Callout type="tip" title="把 fzf 接进一切管道">
+  fzf 本质是从 stdin 读、选中后写 stdout。任何列表（容器、进程、日志）都能 `| fzf`，
+  快速从百条结果里挑一条，比肉眼 grep 快一个量级。
+</Callout>
+
+## 6. 任务调度：后台与定时
+
+```bash
+# 后台运行并把输出落盘，退出终端也不中断
+nohup python train.py > train.log 2>&1 &
+
+# 一次性定时：明早 3 点跑备份
+echo "0 3 * * * /usr/bin/backup.sh" | crontab -
+
+# 系统级、可依赖网络/服务的定时任务，优先用 systemd timer 而非 cron
+# 查看后台任务
+jobs
+```
+
+| 方式 | 适用 | 要点 |
+|------|------|------|
+| `&` / `nohup` | 临时手动后台 | 简单，但无自动重启 |
+| `cron` | 固定周期脚本 | 注意环境变量缺失，命令写绝对路径 |
+| `systemd timer` | 依赖启动顺序/失败重启 | 比 cron 更现代，日志进 journald |
+
+<Callout type="warn" title="cron 的环境是空的">
+  cron 执行时不加载你的 shell 配置，`PATH` 极简。脚本里命令务必写绝对路径，
+  或在 crontab 顶部显式 `PATH=...`，否则『手动能跑、cron 报命令找不到』。
+</Callout>
+
+## 7. 常见坑
+
+<Callout type="danger" title="把 alias 当脚本依赖">
+  alias 只在交互 Shell 展开，CI/定时任务（non-interactive）里不生效。
+  脚本若依赖别名会神秘失败。脚本中请用完整命令或函数，别依赖交互 alias。
+</Callout>
+
+<Callout type="warn" title="fish 跑 bash 脚本">
+  `#!/bin/bash` 脚本用 fish 当默认 Shell 时语法报错。保持系统默认 Shell 为 bash/zsh，
+  fish 仅作交互使用；或脚本显式 `bash script.sh` 调用。
+</Callout>
+
+<Callout type="warn" title="tmux 前缀键冲突">
+  默认前缀 `Ctrl+b` 可能与终端/编辑器快捷键撞。改成 `Ctrl+a` 更顺手（见第 3 节配置），
+  但注意 `Ctrl+a` 在 bash 行编辑里本义是『跳到行首』，互斥取舍即可。
+</Callout>
+
+<Callout type="warn" title="配置文件越堆越慢">
+  rc 里 source 几十个插件会让新标签启动卡顿。定期 `time zsh -i -c exit` 测启动耗时，
+  移除不用的插件、把重操作延迟到首次使用时再加载。
+</Callout>
+
+## 小结
+
+- 先搞懂 Shell 启动读哪些文件，环境放 login、交互配置放 rc。
+- zsh 兼容 bash 易迁移、插件多；fish 补全爽但别当脚本 Shell；按需混用。
+- tmux 让会话持久化、分屏多任务；关键进程仍要日志落盘。
+- 别名做静态缩写、函数带逻辑；fzf 接进一切列表，模糊查找提效显著。
+- 后台/定时用 `nohup`/`cron`/`systemd timer`，注意 cron 环境为空。
+- 红线：脚本别依赖 alias、fish 别跑 bash 脚本、rc 别堆成启动瓶颈。
+
+## 延伸阅读 / 参考
+
+- zsh 官方文档与 Oh My Zsh 插件列表
+- fish shell 官方文档与 `fish_config` 指南
+- tmux 入门与 `~/.tmux.conf` 社区模板
+- fzf 仓库 README（键位与管道用法示例）
+- `crontab(5)` 与 systemd.timer 文档（定时任务两种范式）

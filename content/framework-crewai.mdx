@@ -1,0 +1,197 @@
+---
+title: CrewAI 实战：角色扮演式多 Agent 编排
+description: 理解 CrewAI 的核心抽象——Crew/Role/Task 与 Sequential、Hierarchical 流程，用思路+伪代码骨架搭建一个「研究+写作」协作组，并对比 LangGraph 的取舍与踩坑。
+category: 框架
+order: 6
+difficulty: 进阶
+duration: 25 分钟
+tags: [框架, CrewAI, 多 Agent, 角色扮演, 流程编排]
+date: 2026-07-29
+---
+
+# CrewAI 实战：角色扮演式多 Agent 编排
+
+在 M5 多 Agent 协作里我们聊过「角色分工 + 通信协议」。CrewAI 是把这套思想**封装成开箱即用 API** 的代表框架之一：你不用自己写消息路由，只要声明几个「有角色、有目标、有工具」的 Agent，再把它们编进一个 Crew，框架替你跑协作循环。
+
+这一篇讲清 CrewAI 的定位、核心抽象、两种执行流程，并给出**思路 + 伪代码骨架**（API 易变，以官方文档为准）。最后和 LangGraph 做硬对比，帮你在「框架选型」这一步不踩坑。
+
+## 1. CrewAI 的定位：角色扮演式协作
+
+CrewAI 的设计哲学是「像组一支团队」：
+
+- 每个 **Agent** 是一个带了**角色（Role）、目标（Goal）、背景（Backstory）** 的 LLM 调用者；
+- 每个 **Task** 是一项具体工作，指派给某个/某些 Agent；
+- 一个 **Crew** 是多个 Agent + 多个 Task 的组合，外加一个**流程策略（Process）**决定谁先谁后。
+
+它和 LangGraph 的最大区别是：**CrewAI 把「控制流」藏进了框架**（你只选 Sequential 或 Hierarchical），而 LangGraph 让你用图（节点/边/状态）显式画出每一步。前者上手快、后者可控强。
+
+<Callout type="note" title="CrewAI 不是黑盒魔法">
+  底层依然是「模型决定下一步调什么工具、说什么话」的循环，和你用原生 SDK 写的
+  M1 工具闭环本质一致。CrewAI 的价值是「省去你手写编排与消息传递」，代价是
+  控制流被框架接管、调试时看不见中间状态。
+</Callout>
+
+## 2. 核心抽象：Crew / Role / Task
+
+### 2.1 Role（即 Agent）
+
+CrewAI 里「角色」由三段提示构成，作用相当于给模型一套强人设：
+
+| 字段 | 作用 | 写法要点 |
+|------|------|----------|
+| `role` | 一句话身份 | 如『资深行业研究员』，越具体模型越入戏 |
+| `goal` | 该角色要达成的目标 | 驱动它自主决定调用哪些工具 |
+| `backstory` | 背景叙述 | 提供领域语境，影响措辞与判断 |
+
+<Callout type="tip" title="人设写细，协作才稳">
+  role/goal/backstory 直接决定 Agent 会不会「越权」或「摸鱼」。经验法：
+  goal 写『可验证的产出』（如『产出 3 条带来源的市场趋势』），比『做好研究』更不容易跑偏。
+</Callout>
+
+### 2.2 Task
+
+Task 描述「要干的一件事」，关键字段：
+
+- `description`：任务说明，可含 `{topic}` 这类占位符，运行时由 Crew 注入；
+- `expected_output`：期望产出格式（CrewAI 会用它约束 Agent 的输出形态）；
+- `agent`：负责执行该 Task 的 Agent（也可留空让流程策略动态分配）；
+- `tools`：该任务可用工具（如搜索、文件读写）。
+
+### 2.3 Crew
+
+Crew 把 agents 与 tasks 收拢，并指定 `process`：
+
+- `Process.sequential`：任务按列表顺序一个接一个跑，前一个的输出作为后一个的上下文；
+- `Process.hierarchical`：引入一个「经理」Agent，由它拆解任务、分派给成员、汇总结果（消耗更多 token）。
+
+## 3. 代码骨架（思路 + 伪代码）
+
+> ⚠️ **以官方文档为准，API 易变**：下面用接近 CrewAI 风格的伪代码骨架表达「思路」，字段名/类名可能随版本变化。落地前务必核对当前版本文档，不要照搬为生产代码。
+
+```python
+# crewai_skeleton.py —— 思路骨架：研究 + 写作 双 Agent 协作
+# 伪代码，类名/参数以官方文档为准，API 易变
+from crewai import Agent, Task, Crew, Process
+
+# ① 定义两个有角色的人（role/goal/backstory 即人设）
+researcher = Agent(
+    role="资深行业研究员",
+    goal="围绕给定主题产出 3 条带来源的市场趋势",  # 可验证产出，防跑偏
+    backstory="十年科技产业分析经验，擅长快速检索与去噪",
+    tools=[search_tool],          # 真实场景注入搜索/抓取工具
+    verbose=True,                 # 打印中间推理，便于调试
+    allow_delegation=False,       # 顺序流程下通常关掉委派
+)
+
+writer = Agent(
+    role="技术专栏作家",
+    goal="把研究结果改写成面向工程师的科普文",
+    backstory="习惯用类比讲清楚复杂概念",
+    tools=[],                     # 写作 Agent 不一定需要外部工具
+)
+
+# ② 定义任务，按依赖顺序排（顺序流程下后者能读到前者产出）
+research_task = Task(
+    description="研究主题：{topic} 的最新市场趋势",
+    expected_output="3 条趋势，每条含一句话结论与来源链接",
+    agent=researcher,
+)
+
+write_task = Task(
+    description="基于研究结果，写一篇 800 字科普文",
+    expected_output="结构完整、面向工程师的 Markdown 文章",
+    agent=writer,
+    context=[research_task],      # 显式声明依赖：用 research_task 的产出当输入
+)
+
+# ③ 组队并指定流程
+crew = Crew(
+    agents=[researcher, writer],
+    tasks=[research_task, write_task],
+    process=Process.sequential,   # 顺序执行；复杂协作可换 hierarchical
+)
+
+# ④ 启动；topic 会注入 Task 的 {topic} 占位符
+result = crew.kickoff(inputs={"topic": "边缘计算"})
+print(result)
+```
+
+<Callout type="note" title="顺序 vs 层级的 token 账">
+  sequential 是「流水线」，token 线性可控；hierarchical 多了一个经理 Agent 反复
+  拆解/汇总，token 与延迟明显更高，但适合「任务间依赖复杂、需要动态分派」的场景。
+  先用 sequential 验证逻辑，确实不够再升级。
+</Callout>
+
+## 4. 执行流程的两种形态
+
+### 4.1 Sequential（顺序）
+
+最简单：tasks 列表即执行顺序，后一个 Task 默认能读到前一个的产出。适合「A 产出 → B 加工」的线性链路（如上面的研究→写作）。
+
+### 4.2 Hierarchical（层级）
+
+CrewAI 自动创建一个「manager」Agent，负责把任务拆给成员、收集结果、做最终汇总。适合成员多、任务间有动态依赖的团队。代价是：多一轮「经理思考」，token 与延迟上升，且行为更难预测（经理可能反复改派任务）。
+
+<Callout type="warn" title="hierarchical 容易停不下来">
+  层级流程里经理可能反复「重新分派/重新汇总」。务必设置 max_iter 或步数上限，
+  否则会像 M1 里没上限的工具循环一样烧钱卡死。这一点框架不会替你兜底。
+</Callout>
+
+## 5. 与 LangGraph 硬对比
+
+| 对比项 | CrewAI | LangGraph |
+|--------|--------|-----------|
+| 控制流 | 框架内置（sequential/hierarchical） | 你用图显式定义节点/边/状态 |
+| 上手速度 | 快，声明式 | 慢，要画状态机 |
+| 可控性 | 中，流程策略可选但不可细调 | 高，每步可见可干预 |
+| 可观测/调试 | 靠 verbose 日志 | 原生 checkpoint + 状态回放 |
+| Human-in-loop | 支持但需额外接 | 一等公民（interrupt/continue） |
+| 适用 | 角色分工清晰的中小型协作 | 复杂、需精确控制/可回放的流程 |
+| 抽象成本 | 低（但黑盒） | 高（但透明） |
+
+<Callout type="tip" title="选型一句话">
+  想要「半小时组个研究团队跑起来」选 CrewAI；想要「每一步可控、可回放、能插人」
+  选 LangGraph。团队刚起步验证想法用 CrewAI，进生产要稳定可观测再考虑 LangGraph。
+</Callout>
+
+## 6. 踩坑与最佳实践
+
+<Callout type="danger" title="人设太松导致越权">
+  goal 写得模糊（如『做好研究』）时，Agent 可能自作主张调不该调的工具、产出偏离主题。
+  永远给 goal 写「可验证的产出形态」，并用 expected_output 兜底格式。
+</Callout>
+
+<Callout type="warn" title="上下文被前一个任务污染">
+  顺序流程里后一个 Agent 会继承前一个的产出。若前一步产出很长很噪，
+  后一步会被带偏。可用 Task.context 精确控制注入内容，而非无脑全量继承。
+</Callout>
+
+<Callout type="warn" title="工具未做护栏">
+  CrewAI 的 Agent 同样会执行有副作用的工具（发邮件、写库）。凡有副作用，
+  执行前务必加确认/权限校验。框架不管这个，出了事是你的。
+</Callout>
+
+<Callout type="tip" title="先用 verbose 再谈优化">
+  开发期一律 verbose=True，看每个 Agent 到底想了什么、调了什么。
+  等逻辑通了再关 verbose、加步数上限、换更便宜的模型跑成员 Agent。
+</Callout>
+
+## 小结
+
+- CrewAI = 角色扮演式多 Agent 框架：Agent（人设）+ Task（工作）+ Crew（组队+流程）。
+- 流程就两种：sequential（线性、省钱）与 hierarchical（带经理、灵活但贵）。
+- 它和 LangGraph 的本质差异是「控制流谁掌握」：CrewAI 框架掌握，LangGraph 你掌握。
+- 红线：goal 写可验证产出、层级流程加步数上限、工具加护栏、API 以文档为准。
+
+<Callout type="note" title="下一步">
+  想看清「框架接管控制流」与「自己掌握每一步」的权衡全貌，
+  请看同分类的 **framework-native-vs-fw（原生 vs 框架抉择）**。
+</Callout>
+
+## 延伸阅读 / 参考
+
+- CrewAI 官方文档（Agent/Task/Crew/Process 的当前 API，以官方为准）
+- CrewAI GitHub 示例库（各类角色扮演协作的参考实现）
+- LangGraph 官方文档（对照理解「显式状态图」思路）
+- 论文 *ReAct* 与 *AutoGen*：CrewAI 协作循环的思想源头
+- M5 多 Agent 协作（本站的架构与通信协议理论篇）

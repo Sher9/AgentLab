@@ -1,0 +1,387 @@
+---
+title: Docker 化 Agent 服务：多阶段、最小化镜像、健康检查与 Compose
+description: 把 Agent 服务安全可复现地打包成镜像——讲透多阶段构建、最小化基础镜像、.dockerignore、HEALTHCHECK 与 docker-compose 编排，给出生产级可运行骨架与踩坑清单。
+category: 部署运维
+order: 2
+difficulty: 进阶
+duration: 35 分钟
+tags: [Docker, 多阶段构建, 最小化镜像, 健康检查, Compose, 部署]
+date: 2026-07-29
+---
+
+# Docker 化 Agent 服务：多阶段、最小化镜像、健康检查与 Compose
+
+前面 `m7-engineering-deploy` 把『配置分层、密钥、健康检查、灰度回滚』的框架讲清了。但框架要落地，第一步是**把服务变成可移植、可复现的镜像**——否则『我本地能跑』和『生产跑崩』之间的鸿沟永远填不上。
+
+这一篇聚焦 Docker 化的实战：为什么必须做、多阶段构建怎么省空间、基础镜像怎么选最小、`.dockerignore` 为什么不能漏、`HEALTHCHECK` 怎么让编排器知道服务活着、再用 `docker-compose` 把 Agent 服务 + 依赖（如 Redis、向量库）编排起来。面向有经验的开发者，重骨架、轻口水。
+
+## 1. 为什么 Agent 服务必须容器化
+
+Agent 服务比普通 Web 服务更『重依赖』：Python/Node 运行时、模型 SDK、`playwright`/`chromium` 这类重客户端、系统级库（如 `libgl`、`ffmpeg`）。直接往生产机器上 `pip install` 有三个致命问题：
+
+- **环境漂移**：A 机器装了 `numpy 1.26`、B 机器是 `2.0`，行为不一致；
+- **不可复现**：CI 和线上依赖树对不上，回滚时找不到当时的环境；
+- **横向扩展困难**：要起 10 个实例，没法靠『手动装一遍』。
+
+容器把『代码 + 运行时 + 依赖』封成一份不可变镜像，解决以上全部。镜像一旦构建，全世界任何装了 Docker 的机器跑出来的结果一致。
+
+<Callout type="note" title="镜像即环境契约">
+  把镜像理解成『一份写死的环境契约』：它记录了确切的基础系统、依赖版本、启动命令。
+  上线的不是『代码』，而是『这份契约』。这让你的回滚变成『换回旧镜像 ID』这种原子操作。
+</Callout>
+
+## 2. 镜像分层原理（决定优化方向）
+
+Docker 镜像由一层层只读层叠加而成，每一行 `RUN`/`COPY`/`ADD` 都可能生成新层。构建时 Docker 会**缓存未变化的层**：只要某一层及之前的内容没变，就复用缓存。这带来两条铁律：
+
+- **变动频率越低的内容，越要放前面**（基础系统、系统依赖）→ 命中缓存、构建飞快；
+- **变动频繁的内容（源码、配置）放最后** → 只重跑最后几层。
+
+```dockerfile
+# 反面教材：把源码放前面，每次改一行代码都会让后面所有层缓存失效
+COPY . .
+RUN apt-get update && apt-get install -y curl   # 永远重跑
+
+# 正确：先装依赖（稳定），再拷源码（易变）
+RUN apt-get update && apt-get install -y curl
+COPY . .
+```
+
+<Callout type="tip" title="利用缓存加速 CI">
+  Node 项目先 `COPY package*.json` 再 `RUN npm ci`，然后才 `COPY` 源码。
+  这样只改业务代码时，依赖安装层全部命中缓存，CI 从几分钟降到几十秒。
+</Callout>
+
+## 3. 多阶段构建：构建环境和运行环境分离
+
+Agent 项目常有『重构建、轻运行』特征：构建时需要 `gcc`/`python-dev`/构建工具链，但运行只需要编译产物。若把构建工具全打进最终镜像，体积会爆炸（轻松上 GB）。**多阶段构建**用多个 `FROM` 把构建与运行拆开，只把产物拷进极小的最终镜像。
+
+```dockerfile
+# ---- 阶段一：builder，装全套构建工具 ----
+FROM node:20-bookworm AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci                      # 装依赖（含可能的 native 编译）
+COPY . .
+RUN npm run build               # 产出 dist/（TS 编译结果）
+
+# ---- 阶段二：runtime，只拿产物，不拿构建工具 ----
+FROM node:20-bookworm-slim AS runtime
+WORKDIR /app
+# 只拷 package.json + 编译产物 + node_modules 的生产部分
+COPY package*.json ./
+RUN npm ci --omit=dev           # 关键：只装生产依赖，devDependencies 全丢
+COPY --from=builder /app/dist ./dist
+EXPOSE 8080
+CMD ["node", "dist/server.js"]
+```
+
+`COPY --from=builder` 只搬运产物，构建期的 `gcc`、源码、测试文件全部留在第一阶段，不进最终镜像。体积通常能从 1.2GB 降到 200MB 以内。
+
+<Callout type="tip" title="production node_modules 才进镜像">
+  `npm ci --omit=dev` 是瘦身关键。带 `devDependencies`（tsc、eslint、vitest）的镜像
+  既大又有不必要的攻击面。运行期只要运行时依赖。
+</Callout>
+
+## 4. 最小化基础镜像：三选一
+
+最终运行阶段选什么基础镜像，直接决定体积与安全面。主流三档：
+
+| 镜像 | 体积（约） | 适用 | 注意 |
+|------|-----------|------|------|
+| `bookworm-slim` | 150–250MB | 需要完整包管理（`apt`）、调试方便 | 仍带 shell 与大量系统库 |
+| `alpine` | 5–15MB | 极致精简、无状态微服务 | `musl` 而非 `glibc`，部分 native 包要重编、易踩坑 |
+| `gcr.io/distroless` | 2–50MB | 只跑二进制、极致安全（无 shell） | 不能 `docker exec` 进去调试，排障靠日志 |
+
+```dockerfile
+# 方案 A：slim（调试友好，推荐大多数 Agent 服务起步用）
+FROM node:20-bookworm-slim AS runtime
+
+# 方案 B：distroless（生产追求最小攻击面时）
+# FROM gcr.io/distroless/nodejs20-debian12 AS runtime
+# COPY --from=builder /app/dist ./dist
+# CMD ["dist/server.js"]
+```
+
+<Callout type="warn" title="alpine 的 musl 坑">
+  Alpine 用 `musl libc`，而很多预编译 native 包（如 `sharp`、`better-sqlite3`、某些
+  `onnxruntime`）是为 `glibc` 编的，在 Alpine 上会直接 `Error: Unable to load native binding`。
+  要么换用 `node:20-alpine` 并重新编译，要么干脆用 `slim`。新手优先 `slim` 省心。
+</Callout>
+
+## 5. .dockerignore：别把垃圾打进镜像
+
+没有 `.dockerignore`，`COPY . .` 会把 `node_modules`、`.git`、`.env`、日志全打进镜像——既臃肿又**泄露密钥**。它和 `.gitignore` 语法一致：
+
+```gitignore
+# .dockerignore —— 必须和 Dockerfile 同目录
+node_modules          # 镜像里会重新 npm ci，别带宿主的
+npm-debug.log
+.git
+.env                 # 致命：密钥绝对不能进镜像层
+.env.*
+*.md
+tests/
+coverage
+dist                  # 多阶段里 builder 自己编译，别带旧的
+Dockerfile
+.dockerignore
+```
+
+<Callout type="danger" title=".env 进镜像等于泄露密钥">
+  `.env` 一旦被 `COPY` 进镜像层，即使后面删掉，历史层里仍可读到（镜像层只读但可被 `docker history`/
+  导出提取）。密钥必须走运行时挂载（见第 7 节 `env_file`/`secrets`），**绝不**烘焙进镜像。
+</Callout>
+
+## 6. 健康检查：让编排器知道服务活着
+
+`HEALTHCHECK` 让 Docker（及 K8s 的探针）能判断容器是『进程在』还是『真的能服务』。单纯进程在但死锁了，没有健康检查就会被持续转发流量到坏实例。
+
+```dockerfile
+# 用 curl 探一个轻量 health 端点（镜像需含 curl；distroless 改用 wget 或自带探针）
+HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
+  CMD curl -f http://localhost:8080/health || exit 1
+```
+
+参数含义：
+
+- `--interval`：多久探一次；
+- `--timeout`：单次探测超时；
+- `--start-period`：启动宽限期，这段时间失败不计入重试（给冷启动留时间，Agent 加载模型常需几十秒）；
+- `--retries`：连续失败几次才标记 `unhealthy`。
+
+服务侧要实现一个真的探查端点，而不是永远返回 200 的假健康：
+
+```ts
+// server.ts 片段：真实健康检查，连依赖都探一遍
+import express from 'express';
+const app = express();
+
+app.get('/health', async (_req, res) => {
+  // 只探进程存活：返回 200
+  // 要更严格：顺便探 Redis / 向量库连通性，任一挂了就返回 503
+  try {
+    // 伪代码：await redis.ping();
+    res.status(200).json({ status: 'ok', ts: Date.now() });
+  } catch {
+    res.status(503).json({ status: 'degraded' }); // 编排器据此摘除流量
+  }
+});
+
+app.listen(8080);
+```
+
+<Callout type="tip" title="start-period 给模型加载留时间">
+  Agent 服务启动常要加载 embedding 模型、连向量库、预热缓存，冷启动可能 20–60 秒。
+  `--start-period` 设太短，容器会被反复判死、反复重启。按实测冷启动时间给足余量。
+</Callout>
+
+## 7. docker-compose：本地编排多服务
+
+单容器不够——Agent 通常还要 Redis（KV 记忆）、Qdrant（向量库）、Postgres。开发/单机部署用 `docker-compose` 一把拉起，定义网络、环境变量、卷、依赖顺序。
+
+```yaml
+# docker-compose.yml —— 单机编排骨架（以官方文档为准，字段易微调）
+version: "3.9"
+
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    # 密钥走 env_file，绝不写死在文件里；.env 不进镜像、不进 git
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379      # 用服务名互通（compose 内置 DNS）
+      - QDRANT_URL=http://qdrant:6333
+    depends_on:
+      redis:
+        condition: service_healthy        # 等 redis 健康再起 agent
+      qdrant:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped                # 异常退出自动拉起
+    # 把日志/缓存挂出来，避免容器删了数据丢
+    volumes:
+      - ./logs:/app/logs
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      retries: 5
+    volumes:
+      - redis-data:/data
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+volumes:
+  redis-data:
+  qdrant-data:
+```
+
+常用命令：
+
+```bash
+# 构建并后台启动全部服务
+docker compose up -d --build
+
+# 看某个服务日志（比如 agent 启动报错了）
+docker compose logs -f agent
+
+# 只重建 agent 镜像（依赖没变时）
+docker compose up -d --build agent
+
+# 停掉并删容器（卷保留）
+docker compose down
+```
+
+<Callout type="warn" title="compose 不是生产编排器">
+  `docker-compose` 适合开发、单机 Demo、边缘盒子。它**没有**自愈调度、没有多机分布、
+  没有滚动更新。真正的多副本生产部署请用 Kubernetes（见 `deploy-k8s`）。把 compose 当
+  『单机编排』而非『集群调度』来用，别指望它跨主机扩。
+</Callout>
+
+## 8. 完整可运行骨架（端到端）
+
+把下面三件套放进项目根目录，即可 `docker compose up -d --build` 跑起一个带健康检查的 Agent 服务骨架（业务代码用占位，零外部 API 依赖即可演示）。
+
+```dockerfile
+# Dockerfile —— 多阶段 + slim + 健康检查
+FROM node:20-bookworm AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM node:20-bookworm-slim AS runtime
+WORKDIR /app
+# 只装生产依赖，体积与攻击面双降
+RUN npm ci --omit=dev
+COPY package*.json ./
+COPY --from=builder /app/dist ./dist
+# 探活端点（镜像自带 curl）
+HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
+  CMD curl -f http://localhost:8080/health || exit 1
+EXPOSE 8080
+CMD ["node", "dist/server.js"]
+```
+
+```json
+// package.json（节选，体现 build 脚本与依赖）
+{
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/express": "^4.17.21"
+  }
+}
+```
+
+构建与运行：
+
+```bash
+# 构建镜像并打 tag
+docker build -t agent-svc:v1 .
+
+# 跑一个容器，映射端口、挂环境变量（不写死密钥）
+docker run -d -p 8080:8080 --name agent1 \
+  -e OPENAI_API_KEY="$(cat .env | grep KEY)" \
+  agent-svc:v1
+
+# 看健康状态（STATUS 列会显示 healthy/unhealthy）
+docker ps
+
+# 进容器排障（slim 有 shell 才进得去；distroless 不行）
+docker exec -it agent1 sh
+```
+
+## 9. 对比：构建策略与基础镜像怎么选
+
+| 决策点 | 选项 | 何时选 |
+|--------|------|--------|
+| 构建方式 | 单阶段 / 多阶段 | 任何带编译的项目都该多阶段，单阶段只适合纯解释型脚本 |
+| 运行镜像 | slim / alpine / distroless | 要调试选 slim；要极小且愿折腾选 alpine；要极致安全选 distroless |
+| 依赖安装 | `npm ci` / `npm install` | 永远 `npm ci`（锁版本、可复现），`install` 会浮动版本 |
+| 密钥 | 烘焙 / env_file / secrets | 绝不烘焙；compose 用 `env_file`，生产用 secrets _manager |
+
+<Callout type="note" title="可复现是底线">
+  选 `npm ci` 而非 `npm install`，本质是为了『锁文件即真相』。生产镜像必须能从
+  同一份 `package-lock.json` 重建出逐字节一致的依赖树，否则回滚毫无意义。
+</Callout>
+
+## 10. 常见坑
+
+<Callout type="danger" title="root 用户跑容器">
+  默认容器以 `root` 跑，一旦被 RCE 攻击面极大。生产应在 Dockerfile 末尾建非特权用户：
+  `RUN useradd -m appuser && USER appuser`。注意 `USER` 之后 `COPY` 的文件归属要 `chown`。
+</Callout>
+
+<Callout type="warn" title="latest 标签导致不可复现">
+  `image: redis:latest` 看似方便，实则每次拉取可能版本不同，回滚时找不到当时的行为。
+  生产固定小版本：`redis:7.2-alpine`。镜像 tag 也要带版本/commit，别都用 `latest`。
+</Callout>
+
+<Callout type="warn" title="缓存层藏着旧依赖">
+  改了 `package.json` 却忘了动 `COPY package*.json` 之前的层，可能命中旧缓存、依赖没更新。
+  依赖变化时确保 `COPY package*.json` 这层也失效。排障用 `docker build --no-cache` 验证。
+</Callout>
+
+<Callout type="warn" title="HEALTHCHECK 探活端点造假">
+  若 `/health` 永远返回 200（不探真实依赖），编排器会持续把流量打进『进程在但已死锁』的实例。
+  健康检查要探关键依赖连通性，至少探 Redis/向量库之一。
+</Callout>
+
+<Callout type="tip" title="镜像体积定期audit">
+  用 `docker images` 和 `dive` 工具审查层，发现意外大层（如整份源码被打进去了）及时修。
+  镜像越小，拉取越快、节点磁盘越省、攻击面越小。
+</Callout>
+
+<Callout type="danger" title="把大模型权重打进镜像">
+  几 GB 的模型权重别烘焙进镜像——会让镜像巨大、构建极慢、且每次换权重都要重 build。
+  权重应走挂载卷或对象存储按需下载（GPU 推理场景见 `deploy-gpu`）。
+</Callout>
+
+## 小结
+
+- 容器把『代码 + 运行时 + 依赖』封成不可变镜像，解决环境漂移与不可复现，回滚即换镜像。
+- 多阶段构建分离 build/runtime，只搬运产物，`npm ci --omit=dev` 是瘦身关键。
+- 基础镜像三选一：slim（调试友好）、alpine（极小但 musl 坑）、distroless（极致安全无 shell）。
+- `.dockerignore` 必须排除 `node_modules`/`.git`/`.env`，密钥绝不进镜像层。
+- `HEALTHCHECK` + 真实探活端点，让编排器摘除死实例；`start-period` 给模型冷启动留余量。
+- `docker-compose` 做单机编排足够，但生产多副本请用 K8s；对比维度集中在可复现、最小、安全。
+
+<Callout type="note" title="下一步">
+  单机镜像跑通后，要上多副本、跨机器、滚动更新、自动扩缩，就进入 **deploy-k8s** 的领域；
+  若服务要吞 GPU 跑模型推理，见 **deploy-gpu**。
+</Callout>
+
+## 延伸阅读 / 参考
+
+- Docker 官方文档：多阶段构建（Multi-stage builds）与 `HEALTHCHECK` 指令语义
+- `docker compose` 官方参考：services / depends_on / healthcheck / volumes 字段
+- GoogleContainerTools/distroless 仓库：无 shell 最小镜像的使用与调试限制
+- Alpine 官方 Wiki：musl vs glibc 的 native 包兼容说明
+- OWASP Docker Security Cheat Sheet：非 root 运行、最小权限、密钥管理红线

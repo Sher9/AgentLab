@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>降级与容错：让 Agent 服务稳如老狗 · AgentLab</title>
+  <meta name="description" content="从超时、限流、重试到兜底话术与优雅降级，讲透 LLM/Agent 产品在生产环境下的容错设计，给出可运行的重试、熔断、降级骨架与踩坑清单。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="降级与容错：让 Agent 服务稳如老狗 · AgentLab"/>
+  <meta property="og:description" content="从超时、限流、重试到兜底话术与优雅降级，讲透 LLM/Agent 产品在生产环境下的容错设计，给出可运行的重试、熔断、降级骨架与踩坑清单。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#product">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">💡</span>
+        <span class="art-moduleName">产品工程</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">22 分钟</span>
+      </div>
+      <h1 class="art-title">降级与容错：让 Agent 服务稳如老狗</h1>
+      <p class="art-desc">从超时、限流、重试到兜底话术与优雅降级，讲透 LLM/Agent 产品在生产环境下的容错设计，给出可运行的重试、熔断、降级骨架与踩坑清单。</p>
+      <div class="art-tags"><span class="art-tag">#降级</span><span class="art-tag">#容错</span><span class="art-tag">#重试</span><span class="art-tag">#熔断</span><span class="art-tag">#兜底</span><span class="art-tag">#超时</span></div>
+    </div>
+    <div class="prose"><h1>降级与容错：让 Agent 服务稳如老狗</h1>
+<p>M 系列我们跑通了 Agent 的能力，但『能跑』和『能扛生产流量』是两回事。LLM 上游动不动就超时、限流、抽风；工具依赖的三方 API 也会挂。这一篇只讲一件事：<strong>当依赖不可用时，怎么让用户体面地拿到结果，而不是白屏或 500</strong>。</p>
+<p>要点：超时控制、限流应对、重试退避、兜底话术、优雅降级。全部给可运行骨架。</p>
+<h2 id="1-为什么-agent-特别需要容错">1. 为什么 Agent 特别需要容错</h2>
+<p>传统 Web 服务调数据库、缓存，延迟和错误相对可控。Agent 链路上多了一层 LLM 上游，故障特征更恶劣：</p>
+<ul>
+<li><strong>延迟长且抖动大</strong>：一次生成可能 1 秒也可能 30 秒，超时阈值极难拍脑袋定；</li>
+<li><strong>限流频繁</strong>：厂商按 RPM/TPM 限流，突发流量直接 429；</li>
+<li><strong>部分失败常见</strong>：工具 A 成功、工具 B 超时，整条链路不能因此全崩；</li>
+<li><strong>结果非确定性</strong>：即使成功，质量也可能退化，需要『降级到更稳的模型或规则』。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">核心心智</span></div><div class="co-body"><p>  容错的目标不是『永远成功』，而是『<strong>在任何依赖失败时，系统都给出一个可接受的结果或清晰的状态</strong>』。
+  可接受 ≠ 完美：兜底话术、缓存旧答案、走规则分支，都比 500 强。</p>
+</div></div><h2 id="2-超时-给每一次调用上锁">2. 超时：给每一次调用上锁</h2>
+<p>没有超时的 LLM 调用是事故源头——一个挂起的长连接会占满你的并发池，连锁拖垮整服务。</p>
+<pre><code class="language-ts">// withTimeout.ts —— 给任意 Promise 套一层超时（AbortController 优先）
+export async function withTimeout&lt;T&gt;(
+  promise: Promise&lt;T&gt;,
+  ms: number,
+  onTimeout?: () =&gt; T
+): Promise&lt;T&gt; {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() =&gt; ctrl.abort(), ms);
+  try {
+    // 关键：把 AbortSignal 传给底层 fetch / SDK，才能真正中断网络请求
+    const result = await Promise.race([
+      promise,
+      new Promise&lt;never&gt;((_, reject) =&gt;
+        ctrl.signal.addEventListener('abort', () =&gt; reject(new Error('TIMEOUT')))
+      ),
+    ]);
+    return result;
+  } catch (err: any) {
+    if (err.message === 'TIMEOUT' &amp;&amp; onTimeout) return onTimeout(); // 超时兜底
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">超时值要分级</span></div><div class="co-body"><p>  不要全局一个 30s。读缓存/查库用 500ms；LLM 首字用 10s；整条 Agent 链路用 60s。
+  越靠近用户、越轻量的环节，超时越短，把失败快速暴露给降级逻辑。</p>
+</div></div><h2 id="3-重试与退避-别把限流打成雪崩">3. 重试与退避：别把限流打成雪崩</h2>
+<p>429（限流）和 5xx 大多可重试，但<strong>盲目重试会把上游打崩</strong>。</p>
+<pre><code class="language-ts">// retry.ts —— 指数退避 + 抖动，只对可重试错误重试
+async function retry&lt;T&gt;(
+  fn: () =&gt; Promise&lt;T&gt;,
+  opts: { max?: number; base?: number; shouldRetry?: (e: any) =&gt; boolean } = {}
+): Promise&lt;T&gt; {
+  const max = opts.max ?? 3;
+  const base = opts.base ?? 400;
+  for (let i = 0; i &lt; max; i++) {
+    try {
+      return await fn();
+    } catch (e: any) {
+      const retryable = opts.shouldRetry ? opts.shouldRetry(e) : e?.status &gt;= 500;
+      if (!retryable || i === max - 1) throw e;
+      // 指数退避 + 随机抖动：避免所有请求同时重试造成惊群
+      const wait = base * 2 ** i + Math.random() * base;
+      await new Promise((r) =&gt; setTimeout(r, wait));
+    }
+  }
+  throw new Error('unreachable');
+}
+
+const isRetryable = (e: any) =&gt;
+  e?.status === 429 || e?.status &gt;= 500 || e?.code === 'ECONNRESET';
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">429 看 Retry-After</span></div><div class="co-body"><p>  限流响应里通常带 <code>Retry-After</code> 头。优先按它等，而不是自己算退避——它才是上游希望你等的真实时长。
+  不读它而硬退避，等于无视上游的限流节拍。</p>
+</div></div><h2 id="4-熔断-上游真挂了就别再打">4. 熔断：上游真挂了就别再打</h2>
+<p>重试解决『偶发抖动』，但上游<strong>持续挂</strong>时，重试只会堆积请求、耗尽资源。这时需要熔断器（Circuit Breaker）：失败率超阈值就『开路』，直接快速失败并走降级，给上游喘息时间。</p>
+<pre><code class="language-ts">// circuit-breaker.ts —— 最简状态机：CLOSED → OPEN → HALF_OPEN
+class CircuitBreaker {
+  private failures = 0;
+  private state: 'CLOSED' | 'OPEN' | 'HALF_OPEN' = 'CLOSED';
+  private openedAt = 0;
+  constructor(
+    private threshold = 5,      // 连续失败多少次后开路
+    private cooldown = 10_000   // 开路后多久尝试半开
+  ) {}
+
+  async run&lt;T&gt;(fn: () =&gt; Promise&lt;T&gt;, fallback: () =&gt; T): Promise&lt;T&gt; {
+    if (this.state === 'OPEN') {
+      // 冷却期内直接降级，不碰上游
+      if (Date.now() - this.openedAt &lt; this.cooldown) return fallback();
+      this.state = 'HALF_OPEN'; // 冷却结束，放一个探活请求
+    }
+    try {
+      const r = await fn();
+      this.failures = 0;
+      this.state = 'CLOSED'; // 成功 → 恢复
+      return r;
+    } catch {
+      this.failures++;
+      if (this.failures &gt;= this.threshold) {
+        this.state = 'OPEN';
+        this.openedAt = Date.now();
+      }
+      return fallback(); // 任何失败都走兜底
+    }
+  }
+}
+</code></pre><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">降级不等于静默吞错</span></div><div class="co-body"><p>  兜底分支必须<strong>显式、可观测</strong>：记录一次 <code>fallback_triggered</code> 事件，并尽量给用户可行动的信息。
+  静默返回空会让问题在监控里消失，直到业务方投诉才发现上游早挂了。</p>
+</div></div><h2 id="5-兜底话术与优雅降级">5. 兜底话术与优雅降级</h2>
+<p>当 LLM 或工具不可用，最差的体验是白屏；较好的体验是『明确告知 + 提供次优解』。</p>
+<table>
+<thead>
+<tr>
+<th>级别</th>
+<th>触发</th>
+<th>用户感知</th>
+<th>示例</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>同模型重试</td>
+<td>偶发超时/429</td>
+<td>几乎无感</td>
+<td>自动退避重试</td>
+</tr>
+<tr>
+<td>降级模型</td>
+<td>主模型持续 5xx</td>
+<td>稍慢/略简</td>
+<td>切到小模型生成</td>
+</tr>
+<tr>
+<td>缓存/规则兜底</td>
+<td>上游全挂</td>
+<td>答案可能不个性</td>
+<td>返回最近相似问答或固定模板</td>
+</tr>
+<tr>
+<td>明确失败</td>
+<td>实在无解</td>
+<td>透明可控</td>
+<td>『服务繁忙，已为你保留输入，稍后重试』</td>
+</tr>
+</tbody></table>
+<pre><code class="language-ts">// fallback.ts —— 按依赖健康度选择降级分支
+async function answer(userInput: string) {
+  // 1) 先查缓存：命中直接返回，零依赖最稳
+  const cached = await cache.get(hash(userInput));
+  if (cached) return { text: cached, source: 'cache' };
+
+  // 2) 走主链路，套熔断；熔断/超时/限流都落到 fallback
+  return breaker.run(
+    () =&gt; callPrimaryLLM(userInput),
+    () =&gt; ({
+      text: '当前服务较忙，已为你保留问题，可稍后重试；或查看常见问题。',
+      source: 'fallback', // 标记来源，便于监控区分质量
+    })
+  );
+}
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">保留用户输入</span></div><div class="co-body"><p>  降级时务必把用户的原始输入存下来或回显，避免『白打字』。一句『已为你保留，稍后重试』
+  的成本极低，却能极大缓解挫败感——这是产品体验层面的容错，不是纯技术。</p>
+</div></div><h2 id="6-对比-重试-vs-熔断-vs-降级">6. 对比：重试 vs 熔断 vs 降级</h2>
+<table>
+<thead>
+<tr>
+<th>机制</th>
+<th>解决什么</th>
+<th>误用后果</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>超时</td>
+<td>防止单请求挂死占资源</td>
+<td>阈值过低误杀正常慢请求</td>
+</tr>
+<tr>
+<td>重试退避</td>
+<td>消化偶发抖动/限流</td>
+<td>无退避则打崩上游、放大故障</td>
+</tr>
+<tr>
+<td>熔断</td>
+<td>上游持续故障时止损</td>
+<td>阈值太高等于没熔断</td>
+</tr>
+<tr>
+<td>降级</td>
+<td>任何失败都给可接受结果</td>
+<td>兜底话术过于笼统丧失信任</td>
+</tr>
+</tbody></table>
+<h2 id="7-踩坑清单">7. 踩坑清单</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">重试没区分错误类型</span></div><div class="co-body"><p>  把 4xx（参数错、鉴权失败）也重试是浪费：它们不会因重试成功。只对 429/5xx/网络错重试，
+  业务 4xx 应直接失败并告警。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">全局共享一个熔断计数是坑</span></div><div class="co-body"><p>  多个工具/模型共用一个 breaker，会导致『工具 A 挂了连累工具 B 也被熔断』。
+  按上游依赖维度（每个 LLM 厂商、每个三方 API）各自建 breaker。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">降级分支自己也别挂</span></div><div class="co-body"><p>  兜底话术若来自另一个也会挂的服务，就成了『降级链雪崩』。兜底应尽量本地、无外部依赖
+  （静态模板、本地缓存、纯规则），否则它会在最需要时失效。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">给降级加指标</span></div><div class="co-body"><p>  监控 <code>fallback_rate</code>（降级占比）、<code>retry_count</code>、<code>circuit_open_seconds</code>。
+  它们是最早暴露上游劣化的信号，比用户投诉早几小时。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>LLM/Agent 上游延迟长、限流频、部分失败常见，容错不是可选项。</li>
+<li>超时分级上锁，重试只看可重试错误并退避+抖动，熔断在持续故障时止损。</li>
+<li>降级给用户『可接受的次优解 + 透明状态』，务必保留输入并标记来源。</li>
+<li>红线：别把 4xx 也重试、别全局共享 breaker、兜底分支自身要无外部依赖、降级必须可观测。</li>
+</ul>
+<h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>Microsoft <em>Patterns for_resilient_ systems</em>：重试/熔断/舱壁的经典模式说明</li>
+<li>Resilience4j / Opossum（Node 熔断库）官方文档：生产级熔断实现</li>
+<li>OpenAI 限流与 <code>Retry-After</code> 文档：429 的正确应对方式（以官方为准）</li>
+<li>Google SRE <em>Handling Overload</em>：退避与抖动的工程依据</li>
+<li>本系列 <code>product-multi-tenant</code>（隔离）、<code>deploy-monitor</code>（降级指标监控）</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="product-hitl.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">人在回路：让 Agent 可控可信任</span></a>
+    <a class="art-pagerLink art-pagerRight" href="product-multi-tenant.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">多租户与权限：一个后端服务好多个客户</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

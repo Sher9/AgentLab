@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>RAG 总览：检索增强生成的端到端逻辑 · AgentLab</title>
+  <meta name="description" content="从为什么需要 RAG 入手，拆解从文档摄入到查询生成的端到端流水线，定位质量瓶颈，并给出与微调、长上下文的选型对比与可运行骨架。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="RAG 总览：检索增强生成的端到端逻辑 · AgentLab"/>
+  <meta property="og:description" content="从为什么需要 RAG 入手，拆解从文档摄入到查询生成的端到端流水线，定位质量瓶颈，并给出与微调、长上下文的选型对比与可运行骨架。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#rag">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">📚</span>
+        <span class="art-moduleName">RAG</span>
+        <span class="art-diff">入门</span>
+        <span class="art-dur">35 分钟</span>
+      </div>
+      <h1 class="art-title">RAG 总览：检索增强生成的端到端逻辑</h1>
+      <p class="art-desc">从为什么需要 RAG 入手，拆解从文档摄入到查询生成的端到端流水线，定位质量瓶颈，并给出与微调、长上下文的选型对比与可运行骨架。</p>
+      <div class="art-tags"><span class="art-tag">#RAG</span><span class="art-tag">#检索增强</span><span class="art-tag">#端到端</span><span class="art-tag">#质量瓶颈</span><span class="art-tag">#选型</span></div>
+    </div>
+    <div class="prose"><h1>RAG 总览：检索增强生成的端到端逻辑</h1>
+<p>RAG（Retrieval-Augmented Generation，检索增强生成）是当下把『大模型的通用能力』接上『你自己的私有知识』最主流的工程范式。它的核心思想一句话就能说清：<strong>别让模型凭记忆硬编，先去知识库里把相关证据『检索』出来，再让模型基于证据『生成』答案。</strong></p>
+<p>这一篇是 RAG 分类的总入口：先讲为什么需要它、再走一遍端到端流程、然后定位质量瓶颈在哪、最后给选型判断框架。后续 <code>rag-chunking</code> / <code>rag-embedding</code> / <code>rag-vector-db</code> 等是该流水线上各组件的深挖。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">本篇定位</span></div><div class="co-body"><p>  这是一篇『总览』，目的是让你在动手前建立完整的 RAG 心智模型，知道每一环做什么、容易坏在哪。
+  具体切分、向量化、向量库、重排等实现细节，请顺着分类目录往下读，本篇只点到为止。</p>
+</div></div><h2 id="1-为什么需要-rag">1. 为什么需要 RAG</h2>
+<p>LLM 的两个老问题，RAG 恰好能补：</p>
+<ul>
+<li><strong>知识滞后</strong>：模型只懂训练截止前的内容，不知道你的内部文档、最新政策、今天的价格。</li>
+<li><strong>幻觉</strong>：模型对不知道的事会『自信地编』，尤其在专业领域危害极大。</li>
+</ul>
+<p>RAG 的做法是：把回答的『事实依据』从『模型参数记忆』改为『实时检索的外部文档』。模型不再靠回忆，而是『看着证据说』——这能显著降低幻觉，且知识更新只需更新文档库，不必重训模型。</p>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">RAG 不是唯一解</span></div><div class="co-body"><p>  不是所有『要接私有知识』的场景都该上 RAG。知识高度稳定且量小，微调可能更划算；
+  知识能塞进上下文窗口，长上下文直接塞也行。选型对比见第 5 节。先想清楚『要不要检索』，
+  再想『怎么检索』。</p>
+</div></div><h2 id="2-端到端流程-两条主链路">2. 端到端流程：两条主链路</h2>
+<p>RAG 系统有两条主链路，必须区分清楚——很多人调不好 RAG，是因为把『离线摄入』和『在线查询』混为一谈。</p>
+<pre><code>┌──────────────────────── 离线摄入（Ingestion）────────────────────────┐
+│  原始文档 → 解析清洗 → 切分(Chunking) → 向量化(Embedding) → 写入向量库  │
+└────────────────────────────────────────────────────────────────────┘
+                                 ↓ 建好索引
+┌──────────────────────── 在线查询（Query）───────────────────────────┐
+│  用户问题 → 向量化 → 检索(Top-K) → (可选重排) → 拼上下文 → 生成回答     │
+└────────────────────────────────────────────────────────────────────┘
+</code></pre><h3 id="2-1-离线摄入链路">2.1 离线摄入链路</h3>
+<p>目标是把『人类可读的文档』变成『机器可按语义检索的向量索引』：</p>
+<ol>
+<li><strong>解析（Parse）</strong>：把 PDF / Word / HTML / Markdown 抽成纯文本，保留必要结构（标题、表格）。</li>
+<li><strong>切分（Chunking）</strong>：把长文切成语义相对完整的片段。这是质量的命门，详见 <code>rag-chunking</code>。</li>
+<li><strong>向量化（Embedding）</strong>：每个 chunk 用 embedding 模型变成一组浮点数向量。详见 <code>rag-embedding</code>。</li>
+<li><strong>入库（Store）</strong>：向量 + 原文 + 元数据（来源、时间、权限）写入向量数据库，建索引。详见 <code>rag-vector-db</code>。</li>
+</ol>
+<h3 id="2-2-在线查询链路">2.2 在线查询链路</h3>
+<p>目标是『用最少噪声，把最相关的证据喂给模型』：</p>
+<ol>
+<li><strong>问题向量化</strong>：用户问题同样过 embedding 模型。</li>
+<li><strong>检索（Retrieve）</strong>：在向量库里按相似度取 Top-K 个 chunk。</li>
+<li><strong>重排（Rerank，可选）</strong>：用 Cross-Encoder 等对 Top-K 精排，提升精准度。详见 <code>rag-rerank</code>。</li>
+<li><strong>拼装上下文（Augment）</strong>：把 chunk 原文拼进 prompt，附带来源引用。</li>
+<li><strong>生成（Generate）</strong>：模型基于证据作答，并尽量给出引用溯源。详见 <code>rag-generation</code>。</li>
+</ol>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">两条链路用的是同一套 embedding 模型</span></div><div class="co-body"><p>  摄入和查询必须用<strong>同一个</strong> embedding 模型，否则『问题向量』和『文档向量』不在同一空间，
+  相似度毫无意义。这是部署时最高频的配置错误之一。</p>
+</div></div><h3 id="2-3-摄入链路骨架">2.3 摄入链路骨架</h3>
+<p>对应第 2.1 节的离线步骤，下面给出摄入侧的代码骨架。切分逻辑建议复用 <code>rag-chunking</code> 的切分函数；向量库写入用伪代码+注释表达——<strong>以你选定向量库的官方文档为准，API 易变</strong>。</p>
+<pre><code class="language-ts">// rag-ingest.ts —— RAG 离线摄入链路最小骨架（可运行，向量库部分用伪代码）
+import OpenAI from 'openai';
+import 'dotenv/config';
+import { z } from 'zod';
+import { splitDocument } from './chunking'; // 假设已实现，详见 rag-chunking
+
+const client = new OpenAI();
+
+// 用 Zod 约束入库文档的结构，挡住缺字段/类型错的脏数据
+const DocSchema = z.object({
+  id: z.string().min(1),
+  title: z.string(),
+  text: z.string().min(1),
+  source: z.string(),
+  updatedAt: z.string(), // 用来做增量更新与淘汰
+});
+
+// 批量向量化（真实场景要分批、限流，避免触发速率限制）
+async function embedBatch(texts: string[]): Promise&lt;number[][]&gt; {
+  const res = await client.embeddings.create({
+    model: 'text-embedding-3-small', // 与查询链路同一模型
+    input: texts,
+  });
+  return res.data.map((d) =&gt; d.embedding);
+}
+
+async function ingest(raw: unknown) {
+  const doc = DocSchema.parse(raw); // 非法直接抛，阻断脏数据入库
+
+  // ① 切分：把长文切成 chunk（实现见 rag-chunking）
+  const chunks = splitDocument(doc.text);
+
+  // ② 向量化：一次批量请求，省 token 省延迟
+  const vectors = await embedBatch(chunks.map((c) =&gt; c.text));
+
+  // ③ 写入向量库：伪代码，不同库 API 不同
+  //    —— 以官方文档为准，以下仅为示意 ——
+  //   await vectorDB.upsert(chunks.map((c, i) =&gt; ({
+  //     id: `${doc.id}#${i}`,
+  //     vector: vectors[i],
+  //     payload: { text: c.text, source: doc.source, updatedAt: doc.updatedAt },
+  //   })));
+  console.log(`已向量化文档 ${doc.id}，共 ${chunks.length} 个 chunk`);
+}
+
+await ingest({
+  id: 'policy-001',
+  title: '退款政策',
+  text: '自购买之日起 7 天内可申请无理由退款……',
+  source: 'internal/wiki/refund',
+  updatedAt: '2026-07-01',
+});
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">摄入也要批处理与限流</span></div><div class="co-body"><p>  大库摄入动辄几十万 chunk。全量并发 embedding 会触发厂商速率限制。
+  务必分批（如每批 100 条）、加固定间隔或令牌桶限流，并做断点续传——
+  中途失败能从『最后一个成功 chunk』继续，而不是从头再来。</p>
+</div></div><h2 id="3-可运行骨架-最小可用查询链路">3. 可运行骨架：最小可用查询链路</h2>
+<p>下面给出查询侧的最小骨架。embedding 用 OpenAI 官方 SDK（原生支持，可直接跑）；向量库的『检索』部分用伪代码+注释表达，因为具体 API 随选型不同而异——<strong>以你选定向量库的官方文档为准，API 易变</strong>。</p>
+<pre><code class="language-ts">// rag-query.ts —— RAG 在线查询链路最小骨架（可运行，向量库部分用伪代码）
+import OpenAI from 'openai';
+import 'dotenv/config';
+import { z } from 'zod';
+
+const client = new OpenAI();
+
+// ① 用 Zod 校验输入，挡住空查询/超长查询（边界在系统入口处校验）
+const QuerySchema = z.object({
+  question: z.string().min(1, '问题不能为空').max(1000, '问题过长'),
+  topK: z.number().int().min(1).max(20).default(5),
+});
+
+// ② 向量化问题
+async function embed(text: string): Promise&lt;number[]&gt; {
+  const res = await client.embeddings.create({
+    model: 'text-embedding-3-small', // 与摄入链路同一模型，务必一致
+    input: text,
+  });
+  return res.data[0].embedding;
+}
+
+// ③ 检索：伪代码。不同向量库 API 不同，下面以函数签名表达意图
+//    —— 以官方文档为准，以下写法仅为示意，请勿直接 copy 运行 ——
+async function retrieve(queryVec: number[], topK: number): Promise&lt;
+  { text: string; score: number; source: string }[]
+&gt; {
+  // 真实场景（思路）：
+  //   const hits = await vectorDB.search({ vector: queryVec, topK, filter: { ... } });
+  //   return hits.map(h =&gt; ({ text: h.payload.text, score: h.score, source: h.payload.source }));
+  // 这里返回空数组仅作骨架占位
+  return [];
+}
+
+// ④ 拼装上下文并生成（带上引用，方便抗幻觉与溯源）
+async function answer(question: string, topK: number) {
+  const qv = await embed(question);
+  const chunks = await retrieve(qv, topK);
+
+  // 把检索到的证据拼成带编号的上下文块
+  const context = chunks
+    .map((c, i) =&gt; `[${i + 1}] (来源: ${c.source}) ${c.text}`)
+    .join('\n\n');
+
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      {
+        role: 'system',
+        content:
+          '你是严谨的问答助手。只根据下面提供的【证据】回答，证据不足时明确说不知道，' +
+          '并在句末用 [编号] 标注引用。不要编造证据之外的信息。',
+      },
+      { role: 'user', content: `【证据】\n${context}\n\n【问题】${question}` },
+    ],
+  });
+  return { answer: res.choices[0].message.content, chunks };
+}
+
+// 入口：先用 Zod 校验，再跑链路
+const parsed = QuerySchema.safeParse({ question: '退款政策有哪些？', topK: 5 });
+if (!parsed.success) {
+  console.error('输入非法：', parsed.error.message);
+} else {
+  const out = await answer(parsed.data.question, parsed.data.topK);
+  console.log(out.answer);
+}
+</code></pre><p>运行方式：装依赖 <code>npm i openai dotenv zod</code>，再 <code>npx tsx rag-query.ts</code>（向量库检索部分需按你选型补全）。</p>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">先跑通骨架再优化</span></div><div class="co-body"><p>  不要一上来就堆重排、混合检索、图结构。先把『切分→入库→检索→生成』最小闭环跑通，
+  用真实问题测，再针对薄弱环一节一节加料。RAG 是『靠指标驱动迭代』的系统，不是『靠堆组件』。</p>
+</div></div><h2 id="4-质量瓶颈-rag-在哪里坏掉">4. 质量瓶颈：RAG 在哪里坏掉</h2>
+<p>RAG 的答案质量 = 检索质量 × 生成质量。任何一环漏水，结果都烂。按链路顺序列出最易出问题的点：</p>
+<table>
+<thead>
+<tr>
+<th>环节</th>
+<th>典型瓶颈</th>
+<th>表现</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>切分</td>
+<td>chunk 太大/太碎、切在句子中间</td>
+<td>检索召回的是『半截信息』，模型看不懂</td>
+</tr>
+<tr>
+<td>向量化</td>
+<td>模型领域不匹配、未归一化</td>
+<td>语义相似度失真，相关问题召不回</td>
+</tr>
+<tr>
+<td>检索</td>
+<td>Top-K 太小、无元数据过滤</td>
+<td>真正相关的被埋没，噪声 chunk 进上下文</td>
+</tr>
+<tr>
+<td>重排</td>
+<td>没做 rerank、纯靠向量</td>
+<td>Top-K 里相关项排不到最前，被截断</td>
+</tr>
+<tr>
+<td>生成</td>
+<td>上下文过长、指令不绑定证据</td>
+<td>模型忽略证据、照样幻觉、不标来源</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">检索错了，生成再强也救不回</span></div><div class="co-body"><p>  RAG 的质量天花板由检索决定。如果喂给模型的 Top-K 里根本没有正确答案，
+  再强的模型也只能『基于错误证据硬编』。所以调 RAG 的第一优先级永远是『检索召回率』，
+  而不是换更大的生成模型。先测检索、再调生成。</p>
+</div></div><h3 id="4-1-两个核心指标">4.1 两个核心指标</h3>
+<ul>
+<li><strong>召回率（Recall）</strong>：正确答案有没有进 Top-K。决定『能不能答得对』。</li>
+<li><strong>精准率（Precision）</strong>：进 Top-K 的是不是真相关。决定『噪声大不大、会不会被带偏』。</li>
+</ul>
+<p>工程上常用 <strong>Recall@K</strong> 作为检索侧的第一指标：拿一批已知答案的问题，看正确答案出现在前 K 个结果里的比例。低于 0.8 基本不用往下谈生成。评估细节见 <code>rag-eval</code>。</p>
+<h3 id="4-2-怎么测-recall-k-一个最小实现">4.2 怎么测 Recall@K：一个最小实现</h3>
+<p>Recall@K 的本质是『黄金证据有没有进 Top-K』。你不需要等完整问答，检索阶段就能测。下面给出检索侧的最小评测骨架：</p>
+<pre><code class="language-ts">// eval-recall.ts —— 离线测检索召回率的最小骨架
+import { embed } from './rag-query'; // 复用查询链路的 embed
+// import { retrieve } from './rag-query'; // 复用检索；真实场景把 retrieve 也导出
+
+// 黄金集：每个问题对应『应当被召回的标准 chunk 文本片段』
+const goldenSet = [
+  { question: '退款期限是几天？', expectedChunkContains: '7 天内可申请无理由退款' },
+  { question: '是否支持换货？', expectedChunkContains: '不支持换货，仅支持退款' },
+  // ……至少准备 20～50 条覆盖边界
+];
+
+async function recallAtK(k: number): Promise&lt;number&gt; {
+  let hit = 0;
+  for (const item of goldenSet) {
+    const qv = await embed(item.question);
+    const hits = await retrieve(qv, k); // 复用第 3 节的检索
+    const recalled = hits.some((h) =&gt; h.text.includes(item.expectedChunkContains));
+    if (recalled) hit++;
+  }
+  return hit / goldenSet.length; // 命中比例
+}
+
+const score = await recallAtK(5);
+console.log(`Recall@5 = ${score.toFixed(2)}`); // 低于 0.8 先别调生成
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">先锁 Recall 再动生成</span></div><div class="co-body"><p>  把 <code>recallAtK</code> 做成每次改动后可一键跑的脚本。改切分策略、换 embedding 模型、
+  调 Top-K 后立刻看分数变化，哪个改动让 Recall 掉，就回滚。这是 RAG 迭代的『单元测试』。</p>
+</div></div><h2 id="5-选型-rag-vs-微调-vs-长上下文">5. 选型：RAG vs 微调 vs 长上下文</h2>
+<p>三种『给模型接私有知识』的路线，怎么选？</p>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>RAG</th>
+<th>微调（SFT/LoRA）</th>
+<th>长上下文直塞</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>知识更新</td>
+<td>改文档即可，实时</td>
+<td>需重训，滞后</td>
+<td>每次请求带最新，但贵</td>
+</tr>
+<tr>
+<td>抗幻觉</td>
+<td>强（有证据溯源）</td>
+<td>弱（仍可能编）</td>
+<td>中（依赖模型不跑偏）</td>
+</tr>
+<tr>
+<td>适用知识量</td>
+<td>海量、易变</td>
+<td>稳定、需『学会某种风格/能力』</td>
+<td>中小、能塞进窗口</td>
+</tr>
+<tr>
+<td>成本</td>
+<td>检索+生成，可控</td>
+<td>训练贵、推理便宜</td>
+<td>每轮全量 token，贵</td>
+</tr>
+<tr>
+<td>典型场景</td>
+<td>知识库问答、客服</td>
+<td>固定领域的『语气/格式』内化</td>
+<td>单文档分析、一次性的长文理解</td>
+</tr>
+</tbody></table>
+<p>决策树（经验法则）：</p>
+<ul>
+<li>知识<strong>经常变</strong>、要<strong>溯源</strong>、量<strong>大</strong> → RAG。</li>
+<li>知识<strong>稳定</strong>，你要的是模型<strong>学会某种能力/口吻</strong>（而非记住事实）→ 微调。</li>
+<li>知识就<strong>一份文档</strong>、且能塞进窗口、追求简单 → 长上下文直塞。</li>
+</ul>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">它们不互斥</span></div><div class="co-body"><p>  成熟系统常组合：用微调让模型『学会按证据作答的格式与严谨度』，再用 RAG 提供实时事实。
+  但起步别贪多，先单一方案跑通基线，再按需叠加。</p>
+</div></div><h3 id="5-1-向量库的选型预告">5.1 向量库的选型预告</h3>
+<p>RAG 的检索端要落到一个向量数据库。主流选项与取舍（详解见 <code>rag-vector-db</code>）：</p>
+<ul>
+<li><strong>Chroma</strong>：轻量、单机优先、上手快，适合原型和中小规模。</li>
+<li><strong>Qdrant / Milvus</strong>：生产级、支持亿级向量、HNSW 索引、丰富元数据过滤。</li>
+<li><strong>pgvector</strong>：已有 Postgres 团队的优先，省一套运维，SQL 生态无缝。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">原型别纠结向量库</span></div><div class="co-body"><p>  原型阶段用 Chroma 甚至内存数组都行（见 m4 向量记忆示例）。先验证『检索→生成』闭环有效，
+  再为生产换 Qdrant/Milvus/pgvector。过早优化向量库选型，是 RAG 项目常见的精力错配。</p>
+</div></div><h2 id="6-rag-的演进形态">6. RAG 的演进形态</h2>
+<p>RAG 不是一成不变的『检索+生成』。业界把它的演化概括为三代，理解它们能帮你判断自己该做到哪一层：</p>
+<table>
+<thead>
+<tr>
+<th>形态</th>
+<th>核心特征</th>
+<th>你是否需要</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Naive RAG</strong></td>
+<td>切分→向量化→Top-K→生成，无重排、无改写</td>
+<td>原型验证、简单 FAQ 足够</td>
+</tr>
+<tr>
+<td><strong>Advanced RAG</strong></td>
+<td>加查询改写、混合检索（BM25+向量）、重排、上下文压缩</td>
+<td>大多数生产问答场景的基线</td>
+</tr>
+<tr>
+<td><strong>Modular RAG</strong></td>
+<td>把各环节拆成可插拔模块，按需编排（含 Agentic 检索）</td>
+<td>复杂、多源、需自省迭代的知识系统</td>
+</tr>
+</tbody></table>
+<ul>
+<li><strong>Naive RAG</strong> 的问题：查询词和文档表述不一致就召回失败，且 Top-K 噪声直接喂给模型。</li>
+<li><strong>Advanced RAG</strong> 用『查询改写』弥合表述差异、用『混合检索』补向量检索的关键词盲区、用『重排』把真相关顶到最前。这三招性价比极高，建议作为生产基线。对应章节：路由改写见 <code>rag-hybrid</code>、重排见 <code>rag-rerank</code>、压缩见 <code>rag-generation</code>。</li>
+<li><strong>Modular / Agentic RAG</strong> 进一步让模型在检索中『自省』：召回不够就换关键词再查、跨多个知识源路由、甚至先规划再检索。详见 <code>rag-agentic</code> 与 <code>rag-graph</code>（GraphRAG 用知识图谱补『全局性/总结性』问题）。</li>
+</ul>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">从 Naive 起步，按需升级</span></div><div class="co-body"><p>  别一上来就搭 Modular RAG。先用 Naive 跑出基线分数，盯着 Recall@K 的短板，
+  哪弱补哪：表述不一致→加查询改写；关键词召回差→加 BM25；Top-K 噪声大→加重排。
+  让指标告诉你该升到哪一层，而不是一口气堆满所有模块。</p>
+</div></div><h2 id="7-常见坑">7. 常见坑</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">摄入与查询用了不同 embedding 模型</span></div><div class="co-body"><p>  上线前务必核对：写库时和查询时 <code>model</code> 字段完全一致。一旦模型不一致，
+  相似度计算全部失真，检索结果等于随机。配置里把模型名抽成单一常量。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">只优化生成、忽视检索</span></div><div class="co-body"><p>  看到答非所问就换更大的模型、改 prompt，却从不测 Recall@K。
+  正确顺序是：先固定问题集测检索召回率，召回稳了再调生成。本末倒置会浪费大量算力。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">chunk 切得太大或太小</span></div><div class="co-body"><p>  太大 → 一个 chunk 塞进太多无关内容，噪声高、且浪费上下文；太小 → 语义被切散，
+  召回的片段读不懂。没有放之四海皆准的尺寸，必须按你的文档类型实测（详见 <code>rag-chunking</code>）。</p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">没有来源引用与人工兜底</span></div><div class="co-body"><p>  RAG 输出若不带引用，用户无法核验，出了问题难定位。务必要求模型标 [编号] 来源，
+  并在关键场景提供『查看原始文档』的入口。没有溯源的 RAG 在生产环境是合规风险。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">把整个知识库无脑塞进上下文</span></div><div class="co-body"><p>  不进行检索、直接把全库文档拼进 prompt，既烧 token 又引入海量噪声，模型反而答不好。
+  RAG 的价值正是『先检索、再注入』——克制地喂，不是越多越好。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">建立离线评测集再开工</span></div><div class="co-body"><p>  动手前先准备 20～50 个『问题→标准答案/标准证据』的黄金集。每次改切分、改模型、
+  改 Top-K 都跑一遍，看 Recall@K 与最终答案质量的变化。没有评测集的 RAG 调优，
+  都是盲调。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>RAG = 先检索、再生成，把事实依据从『模型记忆』改为『外部证据』，抗幻觉、易更新。</li>
+<li>系统分两条链路：离线摄入（解析→切分→向量化→入库）与在线查询（向量化→检索→重排→生成）。</li>
+<li>质量天花板由检索决定，第一指标是 <strong>Recall@K</strong>；召回稳了再调生成。</li>
+<li>选型上：知识易变/要溯源/量大 → RAG；知识稳定/要内化能力 → 微调；单文档/能塞窗 → 长上下文直塞。三者可组合。</li>
+<li>红线：摄入与查询用同一 embedding 模型、先建评测集、输出带引用、别忽视检索只调生成。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  总览建立起来了，接下来按链路深挖：先解决『文档怎么切』（rag-chunking），
+  再解决『怎么变成向量』（rag-embedding），然后是向量库（rag-vector-db）、
+  混合检索（rag-hybrid）、重排（rag-rerank）、生成与引用（rag-generation）。</p>
+</div></div><h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li><em>Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks</em>（Lewis et al., 2020，RAG 范式开山论文）</li>
+<li>OpenAI Embeddings 文档（模型选择、维度、归一化，以官方为准）</li>
+<li>Chroma / Qdrant / Milvus / pgvector 官方文档（向量库选型与 API，以官方为准）</li>
+<li>Ragas 文档（RAG 自动评估指标：faithfulness、answer relevancy、context recall）</li>
+<li>LlamaIndex / LangChain RAG 管线示例（框架层如何串起摄入与查询链路）</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <span></span>
+    <a class="art-pagerLink art-pagerRight" href="rag-chunking.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">文档切分：把长文切成可检索的语义单元</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

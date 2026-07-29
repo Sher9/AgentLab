@@ -1,0 +1,364 @@
+---
+title: AutoGen 实战：多 Agent 对话与代码执行
+description: 从对话即编排的视角拆解 AutoGen 的 AssistantAgent/UserProxyAgent/GroupChat，讲清代码执行、会话终止与定制 Agent，对比其他框架并给出伪代码骨架与踩坑，标注 API 易变。
+category: 框架
+order: 5
+difficulty: 进阶
+duration: 36 分钟
+tags: [AutoGen, 多Agent, 会话编排, 代码执行, GroupChat]
+date: 2026-07-29
+---
+
+# AutoGen 实战：多 Agent 对话与代码执行
+
+如果说 LlamaIndex 的出发点是『数据』、LangGraph 的出发点是『状态图』，那 **AutoGen** 的原点是『**对话**』——它把多 Agent 协作建模成一场**可执行的群聊**：每个 Agent 是一个会说话的角色，Agent 之间通过消息互相推动，直到任务完成。
+
+它最出圈的能力是**让 Agent 写代码、跑代码、看结果、自己改**。这一篇讲透它的角色模型、会话机制、代码执行的威力与风险、GroupChat 多人群聊，以及最容易踩的坑。
+
+<Callout type="note" title="框架类文章的阅读约定">
+  本文代码是**思路骨架 + 注释**，非粘贴即用的生产代码。AutoGen 经历过
+  `autogen` (0.2 及更早) 到 `ag2` / `autogen-agentchat` (0.4+) 的重大重构，
+  import 路径、Agent 类名、会话 API 变化极大。凡涉及真实接口都标注了版本区间，
+  真正落地请以官方文档为准，API 易变。
+</Callout>
+
+## 1. AutoGen 的定位：对话即编排
+
+AutoGen 的核心信念：**复杂任务可以由多个『会对话的 Agent』协作完成**，而你不需要手写复杂的控制流——你只要定义好『有哪些角色、他们怎么对话』，剩下的推进交给对话本身。
+
+典型角色：
+
+- **AssistantAgent**：由 LLM 驱动，负责思考、出方案、写代码；
+- **UserProxyAgent**：代表『用户/执行环境』，可以代替人发指令，也能**真正执行代码**并把输出回传；
+- **GroupChat / 多个 Specialist**：多人群聊时，不同专家 Agent 各司其职。
+
+它和『手写 for 循环调工具』（见 m1 工具调用）的最大区别：**谁来决定的下一步，是由 Agents 在对话中协商出来的**，而不是你写死的 if/else。
+
+<Callout type="tip" title="选它的第一性原理">
+  问自己：任务的难点是『多个角色反复磋商、互相补台』（比如一个写代码、一个审查、
+  一个跑测试），还是『固定步骤的流水线』？前者——AutoGen 天然契合；后者用
+  LangGraph 状态图反而更清晰可控。AutoGen 擅长『涌现式协作』，不擅长『强约束流程』。
+</Callout>
+
+## 2. 核心概念：两类 Agent + 一场对话
+
+| 概念 | 角色 | 关键能力 |
+|------|------|----------|
+| `AssistantAgent` | LLM 大脑 | 推理、生成回复、写代码（不直接执行） |
+| `UserProxyAgent` | 用户/执行端 | 转发人类输入、**执行代码**、回传结果；可设 `human_input_mode` |
+| `GroupChat` | 群聊管理器 | 决定『下一条消息由谁说』（按发言顺序或 LLM 选） |
+| `GroupChatManager` | 群聊主持 | 驱动 GroupChat 轮转，直到 `max_round` 或终止条件 |
+| `ConversableAgent` | 二者的基类 | 所有 Agent 都能收发消息，这是『对话即编排』的基础 |
+
+要点：**所有 Agent 都继承自 `ConversableAgent`，都能对话**。这让『加一个新角色』变得极轻——你只是往群里多放一个会说话的 Agent。
+
+## 3. 原理：一场对话如何推进任务
+
+AutoGen 的执行模型可以浓缩成下面这条回路：
+
+```
+初始化若干 Agent（Assistant + UserProxy + 可选专家）
+   ↓  UserProxy 发出第一条用户请求
+Assistant 回复（可能是文字，或一段待执行代码）
+   ↓  UserProxy 看到代码块 → 在本地/沙箱执行
+执行结果（stdout / 报错）作为新消息回传给群
+   ↓  Assistant 读取结果，决定：修正代码 / 继续 / 给出最终答案
+循环，直到满足终止条件（max_round 用尽 / 某 Agent 说 TERMINATE）
+```
+
+注意这里的张力：**Assistant 只『说』代码，UserProxy 才『跑』代码**。这跟 m1 里『模型建议、代码执行』的协议是同一个本质，只是 AutoGen 把它封装成了 Agent 之间的对话。
+
+<Callout type="note" title="终止条件是生命线">
+  对话没有天然终点。AutoGen 靠 `max_round`（最大轮数）和『某条消息含终止词』来刹车。
+  不设上限，Agent 可能陷入『写代码→报错→改代码→再报错』的死循环，烧钱无止尽。
+  这是用 AutoGen 的第一红线。
+</Callout>
+
+## 4. 可运行骨架：双人对话 + 代码执行
+
+下面用 Python 风格给出最小骨架，标注版本区间，重点在注释讲清『为什么这么配』。
+
+```python
+# autogen_code_exec_skeleton.py —— 双人对话 + 代码执行骨架（示意，API 易变）
+# 约定：AutoGen 0.2.x 用 `from autogen import ...`；0.4+ 改为 `autogen_agentchat`
+# 落地请以你安装版本的官方文档为准。
+
+# ① 配置 LLM（通过 config_list 告诉 AutoGen 用哪个模型/密钥）
+#    human_input_mode="NEVER" 表示 UserProxy 不等人，自动执行
+config = {"model": "gpt-4o", "api_key": "..."}  # 实际从环境变量读，勿硬编码
+
+# ② Assistant：LLM 大脑，负责思考与写代码
+assistant = AssistantAgent(
+    name="assistant",
+    llm_config={"config_list": [config]},
+    system_message="你是用 Python 解决数据问题的助手，写可运行代码。",
+)
+
+# ③ UserProxy：代表执行环境，关键在 code_execution_config
+user_proxy = UserProxyAgent(
+    name="user_proxy",
+    human_input_mode="NEVER",            # 不等人，全自动
+    code_execution_config={
+        "work_dir": "coding",            # 代码落盘目录
+        "use_docker": False,             # 见下方 Callout：生产务必上沙箱
+    },
+)
+
+# ④ 发起对话：用户请求 → 群内自动流转
+user_proxy.initiate_chat(
+    assistant,
+    message="用 pandas 读 data/sales.csv，算出各区域销售额总和。",
+)
+# ↑ Assistant 写代码 → UserProxy 执行 → 结果回传 → Assistant 继续，直到完成或达上限
+```
+
+<Callout type="danger" title="代码执行=任意命令执行">
+  `code_execution_config` 开启后，LLM 生成的代码会在你的机器/容器里**真实运行**。
+  这意味着『让 Agent 跑代码』≈『让 LLM 执行任意 shell/python』。模型可能被提示注入
+  诱导去删文件、读密钥、连外网。生产环境必须：用 Docker 沙箱、最小化依赖与权限、
+  限定工作目录、禁止联网/敏感路径。绝不在宿主机裸跑。
+</Callout>
+
+<Callout type="warn" title="use_docker 不是可选项">
+  上面 `use_docker: False` 只为演示。生产请设为 True 或自带沙箱（见工具沙箱主题）。
+  即便用 Docker，也要限制资源（CPU/内存/时长）与挂载，否则一段死循环代码就能拖垮主机。
+</Callout>
+
+## 5. GroupChat：多人群聊协作
+
+双人对话只能『一个想、一个跑』。真实复杂任务往往需要多个专家轮番上阵——比如『架构师出方案 → 程序员写码 → 测试员跑用例 → 审查员挑刺』。这就是 `GroupChat`。
+
+```python
+# autogen_groupchat_skeleton.py —— 多 Agent 群聊骨架（示意）
+from autogen import GroupChat, GroupChatManager
+
+# ① 定义多个专家 Agent（各自 system_message 决定性格与职责）
+architect = AssistantAgent(name="architect", llm_config=cfg,
+                           system_message="你只负责拆解任务、给方案，不写实现。")
+coder    = AssistantAgent(name="coder",    llm_config=cfg,
+                           system_message="你只写 Python 实现代码。")
+reviewer = AssistantAgent(name="reviewer", llm_config=cfg,
+                           system_message="你审查代码，指出 bug 与风险。")
+
+# ② GroupChat 管理『谁发言』：可顺序轮转，也可让 LLM 动态选下一个说话者
+group = GroupChat(
+    agents=[user_proxy, architect, coder, reviewer],
+    messages=[],
+    max_round=12,                  # 关键：群聊总轮数上限，防失控
+    # speaker_selection_method="auto"  # 让 LLM 决定下一位发言者（更灵活）
+)
+
+# ③ Manager 驱动群聊，user_proxy 作为执行端参与
+manager = GroupChatManager(group=group, llm_config=cfg)
+user_proxy.initiate_chat(manager, message="实现一个线程安全的 LRU 缓存。")
+```
+
+<Callout type="tip" title="发言策略决定灵活度">
+  `speaker_selection_method` 是 GroupChat 的灵魂：`round_robin`（顺序轮）简单可控但死板；
+  `auto`（LLM 选下一位）更聪明但需要好的 system_message 引导，且更贵。
+  任务固定流程多→用 round_robin；任务开放、需要临场分工→用 auto。
+</Callout>
+
+<Callout type="warn" title="群聊更贵也更难停">
+  每多一个 Agent、每多一轮，都是额外 LLM 调用。GroupChat 的 token 与延迟是
+  `Agent数 × 轮数` 级别增长。务必设 `max_round`，并在 system_message 里明确『何时该说
+  TERMINATE』，否则群聊会聊到上限才罢手，浪费且结果未必更好。
+</Callout>
+
+## 6. 定制 Agent：不止聊天，还能接工具
+
+`ConversableAgent` 可以挂『函数工具』，让某个 Agent 除了说话还能调外部 API（而不只是执行代码）。这是把 AutoGen 从『代码执行器』升级成『通用多 Agent 系统』的关键。
+
+```python
+# autogen_tool_skeleton.py —— 给 Agent 挂工具（示意）
+def get_weather(city: str) -> str:
+    # 真实场景调天气 API；这里返回占位
+    return f"{city}：晴，26°C"
+
+# 把函数注册成 Agent 可调用的工具（参数/描述由框架抽取或显式给出）
+assistant.register_function(
+    function_map={"get_weather": get_weather}
+)
+# ↑ 之后 Assistant 在对话中可『决定调用 get_weather』，UserProxy 执行后回传结果
+```
+
+<Callout type="note" title="工具 vs 代码执行">
+  AutoGen 提供两种『让 Agent 动手』的方式：注册函数工具（受控、安全）、直接执行代码
+  （灵活、危险）。能用明确函数的，优先用工具而不是让模型自由写代码——
+  前者边界清晰、易审计，后者能力无上限但风险同量级。安全与能力在此直接权衡。
+</Callout>
+
+## 7. 对比：AutoGen vs 其他方案
+
+| 方案 | 核心隐喻 | 擅长 | 不擅长 |
+|------|----------|------|--------|
+| AutoGen | 多 Agent 群聊 | 多角色协作、代码自动执行、涌现式推进 | 强约束流程、精细状态控制 |
+| LangGraph | 状态图 | 分支/循环/人在回路、可控可复现 | 对纯多角色商讨偏重 |
+| LlamaIndex | 数据框架 | 检索/RAG 专精 | 多 Agent 编排弱 |
+| CrewAI | 角色剧组 | 角色+流程的人性化编排 | 代码执行深度不及 AutoGen |
+| 原生 SDK | 裸循环 | 完全可控、零抽象 | 多 Agent 协作全手写 |
+
+<Callout type="tip" title="代码执行场景几乎绕不开 AutoGen">
+  如果你的需求本质是『让 LLM 自己写程序解决问题、看报错自己修』（数据分析、自动化脚本、
+  原型验证），AutoGen 的 UserProxy + 代码执行是同类里最顺手的。但要注意沙箱与成本。
+</Callout>
+
+## 8. 踩坑与最佳实践
+
+<Callout type="danger" title="裸跑代码执行=开门揖盗">
+  见第 4 节。LLM 生成的代码在你的环境真实执行，提示注入可诱导它做破坏性操作。
+  生产三件套：Docker 沙箱、最小权限、资源与网络限制。没有沙箱就不要开代码执行。
+</Callout>
+
+<Callout type="danger" title="没有 max_round 会失控">
+  对话没有天然终点。GroupChat 与双人对话都必须设 `max_round` 或明确终止词。
+  否则『写码→报错→改码』的死循环会一直烧 token 到额度耗尽。
+</Callout>
+
+<Callout type="warn" title="system_message 决定协作质量">
+  AutoGen 里每个 Agent 的 `system_message` 就是它的『性格与职责契约』。写得含糊，
+  群聊就会『两个 Agent 抢着写码』或『没人拍板』。给每个角色清晰边界：
+  『你只做 X，不做 Y，完成后说 TERMINATE』。群聊的质量 ≈ system_message 的质量。
+</Callout>
+
+<Callout type="warn" title="上下文在轮转中膨胀">
+  每轮对话都带着历史消息。GroupChat 轮数一多，prompt 迅速变长、成本飙升、早期指令被稀释。
+  考虑定期摘要历史、限制单轮消息长度、或把中间产物落盘而非全量塞回对话。
+</Callout>
+
+<Callout type="danger" title="版本迁移巨坑">
+  AutoGen 0.2 → 0.4 是断裂式重构（包名 `autogen` → `ag2`/`autogen-agentchat`，
+  Agent 类与会话 API 全改）。抄旧教程代码大概率跑不起来。落地前先锁定版本，
+  读对应版本文档，不要 `pip install autogen` 最新就期望旧示例能跑。
+</Callout>
+
+<Callout type="tip" title="可复现要先固化随机性">
+  多 Agent 协作对 prompt、模型、温度都很敏感。要做质量回归（见评估调优分类），
+  先固定模型版本与 temperature，把每轮对话落盘成 case，才能对比『改了什么让结果变好』。
+  否则你永远不知道是调优生效还是模型抽风。
+</Callout>
+
+## 9. 人在回路：把决策权交还给人类
+
+全自动群聊很爽，但有些节点必须人拍板：删库、发对外邮件、花真钱。AutoGen 通过 `UserProxyAgent` 的 `human_input_mode` 把人插进对话：
+
+- `ALWAYS`：每轮都问人（最安全、最慢）；
+- `TERMINATE`（默认常见值之一）：仅当 Agent 要终止时征求确认；
+- `NEVER`：全自动，无人参与（见第 4 节，配合沙箱）。
+
+```python
+# autogen_hitl_skeleton.py —— 人在回路骨架（示意）
+user_proxy = UserProxyAgent(
+    name="user_proxy",
+    human_input_mode="ALWAYS",   # 每轮暂停等人确认，适合高风险操作
+    code_execution_config={...},
+)
+# ↑ 当 Assistant 给出要执行的代码，系统先打印出来等人敲 y/n，再决定是否真跑
+```
+
+<Callout type="warn" title="高风险动作别设 NEVER">
+  凡是带副作用（写库、发消息、花钱、删文件）的流程，绝不要用 `human_input_mode="NEVER"`
+  全自动跑。把『执行前确认』作为默认关卡，把 `NEVER` 只留给纯只读、可重放的分析任务。
+  人在回路不是体验负担，是生产系统的安全带。
+</Callout>
+
+## 10. 与外部系统集成：把检索/API 当成工具
+
+AutoGen 不该是孤岛。真实系统里，Agent 群聊往往要『先查知识库、再算、再调业务 API』。做法和第 6 节一致——把这些能力注册成工具或代码可调用函数，融入对话。
+
+```python
+# autogen_rag_tool_skeleton.py —— 把检索能力注入群聊（示意）
+def search_kb(question: str) -> str:
+    # 内部调 LlamaIndex / 向量库的检索接口，返回相关片段文本
+    return retrieve_from_vectorstore(question)
+
+assistant.register_function(function_map={"search_kb": search_kb})
+# ↑ 群聊中 Assistant 可先调 search_kb 拿到事实，再基于事实写代码或作答
+```
+
+<Callout type="tip" title="框架组合的常见形态">
+  实际架构里常见：LlamaIndex 负责检索、AutoGen 负责多 Agent 协作、两者通过『工具』
+  打通。不要执念『一个框架包办』。把每个框架用在它最强的那一环，才是工程上最稳的组合。
+</Callout>
+
+## 11. 可观测性：把每一场对话落盘
+
+群聊出错时，最难的是『还原当时发生了什么』。AutoGen 的对话本质是消息序列，天然可序列化——把它落盘，就是一份可回放的 trace。
+
+```python
+# autogen_trace_skeleton.py —— 落盘对话做回归（示意）
+import json
+
+# 每次群聊结束后，把 messages 序列化保存
+def save_transcript(chat_result, path):
+    with open(path, "w") as f:
+        json.dump(chat_result.chat_history, f, ensure_ascii=False, indent=2)
+    # ↑ 之后可重放、可对比不同模型/提示下的差异，是质量回归的素材
+
+# 进一步：把落盘内容接到 LangSmith / Phoenix / OTel，做跨轮延迟与 token 看板
+```
+
+<Callout type="note" title="没有 trace 的多 Agent 系统等于盲飞">
+  群聊路径不可完全预测，若不落盘，一次『答错了』你连『是哪个 Agent 在哪轮带偏的』都查不出。
+  把对话历史当一等公民存储，是后续做评估、做回归、做成本审计的前提（详见评估调优分类）。
+</Callout>
+
+## 12. 成本与性能：群聊是 token 放大器
+
+多 Agent 系统最容易被低估的就是开销。一次群聊的 token 消耗约等于：
+
+```
+单次群聊成本 ≈ Σ(每个 Agent 每轮看到的上下文长度) × 轮数 × 单价
+```
+
+`Agent 数` 和 `max_round` 是两个放大器。一个 4 Agent × 12 轮的群聊，prompt 里反复携带完整历史，成本可能是单次问答的几十倍。优化抓手：
+
+- **压轮数**：在 system_message 明确『尽早 TERMINATE』，避免无效寒暄轮；
+- **压上下文**：定期摘要历史、把大产物落盘而非全量回传；
+- **分层模型**：让『选下一位发言者』这类轻决策用便宜小模型，重思考才用贵模型；
+- **评估是否真要群聊**：很多任务双人（想+跑）就够，硬上 GroupChat 纯属加价。
+
+<Callout type="tip" title="先算再上">
+  上线前用上面的公式估一笔：假设 1000 次/天的群聊，单次成本 × 轮数 × Agent 数，乘出来
+  可能吓你一跳。多 Agent 的『智能』是用钱买来的，务必先确认收益覆盖成本。
+</Callout>
+
+## 13. 适用与不适用
+
+**适用：**
+
+- 任务需要多个角色反复磋商、互相补台（写码+审查+测试）；
+- 核心是『让 LLM 自动写程序并自我修正』（数据分析、自动化、原型）；
+- 你接受一定程度的『涌现式、不可完全预测』的执行路径；
+- 有沙箱环境兜底代码执行的安全风险。
+
+**不适用：**
+
+- 流程强约束、需精确状态控制与人在回路审批（看 LangGraph）；
+- 核心是知识库检索问答（看 LlamaIndex）；
+- 对成本/延迟极度敏感、每轮都贵不起（群聊 token 消耗大）；
+- 团队要求执行路径完全可复现、可审计（对话式推进天然较难）。
+
+## 小结
+
+- AutoGen 把多 Agent 协作建模成『可执行的对话』：Assistant 想、UserProxy 跑、群聊协商推进。
+- 代码执行是招牌能力，也是最大风险——必须 Docker 沙箱 + 最小权限 + 资源限额。
+- 终止条件（max_round / TERMINATE 词）是生命线，不设上限会死循环烧钱。
+- GroupChat 适合多专家协作，但更贵更难停；发言策略 round_robin/auto 按任务灵活度选。
+- 能用明确函数工具就别让模型自由写代码：边界清晰、易审计。
+- 红线：沙箱兜底、轮数上限、system_message 写清职责、上下文防膨胀、版本以官方文档为准。
+
+<Callout type="note" title="下一步">
+  若你的难点是『强约束、可复现、人在回路的状态机编排』，看 **framework-langgraph**；
+  若任务重心是『检索知识库』，看 **framework-llamaindex**；要横向比对全框架版图，
+  回 **m3-frameworks** 选型篇。
+</Callout>
+
+## 延伸阅读 / 参考
+
+- AutoGen 官方文档（0.2 与 0.4+ 两代 API 差异巨大，以你锁定的版本为准）
+- AutoGen `AssistantAgent` / `UserProxyAgent` / `GroupChat` 用法与 `code_execution_config`
+- 代码执行沙箱实践（Docker 隔离、资源限额、网络限制，详见工具沙箱主题）
+- LangGraph / CrewAI 官方文档（对比状态图编排与角色剧组式编排的取舍）
+- 论文 *AutoGen: Enabling Next-Gen LLM Applications via Multi-Agent Conversation*
+- 评估调优分类：多 Agent 系统的可复现性与质量回归方法

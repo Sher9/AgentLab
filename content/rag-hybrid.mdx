@@ -1,0 +1,357 @@
+---
+title: 混合检索：BM25 + 向量的优势互补
+description: 理解纯向量检索的盲区，掌握 BM25 关键词召回、向量语义召回、RRF 融合、元数据过滤与查询改写，给出可运行骨架与踩坑要点。
+category: RAG
+order: 5
+difficulty: 进阶
+duration: 36 分钟
+tags: [混合检索, BM25, RRF, 查询改写, 元数据过滤, 向量检索]
+date: 2026-07-29
+---
+
+# 混合检索：BM25 + 向量的优势互补
+
+纯向量检索很强，但它有盲区：**专有名词、错误码、产品型号、最新数字**——这些"字面要精确命中"的内容，向量检索反而容易翻车（它更关心语义相似，不关心字面对不对）。反过来，传统关键词检索（BM25）对这些字面值极其精准，却不懂"退钱"和"退款"是一个意思。
+
+**混合检索（Hybrid Search）= 向量召回 + 关键词召回，再融合排序**。本篇讲清为什么必须混、怎么融、以及查询改写与元数据过滤这两个实战杠杆。
+
+## 1. 为什么纯向量检索不够
+
+先看三个纯向量检索会跪的典型场景：
+
+| 场景 | 用户问 | 期望召回 | 纯向量为什么翻车 |
+|------|--------|----------|------------------|
+| 专有名词 | "ERR_TIMEOUT_502 怎么解" | 含该错误码的文档 | 向量把"502"当成普通数字，语义上和"错误/超时"混了，召回不精准 |
+| 精确型号 | "iPhone 15 Pro 续航" | 含该型号的段落 | "15 Pro"被向量模糊成"新款手机"，召回一堆无关机型 |
+| 最新事实 | "2026 医保新规" | 含 2026 字样的文档 | 语义上"新规"和"旧规"几乎同向量，年份信息被稀释 |
+
+<Callout type="note" title="关键认知">
+  向量检索是『语义近似』，不是『字面包含』。凡是『字面必须精确』的需求，
+  都该让 BM25 这类关键词检索来兜底。两者不是替代关系，是互补关系。
+  生产级 RAG 几乎都上混合，纯向量只在『纯语义、无专名』场景才够用。
+</Callout>
+
+## 2. BM25：经典关键词召回原理
+
+BM25 是 TF-IDF 的升级版，给一个查询词在文档中的"相关性打分"。它做了两件聪明的事：
+
+- **词频饱和**：一个词出现 1 次和 10 次相关性差很多，但 100 次和 110 次差别就小了（对数饱和，防止堆词作弊）；
+- **逆文档频率（IDF）**：越罕见的词越值钱（"Timeout"比"的"重要）；
+- **文档长度归一**：长文档天然词多，BM25 惩罚长文档的虚高得分，避免长文霸榜。
+
+```
+BM25 得分 ≈ Σ  IDF(词) × [ tf × (k+1) ] / [ tf + k×(1 - b + b×len/avgLen) ]
+                ↑稀有词更值钱   ↑词频饱和      ↑长度归一（b 控制惩罚强度）
+```
+
+<Callout type="tip" title="BM25 不用 embedding">
+  BM25 是纯统计、零模型、零算力，建好倒排索引后毫秒级返回。
+  它和向量检索可以"各跑各的、最后融合"，因此混合检索的额外成本极低，
+  收益却覆盖了一大票向量盲区。性价比极高的增强手段。
+</Callout>
+
+<Callout type="warn" title="BM25 不懂同义词">
+  BM25 只看字面。用户问"退钱"，文档写"退款"，字面不同就召回不到。
+  这正是向量的强项——所以才要"混"。单独用 BM25 也会漏语义相关块。
+</Callout>
+
+## 3. 混合检索架构：两条路并行
+
+最经典的拓扑是"双路召回、一路融合"：
+
+```
+用户查询 q
+  ├─ 向量路： embed(q) → 向量库 ANN → 召回 top-k 向量结果（带排名）
+  └─ 关键词路：q → BM25 倒排索引 → 召回 top-k 关键词结果（带排名）
+                    │
+                    └─ 融合层（RRF / 加权）→ 统一 top-k → 重排 → 生成
+```
+
+两条路彼此独立、可单独调优：向量路负责"语义广撒网"，关键词路负责"专名精准命中"。融合层把两份排名合成一份。
+
+<Callout type="tip" title="两路 k 可以不同">
+  向量路常取较大 k（如 20）保证语义覆盖，关键词路取较小 k（如 10）避免噪声。
+  融合时再统一裁剪。别想当然两路 k 必然相等——按各自召回质量调。
+</Callout>
+
+## 4. 融合策略：RRF 为什么是默认首选
+
+把"两份带排名的结果"合成一份，最稳的做法是 **RRF（Reciprocal Rank Fusion，倒数排名融合）**：
+
+```
+RRF 得分 = Σ  1 / (k + rank_i)
+          各路   （k 通常取 60，抑制排名第 1 的相对优势、平滑差异）
+```
+
+含义：某文档在越多路里排名越靠前，它的 RRF 总分越高。它**只用排名、不用原始分数**——这正是对抗"向量分和 BM25 分量纲不同"的关键：两者分数范围差几个数量级，直接加权相加会被一方碾压，而 RRF 只看"排第几"，天然公平。
+
+```ts
+// rrf.ts —— 倒数排名融合（真实可跑，纯算法无外部依赖）
+type Hit = { id: string; rank: number };
+
+// 输入多路结果（每路已是按相关度排好序的 id 列表），输出融合后排名
+function rrf(lists: string[][], k = 60): { id: string; score: number }[] {
+  const scoreMap = new Map<string, number>();
+  for (const list of lists) {
+    list.forEach((id, idx) => {
+      const rank = idx + 1; // 排名从 1 开始
+      // 关键：只看排名，不看原分数，避免量纲冲突
+      scoreMap.set(id, (scoreMap.get(id) ?? 0) + 1 / (k + rank));
+    });
+  }
+  // 按融合得分降序，得到最终统一排名
+  return [...scoreMap.entries()]
+    .map(([id, score]) => ({ id, score }))
+    .sort((a, b) => b.score - a.score);
+}
+
+// 用法示例：向量路召回 [a, b, c]，关键词路召回 [b, d, a]
+// rrf([['a','b','c'], ['b','d','a']]) → b 在两路都很靠前，总分最高
+```
+
+<Callout type="note" title="RRF 对量纲免疫">
+  向量相似度可能是 0.83，BM25 可能是 12.7，直接加权 `0.5×向量 + 0.5×BM25` 会被 BM25 碾压。
+  RRF 完全不看这些数值，只看"在第几名"，所以无需归一化、无需调权重，开箱即用且稳。
+  这也是它成为混合检索默认融合算法的根本原因。
+</Callout>
+
+<Callout type="tip" title="想要可调权重时再用加权">
+  若你确有证据"某路更重要"（如法律场景专名权重极高），可在 RRF 之上做
+  `score = w_vec×RRF_vec + w_kw×RRF_kw`，但先用纯 RRF 跑基线，再数据驱动地加权重，
+  别一上来就手拍权重。
+</Callout>
+
+## 5. 元数据过滤：检索的第三只手
+
+混合检索之外，还有一个常被低估的杠杆：**元数据过滤**。它和"语义/关键词"是正交的维度——先按业务字段缩小范围，再在子集里做混合召回。
+
+典型过滤维度：
+
+- **权限/租户**：`tenant_id = 当前用户`，多租户隔离的硬红线；
+- **时间**：`updated_at > 2026-01-01`，保证召回的是最新版文档；
+- **类型/来源**：`category = '法律'` 或 `source = '手册v3'`，限定领域；
+- **语言**：`lang = 'zh'`，避免跨语种噪声。
+
+<Callout type="warn" title="过滤必须 pre-filter">
+  和第 5 篇向量库强调的一致：过滤要在 ANN/BM25 检索**之前**生效（pre-filter）。
+  若先召回再剔除，可能"过滤后不足 k 条"导致召回率崩塌。选支持 pre-filter 的引擎。
+</Callout>
+
+<Callout type="danger" title="过滤过严等于没召回">
+  同时叠 `tenant_id + 时间 + 类型 + 语言` 多个强过滤，候选集可能极小，ANN 无米下锅。
+  过滤条件要"必要且最小"：权限/租户是必选，其余按需，避免组合爆炸导致空结果。
+</Callout>
+
+## 6. 查询改写：让召回率再上一个台阶
+
+很多"搜不到"不是检索器的问题，而是**用户查询太短、太口语、有错别字**。查询改写（Query Rewriting）在检索前用 LLM 把问题"改写成更适合检索的形式"：
+
+- **扩展**：把"怎么退钱"扩成"退款流程 退货 钱款原路返回"；
+- **拆解**：把复合问题拆成多个子查询，分别召回再合并；
+- **HyDE（假设性文档嵌入）**：让 LLM 先"假装回答"一段，再用这段去向量检索——用"答案的语义"去匹配"文档的语义"，常能提升召回。
+
+```ts
+// query-rewrite.ts —— 用 LLM 改写查询以提升召回（OpenAI SDK，真实可跑骨架）
+import OpenAI from 'openai';
+import 'dotenv/config';
+
+const client = new OpenAI();
+
+// 把口语化短问，扩写成更适合 BM25+向量 的检索式
+async function rewriteQuery(userAsk: string): Promise<string> {
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      {
+        role: 'system',
+        content:
+          '你负责把用户问题改写成检索词。要求：1) 补全同义词与上下位词；' +
+          '2) 保留所有专有名词/型号/错误码原样；3) 输出一行，用空格分隔关键词。',
+      },
+      { role: 'user', content: userAsk },
+    ],
+  });
+  return res.choices[0].message.content?.trim() ?? userAsk;
+}
+
+// HyDE 思路：先生成一段"假设答案"，再对其向量化去检索（向量路增强）
+async function hydeVector(client: OpenAI, userAsk: string, embed: (t: string) => Promise<number[]>) {
+  const fake = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: '针对问题写一段可能出现在文档里的回答要点（一两句）。' },
+      { role: 'user', content: userAsk },
+    ],
+  });
+  const text = fake.choices[0].message.content ?? userAsk;
+  return embed(text); // 用这段"假设答案"的向量去做 ANN，语义对齐文档
+}
+```
+
+<Callout type="tip" title="改写也要防注入">
+  改写模型的输入来自用户，而输出会进检索/可能进 prompt。必须对改写结果做长度截断与
+  敏感词过滤，避免用户借"改写"塞入提示注入。改写是检索环节，不是信任边界。
+</Callout>
+
+<Callout type="warn" title="HyDE 不是万能">
+  HyDE 在"答案风格和文档一致"时有效；若文档是代码/表格、答案风格迥异，假答案反而带偏。
+  用评测集验证 HyDE 是否真提升召回，别盲加。
+</Callout>
+
+## 7. 可运行骨架：混合检索端到端
+
+下面把"向量路 + 关键词路 + RRF 融合"串起来。向量 embedding 用 OpenAI SDK 真实可跑；BM25 与向量库的具体 API 因库而异，**以官方文档为准**。
+
+```ts
+// hybrid-search.ts —— 混合检索骨架（向量路 + 关键词路 + RRF）
+import OpenAI from 'openai';
+import 'dotenv/config';
+
+const client = new OpenAI();
+
+async function embed(text: string): Promise<number[]> {
+  const r = await client.embeddings.create({
+    model: 'text-embedding-3-small',
+    input: text,
+  });
+  return r.data[0].embedding;
+}
+
+async function hybridSearch(userAsk: string, topK = 5): Promise<string[]> {
+  // 0) 先改写，提升两路召回
+  const rewritten = await rewriteQuery(userAsk);
+
+  // 1) 向量路：embed（改写后的查询）→ 向量库 ANN top-k
+  const qv = await embed(rewritten);
+  // const vecHits = await vecClient.search({ vector: qv, limit: 20 });
+  // —— 向量库 API 以官方文档为准 ——
+  const vecHits: string[] = []; // 占位，实际为召回的文档 id 列表（已按相关度排序）
+
+  // 2) 关键词路：BM25 倒排索引查改写后的查询 top-k
+  // const kwHits = await bm25Client.search(rewritten, { limit: 10 });
+  // —— BM25 引擎 API 以官方文档为准（如 Elasticsearch / Tantivy / 自研倒排）——
+  const kwHits: string[] = []; // 占位
+
+  // 3) RRF 融合两路排名（算法见第 4 节，真实可跑）
+  const fused = rrf([vecHits, kwHits]);
+
+  // 4) 融合后再过一次重排（rag-rerank）效果更佳，此处直接取 top-k 文本
+  return fused.slice(0, topK).map((h) => h.id);
+  // 实际应把 id 映射回文档块文本，注入生成 prompt
+}
+
+// 复用第 4 节的 rrf 函数（此处省略定义，见上文）
+function rrf(lists: string[][], k = 60): { id: string; score: number }[] {
+  // ... 见第 4 节实现
+  return lists.flat().map((id) => ({ id, score: 0 }));
+}
+```
+
+<Callout type="note" title="融合后建议再过一道重排">
+  RRF 给出"粗排 top-k"，但向量/关键词的语义精细度有限。生产常在融合后再接一个
+  Cross-Encoder 重排（见 rag-rerank），把 top-20 精排成 top-5，质量明显更稳。
+  所以混合检索和重排是"黄金搭档"，不是二选一。
+</Callout>
+
+## 8. 对比与踩坑
+
+### 8.1 三种召回策略对比
+
+| 策略 | 擅长 | 短板 | 适用 |
+|------|------|------|------|
+| 纯向量 | 语义、同义、模糊 | 专名/数字/最新事实翻车 | 纯语义、无专名 |
+| 纯 BM25 | 专名、型号、精确字面 | 不懂同义、漏语义相关 | 关键词确定的检索 |
+| 混合（向量+BM25+RRF） | 兼顾语义与字面 | 双路运维、略复杂 | 生产级 RAG 默认 |
+
+<Callout type="danger" title="两路分数直接加权相加">
+  最常见错误：把向量分（0~1）和 BM25 分（可达几十）直接 `w1×vec + w2×kw` 相加。
+  BM25 会碾压向量，融合退化成"纯 BM25"。务必用 RRF（只看排名）或先各自归一化。
+</Callout>
+
+<Callout type="warn" title="关键词路忘记做分词与停用词">
+  中文 BM25 必须先做分词（jieba 等），否则"退钱"被当成一个字一个字查，毫无意义。
+  英文要小写化、去停用词（"the/a"）。分词质量直接决定关键词路召回上限。
+</Callout>
+
+<Callout type="warn" title="改写引入延迟与成本">
+  每次检索前多调一次 LLM 改写，增加一次往返与 token 成本。高频场景可考虑：
+  改写结果缓存（相同问题不重复改写）、或对简单问题跳过改写。用数据判断是否值得。
+</Callout>
+
+<Callout type="tip" title="用评测集定融合参数">
+  RRF 的 k、两路各自的 top-k、是否加权重，全部交给评测集（如 Ragas 检索召回@k）决定，
+  而不是拍脑袋。改一个参数跑一次回归，让指标说话。
+</Callout>
+
+## 9. 决策清单：你的场景要上混合吗
+
+不是所有 RAG 都该上混合。用这份清单快速判断：
+
+- ✅ 文档含**专有名词 / 型号 / 错误码 / 精确数字** → 必须上 BM25 兜底；
+- ✅ 用户提问**口语化、简短、有错别字** → 查询改写大概率值得加；
+- ✅ 多业务域 / 多租户 → 元数据过滤是必选项；
+- ⚠️ 纯语义知识（如"什么是 Transformer"）且**无专名** → 纯向量可能已够，先测再决定；
+- ⚠️ 查询量极低、文档极少 → 上混合的运维成本可能高于收益，Chroma + 纯向量先跑通。
+
+<Callout type="note" title="先纯向量跑基线">
+  别一上来就堆混合。先用纯向量 + 一份评测集测召回@k，找出"漏掉的到底是专名还是语义"，
+  再针对性补 BM25 或改写。盲目上全套，既增加复杂度又难定位问题。
+</Callout>
+
+### 9.1 BM25 倒排索引长什么样（思路伪代码）
+
+理解 BM25 的存储形态，有助于你选引擎、排障：
+
+```ts
+// inverted-index.ts —— BM25 倒排索引思路（伪代码，非某库真实 API）
+// 倒排索引：词 → 出现在哪些文档、词频多少
+// 形如： "超时" → [{doc:'d1', tf:3}, {doc:'d3', tf:1}]
+//       "退款" → [{doc:'d1', tf:2}, {doc:'d2', tf:5}]
+
+// 查询 "超时 退款" 时：
+//   1) 两词各自取倒排列表
+//   2) 按 IDF 加权、按文档聚合 tf、按长度归一 → 给每个文档算 BM25 分
+//   3) 按分数降序取 top-k
+// 这一步是纯内存/磁盘查表，毫秒级，与 embedding 完全解耦。
+
+// 中文务必先分词再建索引：否则 "怎么退款" 不会被切成 ["怎么","退款"]
+// 而会被当整串，BM25 永远匹不到含 "退款" 的文档。分词质量 = 关键词路上限。
+```
+
+<Callout type="tip" title="同源分词器是铁律">
+  建索引和查询必须用**同一个分词器、同一套词典**。否则"退款"建索引时切成
+  ["退","款"]，查询时切成 ["退款"]，两边对不上，召回直接归零。这点中文尤甚。
+</Callout>
+
+## 10. 排障速查表
+
+| 现象 | 最可能的根因 | 对策 |
+|------|--------------|------|
+| 专名问不中 | 没上 BM25 / BM25 未分词 | 加关键词路、校验分词器 |
+| 召回被 BM25 主导 | 两路分数直接相加 | 改用 RRF |
+| 融合后不足 k 条 | 过滤过严（post-filter） | 改 pre-filter、放宽条件 |
+| 改写后更差 | HyDE 风格不符 / 注入 | 关 HyDE、加输出过滤 |
+| 中文召回全空 | 分词器不一致 | 统一分词器与词典 |
+| 延迟突增 | 改写每次调 LLM | 缓存改写结果、简单问题跳过 |
+
+## 小结
+
+- 纯向量检索对专名、型号、最新数字翻车；BM25 精准但不懂同义——二者互补，混合是生产默认。
+- BM25 靠词频饱和+IDF+长度归一做关键词召回，零算力、毫秒级。
+- 融合首选 RRF：只看排名不看分数，天然免疫向量/BM25 的量纲差异；需要可调权重时再叠加加权。
+- 元数据过滤是第三维杠杆（pre-filter 优先），查询改写（扩展/HyDE）能再抬召回。
+- 红线：别直接加权相加两路分数、中文必须分词、过滤要 pre-filter 且不过严、改写防注入、融合后接重排更佳。
+
+<Callout type="note" title="下一步">
+  混合检索给出"粗排 top-k"，但向量/关键词对语义的精细区分有限。
+  怎么用 Cross-Encoder 把 top-20 精排成 top-5？这就是 **rag-rerank（重排序）** 的主题。
+</Callout>
+
+## 延伸阅读 / 参考
+
+- 论文 *Reciprocal Rank Fusion outperforms Condorcet and individual Rank Learning Methods*（RRF 原始论文）
+- Elasticsearch / OpenSearch 官方文档（BM25、hybrid search、pre-filter，以官方为准）
+- Qdrant / Milvus 官方文档（混合检索、元数据过滤，以官方为准）
+- 论文 *Precise Zero-Shot Dense Retrieval without Relevance Labels (HyDE)*（假设性文档嵌入）
+- Ragas 文档（检索召回@k 评测，用于数据驱动定融合参数）
+- OpenAI Embeddings 文档（embedding 维度与批处理，以官方为准）

@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>分词器：BPE/WordPiece、计费与跨语言 · AgentLab</title>
+  <meta name="description" content="理解 LLM 如何把文本切成 token，掌握 BPE/WordPiece 原理、token 计费口径、中英跨语言差异与截断处理，并给出可运行的 token 计数骨架，面向有经验的开发者。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="分词器：BPE/WordPiece、计费与跨语言 · AgentLab"/>
+  <meta property="og:description" content="理解 LLM 如何把文本切成 token，掌握 BPE/WordPiece 原理、token 计费口径、中英跨语言差异与截断处理，并给出可运行的 token 计数骨架，面向有经验的开发者。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#llm">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🧠</span>
+        <span class="art-moduleName">LLM大模型</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">18 分钟</span>
+      </div>
+      <h1 class="art-title">分词器：BPE/WordPiece、计费与跨语言</h1>
+      <p class="art-desc">理解 LLM 如何把文本切成 token，掌握 BPE/WordPiece 原理、token 计费口径、中英跨语言差异与截断处理，并给出可运行的 token 计数骨架，面向有经验的开发者。</p>
+      <div class="art-tags"><span class="art-tag">#分词器</span><span class="art-tag">#BPE</span><span class="art-tag">#WordPiece</span><span class="art-tag">#token计费</span><span class="art-tag">#跨语言</span></div>
+    </div>
+    <div class="prose"><h1>分词器：BPE/WordPiece、计费与跨语言</h1>
+<p>你看到的『一个字』和模型看到的『一个 token』不是一回事。所有计费、上下文上限、跨语言成本差异，根源都在<strong>分词器（Tokenizer）</strong>。这篇把分词怎么切、怎么计费、中英文差多少、超限怎么截断讲透，并给你一个可运行的计数骨架。</p>
+<h2 id="1-为什么需要分词">1. 为什么需要分词</h2>
+<p>模型不能直接吃字符，它只在<strong>离散 token -id</strong> 上做计算。分词器负责『文本 ↔ token 序列』的双向映射：</p>
+<ul>
+<li>编码：<code>"你好"</code> → <code>[123, 456]</code>（token id 列表）；</li>
+<li>解码：<code>[123, 456]</code> → <code>"你好"</code>。</li>
+</ul>
+<p>不同模型用不同词表与算法，所以<strong>同一句话在不同模型里的 token 数不同</strong>——这是跨模型成本对比的隐藏变量。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">token ≠ 字 ≠ 词</span></div><div class="co-body"><p>  中文里一个汉字常被切成 1~2 个 token；英文一个词可能被切成多个子词（如 <code>playing</code> → <code>play</code>+<code>ing</code>）。
+  计费、上限、延迟都按 token 计，不按字。所以『这篇文章 500 字』和『500 token』是两码事。</p>
+</div></div><h2 id="2-bpe-与-wordpiece-原理">2. BPE 与 WordPiece 原理</h2>
+<p>主流子词算法都遵循『从字符出发、按频率合并』的思路，目标是：<strong>高频词不切、低频词拆到能表达</strong>。</p>
+<h3 id="2-1-bpe-byte-pair-encoding">2.1 BPE（Byte-Pair Encoding）</h3>
+<p>GPT 系列、Llama、Qwen 多用 BPE。流程：</p>
+<ol>
+<li>语料拆成字符级；</li>
+<li>反复合并『出现频率最高的相邻符号对』，加入词表；</li>
+<li>直到词表达到目标大小或不再合并。</li>
+</ol>
+<p>编码时<strong>贪心</strong>地把文本按词表里『最长可匹配子串』切分。</p>
+<pre><code>语料: "low lower lowest" 反复合并最高频字节对 → 得到 low / er / est 等子词
+新词 "lowest" 可复用已学子词，无需整词入表 → 词表紧凑、未登录词也能拼出
+</code></pre><h3 id="2-2-wordpiece">2.2 WordPiece</h3>
+<p>BERT、ERNIE 等常用。和 BPE 类似，但合并判据不是『频率最高』，而是<strong>合并后带来的语言模型似然提升最大</strong>（用互信息类分数）。它对『词内边界』更敏感，中文常切得更碎。</p>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">二者工程差异很小</span></div><div class="co-body"><p>  对应用层来说，BPE 与 WordPiece 的区别基本不影响你写代码——你只关心『这个模型用哪个 tokenizer 对象』。
+  真正影响你的是『词表覆盖哪种语言』，见第 4 节跨语言。</p>
+</div></div><h2 id="3-可运行骨架-token-计数">3. 可运行骨架：token 计数</h2>
+<p>不要用『字数 × 系数』估算 token——直接调用对应 tokenizer。下面用 JS 的 <code>gpt-tokenizer</code>（OpenAI 系列）做计数，并演示中文 vs 英文差异。其他模型（Qwen/GLM 等）请使用各自官方 tokenizer 包，API 类似。</p>
+<pre><code class="language-ts">// count-tokens.ts —— 真实计数 token（以 gpt-tokenizer 为例，其他模型换对应包）
+import { encode } from 'gpt-tokenizer';
+import { z } from 'zod';
+
+// 用 Zod 约束输入：防止把 undefined/非字符串塞进编码器导致异常
+const Input = z.object({ text: z.string() });
+
+function countTokens(text: string): number {
+  const parsed = Input.safeParse({ text });
+  if (!parsed.success) return 0;
+  // encode 返回 token-id 数组，其长度即 token 数（这是唯一可信口径）
+  return encode(parsed.data.text).length;
+}
+
+const samples = {
+  zh: '你好，今天天气不错，我们去公园散步吧。',
+  en: 'Hello, the weather is nice today, let us go for a walk in the park.',
+};
+
+for (const [lang, text] of Object.entries(samples)) {
+  const chars = [...text].length;          // 字符数（中文算 1）
+  const toks = countTokens(text);
+  console.log(`${lang}: 字符=${chars}  token=${toks}  约 ${(toks / chars).toFixed(2)} token/字`);
+}
+</code></pre><p>运行：<code>npm i gpt-tokenizer zod</code> 然后 <code>npx tsx count-tokens.ts</code>。你会看到英文『每词约 1.x token』、中文『每字约 0.6~1.5 token（视模型）』。</p>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">别用字符串长度近似</span></div><div class="co-body">  <code>text.length</code> 既算不对中文（含标点、emoji 可能占 2 个 code unit），也和 token 数无线性关系。
+<p>  上线计费/截断判断务必用真实 tokenizer 编码，否则成本预估会差出数倍。</p>
+</div></div><h2 id="4-跨语言差异-中文为何更-贵">4. 跨语言差异：中文为何更『贵』</h2>
+<ul>
+<li><strong>英文</strong>：常见词整词入表，生词拆子词，约 1 词 = 1.3 token；空格与标点各算。</li>
+<li><strong>中文</strong>：多数模型中文词表覆盖有限，常『字级或亚字级』切分，一个汉字可能 1~2 token；繁体、文言文、生僻字更碎。</li>
+<li><strong>代码/公式</strong>：特殊符号多，token 数常偏高。</li>
+</ul>
+<p>实务影响：同样一段意思，中文 prompt 的 token 数可能比英文高 1.5~2 倍，<strong>同等上下文窗口下中文能装的内容更少、同等内容成本更高</strong>。做国际化产品时要按语言分别估上限。</p>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">压缩中文 prompt 是真省钱</span></div><div class="co-body"><p>  因为中文按字/子词计费，去掉冗余虚词、用更短表达能直接降 token。中文场景下『精简文案』
+  的 ROI 高于英文——这是中文 Agent 成本优化的一线抓手。</p>
+</div></div><h2 id="5-截断处理-超限了怎么办">5. 截断处理：超限了怎么办</h2>
+<p>模型的 <code>max_tokens</code>（上下文窗口）是硬上限 = system + 历史 + 输入 + 预留输出。超限有两个层面：</p>
+<ul>
+<li><strong>输入截断</strong>：超出部分被丢掉（模型看不到），常静默发生 → 信息丢失、幻觉。</li>
+<li><strong>输出截断</strong>：生成到上限强制结束 → 答案被腰斩，JSON 不完整。</li>
+</ul>
+<p>处理策略：</p>
+<pre><code class="language-ts">// truncate.ts —— 编码后按预算截断（以 tokenizer 为准，而非字符）
+import { encode, decode } from 'gpt-tokenizer';
+
+function fitWithin(text: string, maxTokens: number): string {
+  const ids = encode(text);
+  if (ids.length &lt;= maxTokens) return text;   // 未超，原样返回
+  // 超了：截到 maxTokens 个 token 再解码回来（保证是合法 token 边界，不乱码）
+  const truncated = ids.slice(0, maxTokens);
+  return decode(truncated) + '…（已截断）';
+}
+
+// 更稳妥：先留足输出预算，再截输入
+const BUDGET = 8000;          // 该模型输入上限
+const RESERVE = 1000;         // 给模型输出预留
+const safeInput = fitWithin(userText, BUDGET - RESERVE);
+</code></pre><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">按字符截断会切坏 token</span></div><div class="co-body"><p>  用 <code>text.slice(0, N)</code> 按字符截断，可能在一个多 byte / 多 token 字符中间切断，解码出来是乱码或报错。
+  必须用 tokenizer 的 encode→slice→decode，保证截断在 token 边界上，中文尤其要注意。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">截断静默丢信息</span></div><div class="co-body"><p>  输入被截断时模型不会报错，只会『假装读完了』，然后基于残缺上下文作答，产生幻觉。
+  长文档优先走 RAG 检索相关片段，而不是整篇塞入再截断；必须整篇时，明确告知用户已截断。</p>
+</div></div><h2 id="6-对比-三种计费相关口径">6. 对比：三种计费相关口径</h2>
+<table>
+<thead>
+<tr>
+<th>口径</th>
+<th>含义</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>token 数（真实编码）</td>
+<td>模型实际处理的单位</td>
+<td>计费、上限、延迟估算的<strong>唯一可信口径</strong></td>
+</tr>
+<tr>
+<td>字符数</td>
+<td>人类可读长度</td>
+<td>仅做粗略展示，不可用于计费判断</td>
+</tr>
+<tr>
+<td>词数</td>
+<td>英文按空格、中文按字</td>
+<td>给产品侧一个直觉，非工程口径</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">计费永远以 token 为准</span></div><div class="co-body"><p>  任何『按字数收费』的展示都要在底层换算成 token，且要按『各家模型各自的 tokenizer』分别算。
+  跨模型对比成本时，先统一用各自的 tokenizer 数一遍，再比单价。</p>
+</div></div><h2 id="7-常见踩坑">7. 常见踩坑</h2>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">跨模型直接搬 token 数</span></div><div class="co-body"><p>  在 GPT 上数出 100 token，不代表在 Qwen/GLM 上也是 100。换模型必须换对应 tokenizer 重数，
+  否则成本与上限估算全错。封装一个『按模型名取 tokenizer』的适配层能避免这类坑。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">忽略输出预留导致 JSON 被腰斩</span></div><div class="co-body"><p>  把整个上下文窗口都给了输入，模型没空间输出，结果 JSON/代码写到一半被截断，解析失败。
+  永远 <code>输入预算 = 窗口 − 输出预留</code>，并在业务里对不完整输出做校验与重试。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">缓存命中也按 token 算</span></div><div class="co-body"><p>  许多 API 对『命中缓存的 prompt token』有折扣（如 0.1 倍价）。稳定前缀（system、few-shot 示例）
+  尽量放在最前且保持不动，能显著降成本——这是分词器与缓存联动的省钱点。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>分词器做『文本↔token-id』映射；token 才是计费、上限、延迟的真实单位，不是字也不是词。</li>
+<li>BPE（GPT/LLaMA/Qwen）按频率合并，WordPiece（BERT/ERNIE）按似然提升合并；应用层差异小。</li>
+<li>中文常按字/子词切，同义内容 token 数常高于英文 1.5~2 倍，更贵、更占窗口。</li>
+<li>截断必须在 token 边界（encode→slice→decode），按字符截断会乱码；输入要留输出预算。</li>
+<li>红线：别用字符数近似计费、别跨模型搬 token 数、别忘输出预留、长文档优先 RAG 而非硬塞截断。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  知道输入怎么被切成 token、怎么计费后，要去理解『这些 token 是怎么被模型算出来的』，
+  见 <strong>Transformer 原理</strong>；要在多个模型间比价选型，见 <strong>主流模型选型</strong>。</p>
+</div></div><h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>OpenAI Tokenizer 文档与官方 tiktoken 库（GPT 系列计数权威口径）</li>
+<li>HuggingFace Tokenizers 文档（BPE/WordPiece 实现与任意模型 tokenizer 加载）</li>
+<li>通义 Qwen / 智谱 GLM 官方 tokenizer 说明（中文覆盖与跨语言差异）</li>
+<li>论文 <em>Neural Machine Translation of Rare Words with Subword Units</em>（BPE 应用于 NLP 的起点）</li>
+<li>各模型定价页：注意『缓存命中 token』的折扣口径（以官方为准）</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="llm-transformer.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">Transformer 原理：注意力、位置编码与 KV Cache</span></a>
+    <a class="art-pagerLink art-pagerRight" href="llm-pretrain.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">预训练基础：从语料到基座模型</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,203 @@
+---
+title: Embedding 模型：把文本变成可计算向量
+description: 讲清 Embedding 的数学原理、主流模型选型、维度与归一化、领域适配/重训思路，以及它如何成为 RAG 检索的基石。给出 OpenAI embeddings 与相似度计算的可运行骨架。
+category: LLM大模型
+order: 7
+difficulty: 进阶
+duration: 22 分钟
+tags: [Embedding, 向量化, 语义检索, RAG, 相似度]
+date: 2026-07-29
+---
+
+# Embedding 模型：把文本变成可计算向量
+
+在 LLM 应用里，模型输出的是 token、是文本。**但搜索、去重、聚类、记忆召回**这些事，靠的是『两段文本意思有多近』——这是向量空间才能算的东西。Embedding 模型就是把自然语言映射成稠密向量的那道桥梁。
+
+本篇只聚焦 Embedding 本身：它底层在干什么、怎么选型、维度与归一化意味着什么、要不要做领域重训，以及它为什么是 RAG 的命脉。
+
+## 1. 原理：Embedding 到底在算什么
+
+一句话：**Embedding 模型是一个把文本映射到固定维度向量的函数 `f(text) -> R^d`**，并且被训练成『语义相近的文本，向量在空间中距离也近』。
+
+它不是关键词匹配——`『苹果手机』` 和 `『iPhone』` 没有共享字符，但高质量 embedding 会让它们的向量余弦相似度接近 0.8+。其训练信号通常来自：
+
+- **对比学习（Contrastive）**：正样本对（同义/相关句）拉近，负样本对推远，损失常用 InfoNCE；
+- **检索目标**：给定 query，从一堆 passage 里把正确的那个排到最前（in-batch negatives）；
+- **双塔结构（Bi-Encoder）**：query 与 doc 各自独立编码，所以文档可以**离线**编码、在线只编码 query，这是它能支撑海量检索的根本原因。
+
+<Callout type="note" title="双塔是检索可扩展的关键">
+  因为 query 和 doc 是两条互不相交的塔，文档向量可以提前算好存进向量库；
+  线上来一个 query 只算一次编码，再去做最近邻检索。若用 Cross-Encoder（拼在一起算），
+  每次都要把 query 和每个候选拼起来跑一遍，无法预计算——这就是 Embedding 适合『召回』、
+  Cross-Encoder 适合『精排』的分工根源。
+</Callout>
+
+## 2. 维度、归一化与相似度
+
+### 2.1 维度 d 怎么选
+
+维度即向量长度。经验规律：**维度越高，能承载的语义区分度越高，但存储与计算成本线性涨**。
+
+| 维度 | 典型模型 | 适用 |
+|------|----------|------|
+| 256–768 | BGE-small、部分老旧模型 | 小规模、成本敏感 |
+| 1024–1536 | text-embedding-3-small/large、BGE-large | 通用生产 |
+| 3072+ | text-embedding-3-large（可压缩） | 高精度检索 |
+
+OpenAI 的 `text-embedding-3` 支持用 `dimensions` 参数把向量**截断到更小维度**（如从 3072 压到 1024），只损失少量精度却省下大量存储。这是『用降维换成本』的官方手段。
+
+### 2.2 归一化与 cosine
+
+多数现代 embedding 模型输出**已做 L2 归一化**（模长=1），此时：
+
+```
+cosine(a, b) = a·b / (|a||b|) = a·b   （因为 |a|=|b|=1）
+```
+
+即归一化后余弦相似度退化成点积。生产上建议：入库前确认是否归一化；若已归一化，检索直接用点积（比余弦更快，向量库也更友好）。
+
+## 3. 可运行骨架：编码与相似度
+
+下面用 OpenAI Node SDK 生成 embedding 并算余弦相似度：
+
+```ts
+// embed-basics.ts —— 文本编码 + 余弦相似度（可运行骨架）
+import OpenAI from 'openai';
+import 'dotenv/config';
+
+const client = new OpenAI();
+
+// 把一段文本编码成向量；可指定 dimensions 做降维省成本
+async function embed(text: string): Promise<number[]> {
+  const res = await client.embeddings.create({
+    model: 'text-embedding-3-small',
+    input: text,
+    dimensions: 1024, // 官方支持的降维手段，省存储
+  });
+  return res.data[0].embedding;
+}
+
+// 余弦相似度：用于衡量两段文本的语义接近程度
+function cosine(a: number[], b: number[]): number {
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(na) * Math.sqrt(nb)); // 越接近 1 越相似
+}
+
+async function main() {
+  const q = await embed('苹果手机续航怎么样');
+  const docs = await Promise.all([
+    embed('iPhone 的电池表现评测'),
+    embed('如何煮一锅好吃的米饭'),
+  ]);
+  console.log('与 iPhone 评测：', cosine(q, docs[0]).toFixed(3)); // 高
+  console.log('与煮米饭：', cosine(q, docs[1]).toFixed(3));       // 低
+}
+main();
+```
+
+运行：`npm i openai dotenv` 后 `npx tsx embed-basics.ts`。
+
+<Callout type="warn" title="归一化先确认">
+  若模型未做 L2 归一化，直接点积会偏向『长向量』（模长大的文本天然点积大），
+  必须用完整余弦公式。上线前先打印 `Math.sqrt(向量平方和)` 验证是否≈1。
+</Callout>
+
+## 4. 选型：不是越大越好
+
+| 模型 | 维度 | 特点 | 何时选 |
+|------|------|------|--------|
+| text-embedding-3-small | 1536（可降） | 便宜、通用强 | 大多数英文/多语场景起点 |
+| text-embedding-3-large | 3072（可降） | 精度更高 | 检索质量要求苛刻、预算够 |
+| BGE / E5（开源） | 1024 等 | 可自部署、中文友好 | 数据敏感、需本地化/私有化 |
+| Cohere Embed / Voyage | 变长 | 长文档、代码友好 | 特定语种/代码检索 |
+
+<Callout type="tip" title="先 small 后 large">
+  先用小维度通用模型打通流水线，再拿真实评测集对比是否值得上 large。
+  很多业务里 small 已经够用——省下的存储和延迟是真金白银。
+</Callout>
+
+## 5. 领域适配与重训
+
+通用 embedding 在**垂直领域**（法律、医疗、代码、自家产品文档）常『意思近但向量远』。两条路：
+
+- **换更好的通用模型 / 加领域指令**：部分模型支持在输入前加 `Represent the medical passage: ` 这类指令前缀，提升领域表现，零训练成本。
+- **自己做领域微调**：用 sentence-transformers 在领域正负样本对上继续训练。下面是可运行骨架（领域适配属于自定义模型路径，非 OpenAI API，以官方文档为准）：
+
+```python
+# embed-finetune.py —— 用 sentence-transformers 做领域适配（骨架）
+from sentence_transformers import SentenceTransformer, InputExample, losses
+from torch.utils.data import DataLoader
+
+model = SentenceTransformer('BAAI/bge-large-zh')  # 选一个领域基础模型
+
+# 正样本=相关句对，负样本交给 in-batch negatives 自动构造
+examples = [
+    InputExample(texts=['专利权利要求书', '权利要求保护范围']),
+    InputExample(texts=['造影剂禁忌症', '肾功能不全慎用对比剂']),
+]
+loader = DataLoader(examples, shuffle=True, batch_size=16)
+
+# MultipleNegativesRankingLoss：同一 batch 内其他句自动当负例，适合检索场景
+loss = losses.MultipleNegativesRankingLoss(model)
+model.fit([(loader, loss)], epochs=1)  # 真实场景需要上千正样本对
+model.save('my-domain-embed')
+```
+
+<Callout type="warn" title="重训不是银弹">
+  领域微调需要**足量、高质量的正负样本对**，且要防过拟合到训练分布。
+  在样本少时，往往『换指令前缀 + 清洗切分』比硬微调收益更稳。
+  另外：重训后旧向量必须全量重建，否则新旧向量不在同一空间，相似度无意义。
+</Callout>
+
+## 6. 与 RAG 的关系：检索的命脉
+
+RAG 的『R』（Retrieval）本质就是：把用户 query 编码，去向量库里找最相近的文档块，拼回 prompt 让 LLM 生成。Embedding 的质量直接决定**召回上限**：
+
+- 召回错了 → 后面再强的 LLM 也答不对（垃圾进垃圾出）；
+- Embedding 与生成模型**不必同源**：检索引 BGE、生成用 GPT 是常见组合，二者解耦。
+
+<Callout type="note" title="Embedding 决定召回天花板">
+  很多『RAG 答非所问』的锅，其实在 Embedding：切块太大/太小、领域不匹配、没做去重。
+  调 Embedding（换模型、调维度、做领域适配）往往比换更大的生成模型见效更快。
+</Callout>
+
+## 7. 踩坑
+
+<Callout type="danger" title="query 与 doc 用了不同模型">
+  编码 query 和编码文档必须用**同一个** embedding 模型与同一套归一化/指令前缀。
+  一旦混用，向量空间不同，相似度全作废。这是上线最容易翻车的一步。
+</Callout>
+
+<Callout type="warn" title="大块文本直接编码">
+  单条 embedding 输入有 token 上限（如 8k）。超长文档不切分直接编码会被截断，
+  语义严重失真。务必先做 chunking（见 RAG 切分篇），再逐块编码。
+</Callout>
+
+<Callout type="warn" title="维度不一致导致检索报错">
+  若中途把 `dimensions` 从 1536 改成 1024，旧库里的向量仍是 1536 维，
+  新 query 是 1024 维，点积会直接维度不匹配。改维度必须全量重建索引。
+</Callout>
+
+<Callout type="warn" title="未做去重，向量库膨胀">
+  重复文档反复编码入库，检索时同一内容霸榜，信噪比下降。写入前先按相似度查重。
+</Callout>
+
+## 小结
+
+- Embedding 是 `文本→向量` 的映射，靠对比/检索目标训练，双塔结构让文档可离线预编码。
+- 维度权衡存储与精度；归一化后余弦退化为点积；OpenAI 支持 `dimensions` 官方降维。
+- 选型先 small 后 large；领域适配可试指令前缀，不够再上 sentence-transformers 微调（需重建索引）。
+- Embedding 是 RAG 召回的天花板，与生成模型解耦。红线：query/doc 同模型、切块编码、改维度必重建、写入去重。
+
+## 延伸阅读 / 参考
+
+- OpenAI Embeddings 文档（模型、维度、降维参数，以官方为准）
+- BGE / E5 开源模型与 MTEB 榜单：横向对比检索质量
+- sentence-transformers 文档：领域微调与损失函数
+- RAG 分类下的『向量化』『文档切分』『重排序』：Embedding 在流水线中的位置
+- 论文 *SimCSE / Contriever / E5*：对比学习与无监督 embedding 训练的代表工作

@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>RAG 生产化：增量更新、缓存、监控与成本控制 · AgentLab</title>
+  <meta name="description" content="把能跑通的 RAG 管线搬上生产：知识库增量更新策略、查询/embedding/答案三层缓存、质量与成本监控、以及可落地的成本控制手段。面向有经验开发者，重实战骨架与踩坑。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="RAG 生产化：增量更新、缓存、监控与成本控制 · AgentLab"/>
+  <meta property="og:description" content="把能跑通的 RAG 管线搬上生产：知识库增量更新策略、查询/embedding/答案三层缓存、质量与成本监控、以及可落地的成本控制手段。面向有经验开发者，重实战骨架与踩坑。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#rag">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">📚</span>
+        <span class="art-moduleName">RAG</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">25 分钟</span>
+      </div>
+      <h1 class="art-title">RAG 生产化：增量更新、缓存、监控与成本控制</h1>
+      <p class="art-desc">把能跑通的 RAG 管线搬上生产：知识库增量更新策略、查询/embedding/答案三层缓存、质量与成本监控、以及可落地的成本控制手段。面向有经验开发者，重实战骨架与踩坑。</p>
+      <div class="art-tags"><span class="art-tag">#RAG</span><span class="art-tag">#生产化</span><span class="art-tag">#增量更新</span><span class="art-tag">#缓存</span><span class="art-tag">#监控</span><span class="art-tag">#成本控制</span></div>
+    </div>
+    <div class="prose"><h1>RAG 生产化：增量更新、缓存、监控与成本控制</h1>
+<p>评估体系跑顺（见 <a href="./rag-eval">rag-eval</a>）只解决了『答得对不对』。上生产后真正的考验是：<strong>知识库天天变、流量上来了、账单炸了、半夜告警了</strong>。本篇讲四件生产必做的事——增量更新、缓存、监控、成本控制——给你能落地的骨架。</p>
+<h2 id="1-为什么评估之后还要谈生产化">1. 为什么评估之后还要谈生产化</h2>
+<p>离线评估的指标再漂亮，生产环境有三条离线没有的约束：</p>
+<ul>
+<li><strong>数据在变</strong>：知识库每天增删改，全量重建索引既慢又贵，必须增量；</li>
+<li><strong>流量在涨</strong>：相同问题被反复问，每次都重跑 embedding + 检索 + 生成是浪费；</li>
+<li><strong>出事要能查</strong>：生成错了、成本高了、延迟飘了，得有监控和追溯。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">生产化的本质</span></div><div class="co-body"><p>  生产化不是『把 demo 部署上去』，而是给 RAG 加三件套：<strong>可演进的数据管线</strong>
+  （增量更新）、<strong>可复用的计算</strong>（缓存）、<strong>可观测的运行</strong>（监控+成本）。
+  缺一件，规模一大就崩。</p>
+</div></div><h2 id="2-增量更新-别每次全量重建">2. 增量更新：别每次全量重建</h2>
+<p>全量重建索引在文档上千、更新频繁时不可接受。正确做法是<strong>按文档粒度增量</strong>：</p>
+<pre><code class="language-ts">// incremental-index.ts —— 增量更新骨架（伪代码 + 注释，以向量库官方文档为准）
+//
+// 每个源文档带一个稳定 version / hash：
+//   docId, contentHash = sha256(正文 + 元数据)
+//
+// 更新流程：
+//   1) 扫源：拿到 (docId, contentHash) 清单
+//   2) 比对：和向量库里已存的 hash 表对照
+//   3) 分类处理：
+//        - 新增 docId        → 切块 → embedding → 插入（带 docId 元数据）
+//        - hash 变了的 docId  → 先按 docId 删除旧块，再插入新块（避免脏块残留）
+//        - 已删除的 docId     → 按 docId 删除全部块
+//   4) 提交，更新 hash 表
+//
+// 关键点：删除必须按 docId 维度（而非整库清空），否则并发查询会读到半更新状态。
+// 删除/插入最好在一个事务或批量操作里完成，保证检索侧看不到中间态。
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">用 docId 当删除键</span></div><div class="co-body"><p>  增量更新的命门是『怎么精准删旧块』。给每个块打 <code>docId</code> 元数据，
+  更新时 <code>delete where docId = ?</code> 即可整篇替换，不会漏删也不会误删别的文档。
+  没有 docId 维度，你只能整库重建——那是生产事故温床。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">并发读写要防半更新</span></div><div class="co-body"><p>  增量更新过程中若有查询进来，可能读到『部分旧块已删、新块还没插』的中间态。
+  用向量库的事务/批量 upsert，或先在影子索引建好再原子切换别名（alias swap）。</p>
+</div></div><h2 id="3-缓存-三层省法">3. 缓存：三层省法</h2>
+<p>相同问题反复出现时，逐层短路能省下大量 embedding 与生成调用：</p>
+<table>
+<thead>
+<tr>
+<th>缓存层</th>
+<th>命中即跳过</th>
+<th>收益</th>
+<th>失效风险</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>答案缓存（query→answer）</td>
+<td>整段生成</td>
+<td>最大</td>
+<td>知识库变了答案就过期</td>
+</tr>
+<tr>
+<td>embedding 缓存（text→vec）</td>
+<td>一次 embedding 调用</td>
+<td>中</td>
+<td>换 embedding 模型即失效</td>
+</tr>
+<tr>
+<td>检索结果缓存（query→chunkIds）</td>
+<td>一次向量检索</td>
+<td>中</td>
+<td>知识库变了结果就变</td>
+</tr>
+</tbody></table>
+<pre><code class="language-ts">// rag-cache.ts —— 答案缓存骨架（带 TTL，防知识库更新后读到旧答案）
+import { createHash } from 'node:crypto';
+
+type CacheEntry = { answer: string; expiresAt: number };
+
+const answerCache = new Map&lt;string, CacheEntry&gt;();
+
+function cacheKey(question: string): string {
+  return createHash('sha256').update(question.trim().toLowerCase()).digest('hex');
+}
+
+async function answerWithCache(question: string, ttlMs = 10 * 60_000) {
+  const key = cacheKey(question);
+  const hit = answerCache.get(key);
+  if (hit &amp;&amp; hit.expiresAt &gt; Date.now()) {
+    return { answer: hit.answer, cached: true }; // 命中：直接返回，省一次生成
+  }
+  const answer = await ragGenerate(question); // 真实生成
+  answerCache.set(key, { answer, expiresAt: Date.now() + ttlMs });
+  return { answer, cached: false };
+}
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">缓存别忘了失效</span></div><div class="co-body"><p>  答案缓存最危险的不是没命中，而是『命中了过期答案』——知识库更新后，
+  用户还收到旧知识。务必给缓存加 TTL，并在增量更新时按影响范围主动失效相关 key。
+  对强时效场景（如价格、库存），宁可不缓存答案，只缓存 embedding/检索结果。</p>
+</div></div><h2 id="4-监控-质量-成本-延迟三件套">4. 监控：质量、成本、延迟三件套</h2>
+<p>生产 RAG 至少监控三类信号，否则出问题只能靠用户投诉：</p>
+<ul>
+<li><strong>质量</strong>：定期抽样跑 <a href="./rag-eval">rag-eval</a> 的指标（Faithfulness、Context Recall），画趋势线；</li>
+<li><strong>成本</strong>：每请求记录 token 数 / embedding 调用数 / 生成调用数，按日聚合盯异常；</li>
+<li><strong>延迟</strong>：检索耗时、生成耗时、端到端 P95/P99，定位慢在哪一段。</li>
+</ul>
+<pre><code class="language-ts">// rag-monitor.ts —— 每次请求记一条结构化日志（供后续聚合）
+function logRagCall(m: {
+  question: string;
+  retrievelMs: number;
+  genMs: number;
+  promptTokens: number;
+  completionTokens: number;
+  chunkCount: number;
+}) {
+  // 真实场景写入 OTel / 日志系统；这里仅示意字段
+  console.log(JSON.stringify({
+    ts: Date.now(),
+    ...m,
+    totalMs: m.retrievelMs + m.genMs,
+  }));
+}
+// 之后在 dashboard 上按 totalMs 算 P99、按 promptTokens 算日成本，异常即告警。
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">监控要能回溯到具体请求</span></div><div class="co-body"><p>  只记聚合数字不够。保留一条『问题 + 召回块 + 答案 + 指标』的明细样本（抽样即可），
+  质量下跌时能直接打开看『这次到底召回了什么、答了什么』，定位是检索还是生成的问题。</p>
+</div></div><h2 id="5-成本控制-四招最划算">5. 成本控制：四招最划算</h2>
+<table>
+<thead>
+<tr>
+<th>手段</th>
+<th>做法</th>
+<th>省在哪</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>批量 embedding</td>
+<td>多篇文档合并一次 API 调用</td>
+<td>网络往返 + 计费档位</td>
+</tr>
+<tr>
+<td>模型分级</td>
+<td>检索/摘要用小模型，生成用大模型</td>
+<td>生成占成本大头</td>
+</tr>
+<tr>
+<td>缓存命中</td>
+<td>第 3 节三层缓存</td>
+<td>重复查询零成本</td>
+</tr>
+<tr>
+<td>截断上下文</td>
+<td>只取 top-k 高相关块，控制注入长度</td>
+<td>prompt token</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">成本大头在生成</span></div><div class="co-body"><p>  RAG 里最贵的是『生成调用』的 output token，不是 embedding。
+  所以优先级是：先上答案缓存（砍掉整个生成）、再砍生成 prompt 长度（少灌块）、
+  最后才是 embedding 批处理。顺序错了省不下钱。</p>
+</div></div><h2 id="6-常见坑">6. 常见坑</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">增量更新漏删旧块</span></div><div class="co-body"><p>  只插不删，或删除维度不对，会让旧版本文档的块永久留在库里。
+  用户问到时召回旧块，生成出过时甚至错误的答案——且极难排查。
+  删除必须按 docId 维度，更新后做『库里块数 vs 源文档块数』的对账。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">缓存无失效导致答非所问</span></div><div class="co-body"><p>  答案缓存 TTL 设太长、或知识库更新没清缓存，用户会持续收到旧答案。
+  强时效场景缩短 TTL 或只缓存 embedding/检索层，答案层现算。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">监控只有聚合没有明细</span></div><div class="co-body"><p>  只看日均成本/均分质量，会漏掉『长尾慢请求』和『偶发幻觉』。
+  明细样本 + 分布视角，比单一均值更能提前发现问题。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>生产化 = 可演进数据管线（增量更新）+ 可复用计算（缓存）+ 可观测运行（监控+成本）。</li>
+<li>增量更新按 docId 粒度删插，避免全量重建与半更新态；删除维度错是头号事故源。</li>
+<li>三层缓存（答案/embedding/检索）按收益递减使用，但答案缓存必须配 TTL 与主动失效。</li>
+<li>监控盯质量/成本/延迟三件套，且保留可回溯的明细样本，而非只有聚合数字。</li>
+<li>成本控制优先级：答案缓存 &gt; 砍生成 prompt 长度 &gt; embedding 批处理。</li>
+<li>红线：增量删除按 docId、缓存必须失效、监控留明细、成本先砍生成。</li>
+</ul>
+<h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>各向量数据库官方文档：批量 upsert、按元数据删除、alias 原子切换（API 以官方为准）</li>
+<li>OpenAI Embeddings 文档：批量 embedding 调用与计费档位说明</li>
+<li>OpenTelemetry 文档：用 trace/span 记录 RAG 各段耗时与 token</li>
+<li>前文 <a href="./rag-eval">rag-eval</a>：把评估指标接入生产监控做质量趋势</li>
+<li>缓存模式参考：Cache-Aside / TTL 设计、按影响范围主动失效策略</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="rag-eval.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">RAG 评估：检索/生成指标、Ragas、人工标注与回归测试</span></a>
+    <span></span>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

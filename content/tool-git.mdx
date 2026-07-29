@@ -1,0 +1,214 @@
+---
+title: Git 高级工作流
+description: 掌握 rebase/cherry-pick、worktree、submodule、钩子与冲突解决，理解底层对象模型与命令对比，给出可运行命令骨架与踩坑清单。
+category: 开发工具
+order: 3
+difficulty: 进阶
+duration: 25 分钟
+tags: [Git, 工作流, rebase, worktree, 钩子]
+date: 2026-07-29
+---
+
+# Git 高级工作流
+
+`git commit` / `git push` 只是冰山一角。当团队协作、多版本并行、要修线上紧急 bug 又要开发新功能时，基础命令会迅速失灵。这一篇聚焦**高级工作流**：rebase 整理历史、cherry-pick 移植提交、worktree 多分支并行、submodule 管理依赖、钩子做门禁，以及冲突解决的正确姿势。
+
+<Callout type="note" title="读者前提">
+  假定你已熟悉 add/commit/branch/merge/clone 与远程协作。本篇不重复基础，
+  只在『为什么这样用』和『什么场景别用』上展开。
+</Callout>
+
+## 1. 先理解底层模型：三棵树与对象
+
+高级命令的『诡异行为』大多源于对底层模型的无知。Git 本质是**内容寻址的文件系统**，三个核心区域：
+
+- **工作区（Working Directory）**：你肉眼看到的文件；
+- **暂存区（Index/Stage）**：下一次 commit 的快照预览；
+- **版本库（Repository）**：已提交的不可变对象。
+
+每次 `commit` 会生成三类对象：`blob`（文件内容）、`tree`（目录结构）、`commit`（指向 tree + 父 commit + 作者/信息）。commit 通过父指针串成 DAG（有向无环图），分支只是指向某个 commit 的**可变指针**。
+
+<Callout type="tip" title="reflog 是你的后悔药">
+  只要对象没被 GC，任何『误删』都能找回：`git reflog` 列出 HEAD 的每次移动，
+  找到目标 commit 哈希后用 `git checkout <hash>` 或 `git branch recover <hash>` 复活。
+  它不依赖分支，哪怕分支被删、rebase 搞崩也救得回来。
+</Callout>
+
+## 2. rebase vs merge：历史形态的取舍
+
+两者都能把一条分支并入另一条，但产物形态不同。
+
+| 维度 | merge | rebase |
+|------|-------|--------|
+| 历史形态 | 保留分叉，生成合并 commit | 线性、无分叉，像从未分过支 |
+| 信息保留 | 完整记录『何时合并』 | 抹平分叉，重放提交 |
+| 安全性 | 不改写已有 commit，安全 | **改写** commit 哈希，危险 |
+| 适用 | 公共分支、已 push 的分支 | 本地整理、个人特性分支 |
+
+```bash
+# 场景：在 feature 上，把 main 的新提交『接』到 feature 头部，保持线性
+git checkout feature
+git rebase main
+# 等价于：把 feature 相对 main 的提交，在 main 最新点之上逐个重放
+```
+
+<Callout type="danger" title="已 push 的分支禁止 rebase">
+  一旦分支被别人基于开发，rebase 会改写哈希，他人 pull 时历史冲突、被迫强推，
+  极易把团队历史搅成一团。铁律：**只 rebase 你自己、未共享的本地分支**。
+  若必须同步已发布分支，用 merge 而非 rebase。
+</Callout>
+
+## 3. cherry-pick：精准移植单个提交
+
+有时你只要别人分支上的『某一个修复』，不想合并整条线。`cherry-pick` 把指定 commit 的变更重放到当前分支，生成**新 commit**（哈希不同）。
+
+```bash
+# 把 commit a1b2c3 的改动应用到当前分支
+git cherry-pick a1b2c3
+
+# 一次移植多个，且保留原提交信息
+git cherry-pick a1b2c3 d4e5f6
+
+# 只应用改动不自动提交，便于合并/修改后再 commit
+git cherry-pick --no-commit a1b2c3
+```
+
+<Callout type="warn" title="cherry-pick 与 rebase 的冲突同源">
+  移植的提交若依赖它之后的改动（如引用了后续才定义的变量），会冲突。
+  此时 Git 暂停并标记冲突文件，解决后 `git add` + `git cherry-pick --continue`。
+</Callout>
+
+## 4. worktree：多分支并行不切来切去
+
+传统做法切分支要 `stash` 或提交未完工作。`git worktree` 让同一仓库在**多个目录**同时检出不同分支，各自独立工作、互不干扰——非常适合『线上 bug 要修，feature 又要本地起服务』。
+
+```bash
+# 新建一个 worktree，检出 hotfix 分支到 ../repo-hotfix 目录
+git worktree add ../repo-hotfix hotfix
+
+# 列出所有 worktree
+git worktree list
+
+# 用完删除（先手动删目录，再 prune 清理元数据）
+git worktree remove ../repo-hotfix
+git worktree prune
+```
+
+<Callout type="tip" title="worktree 省掉 stash 地狱">
+  同一时刻一个分支只能在一个 worktree 检出，Git 会阻止重复。
+  把长期并行任务（release 维护 + 主干开发）各开一个 worktree，告别反复 stash。
+</Callout>
+
+## 5. submodule vs subtree：依赖管理对比
+
+要把另一个仓库作为子目录引入时，两条路：
+
+| 方案 | 优点 | 缺点 | 适用 |
+|------|------|------|------|
+| submodule | 锁定子仓精确提交、主仓轻量 | 克隆需 `--recurse`、更新繁琐、易『指针漂移』 | 第三方库、强版本锁定 |
+| subtree | 子仓代码并入主仓历史、无需额外命令 | 主仓变大、拆分回原仓困难 | 想完全托管、简化协作 |
+
+```bash
+# submodule：在主仓添加子仓
+git submodule add https://github.com/foo/bar.git vendor/bar
+git submodule update --init --recursive   # 克隆后拉取子仓
+
+# subtree：把子仓合并进主仓的子目录
+git subtree add --prefix=vendor/bar https://github.com/foo/bar.git main --squash
+```
+
+<Callout type="warn" title="submodule 指针漂移">
+  子仓里 `git checkout` 到别的提交后，主仓会显示子模块『修改』。务必记得在主仓
+  `git add vendor/bar` 提交新的指针，否则队友拉到的是旧版本。
+</Callout>
+
+## 6. 钩子 hooks：把门禁做在提交前后
+
+`.git/hooks/` 下的脚本在生命周期节点自动触发。`pre-commit` 跑 lint/格式化、`commit-msg` 校验信息格式、`pre-push` 跑测试，能在坏代码进库前拦下来。
+
+```bash
+# 示例：.git/hooks/pre-commit 用 ESLint 拦截
+#!/bin/sh
+npm run lint -- --max-warnings 0
+if [ $? -ne 0 ]; then
+  echo 『lint 未通过，提交被拒绝』   # 注意这里用的是中文引号，非 ASCII 双引号
+  exit 1
+fi
+```
+
+<Callout type="note" title="钩子不随仓库分发">
+  `.git/hooks` 在 `.git` 内，不进版本控制、不随 clone 传播。要团队共享，
+  用 `core.hooksPath` 指向仓库内脚本目录（如 `.githooks/`），再 `git config core.hooksPath .githooks`。
+</Callout>
+
+## 7. 冲突解决的正确顺序
+
+冲突不可避免，关键是**流程化**而非凭感觉：
+
+1. `git status` 看哪些文件冲突（标记为 `both modified`）；
+2. 用 `git diff --ours/--theirs` 分别看两侧改动；
+3. 编辑文件，保留正确内容，删掉 `<<<<<<<` / `=======` / `>>>>>>>` 标记；
+4. `git add <file>` 标记为已解决；
+5. 全部解决后 `git commit`（merge）或 `git rebase --continue`（rebase）。
+
+<Callout type="tip" title="用工具别硬看">
+  配置 `merge.tool`（如 vimdiff / vscode / meld）：`git mergetool` 起可视化三栏对比，
+  比在编辑器里肉眼找标记快且准。记得在 `.gitattributes` 中为特定文件设合并策略。
+</Callout>
+
+## 8. 可运行工作流骨架
+
+一套常见『特性开发 + 紧急修复』骨架：
+
+```bash
+# ① 开特性分支，基于最新 main
+git checkout main && git pull
+git checkout -b feature/login
+
+# ② 开发中，本地用 rebase 保持线性、整理提交
+git rebase -i main          # 交互式：合并/改写提交信息
+
+# ③ 线上告警！开 worktree 修 hotfix，不动当前 feature
+git worktree add ../hotfix hotfix
+# … 在 ../hotfix 里修、commit、push …
+
+# ④ feature 完成，rebase 到最新 main 再 merge（保持 main 线性且留合并记录）
+git checkout feature/login
+git rebase main
+git checkout main
+git merge --no-ff feature/login   # --no-ff 强制保留合并点，便于回溯
+```
+
+## 9. 常见坑
+
+<Callout type="danger" title="误用 git reset --hard 丢工作">
+  `--hard` 会丢弃工作区与暂存区未提交改动，且 reflog 也未必能找回没 add 过的内容。
+  不确定时先 `git stash` 或 `git reset --soft`。
+</Callout>
+
+<Callout type="warn" title="大文件进版本库">
+  把 node_modules、构建产物、视频塞进 Git 后极难剔除（历史里永久留存）。
+  用 `.gitignore` 前置拦截，已误提交用 `git filter-repo` 或 BFG 清理。
+</Callout>
+
+<Callout type="warn" title="commit message 写『fix bug』">
+  没上下文的信息半年后无人能懂。建议 Conventional Commits：`feat:` / `fix:` / `refactor:`，
+  配合 `commit-msg` 钩子校验，自动生成 CHANGELOG。
+</Callout>
+
+## 小结
+
+- Git 本质是对象数据库 + 分支指针；理解三棵树就懂了大部分命令行为。
+- rebase 整理本地线性历史，merge 合并公共分支；**已 push 的分支绝不 rebase**。
+- cherry-pick 移植单提交、worktree 并行多分支、submodule/subtree 管依赖，各有取舍。
+- 钩子把 lint/测试做成门禁，`core.hooksPath` 实现团队共享。
+- 冲突靠流程化解决，善用 `mergetool`；红线是别碰 `reset --hard`、别让大文件入库。
+- 任何误操作先 `git reflog` 再谈补救。
+
+## 延伸阅读 / 参考
+
+- Pro Git（Scott Chacon 等，官方免费书，对象模型与高级主题最权威）
+- Git 官方文档 `git-rebase` / `git-cherry-pick` / `git-worktree` 页
+- Conventional Commits 规范（提交信息格式约定）
+- `git filter-repo` 文档（历史清理与瘦身工具）
+- Atlassian Git 教程（可视化讲解分支与 rebase 工作流）

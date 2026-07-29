@@ -1,0 +1,250 @@
+---
+title: ETL 管道：从多源抽取到可靠加载
+description: 讲透 ETL 的抽取/转换/加载三段式、增量同步、调度与可观测，并对比 ETL 与 ELT、批处理与流式，给出生产级可运行骨架。
+category: 数据处理
+order: 1
+difficulty: 进阶
+duration: 20 分钟
+tags: [ETL, 数据管道, 增量同步, 调度, 可观测]
+date: 2026-07-29
+---
+
+# ETL 管道：从多源抽取到可靠加载
+
+任何 AI 工程系统，背后都有一条数据管道：把散落在数据库、日志、第三方 API、文档里的原始数据，规整成下游（仓库、特征表、知识库、评测集）能直接用的形态。这条管道就是 **ETL（Extract-Transform-Load）**。
+
+这篇面向有工程经验的开发者，聚焦四件事：**三段式的职责边界**、**增量同步怎么做**、**调度与可观测怎么落地**、**ETL 与 ELT / 流式的取舍**，最后给出能跑的骨架。
+
+## 1. 什么是 ETL：三段式职责
+
+ETL 把数据流动拆成三个清晰阶段，每段只做一件事：
+
+- **Extract（抽取）**：从源系统把数据读出来，尽量不改写、只搬运。
+- **Transform（转换）**：在中间层做清洗、标准化、富化、聚合，这是「脏数据变干净」的主战场。
+- **Load（加载）**：把结果写入目标（数据仓库、表、对象存储）。
+
+```python
+# ETL 的本质就是一个纯函数式管道：source -> 转换 -> sink
+# 把三件事分开，好处是可测试、可重跑、可并行
+def run_etl():
+    raw = extract()        # 只负责读，不碰业务逻辑
+    clean = transform(raw) # 所有数据质量逻辑都在这
+    load(clean)            # 只负责写，幂等
+```
+
+<Callout type="note" title="ETL 与 ELT 的区别在顺序">
+  ETL 是「先转换再加载」——数据在进仓库前就已经干净，适合目标库算力弱、
+  或数据敏感不能原样落库的场景。ELT 是「先加载再转换」——原始数据全丢进
+  数仓（如 Snowflake / BigQuery），用 SQL 在仓库内转换，适合算力充足、
+  想保留原始数据做回溯的场景。选哪个取决于你的仓库算力与合规要求，不是玄学。
+</Callout>
+
+## 2. 抽取（Extract）：多源接入
+
+真实源系统五花八门，抽取层的职责是**统一成一种中间表示**（通常是 DataFrame 或字典列表），让下游不用关心来源。
+
+```python
+import pandas as pd
+
+def extract():
+    frames = []
+    # 1) 关系型库：用 SQLAlchemy 读，SQL 里尽量下推过滤条件，别把整张表拉内存
+    frames.append(pd.read_sql(
+        "SELECT id, created_at, payload FROM orders WHERE created_at >= %(since)s",
+        con=db_engine, params={"since": last_run()},
+    ))
+    # 2) 文件：CSV / Parquet，Parquet 列式压缩更适合大数据量
+    frames.append(pd.read_parquet("s3://bucket/events/2026-07-29.parquet"))
+    # 3) 第三方 API：分页拉取，注意限流与重试（见第 6 节）
+    frames.append(fetch_api_paginated("https://api.vendor.io/records"))
+    # 纵向拼成一张大表，统一列名是抽取层的硬任务
+    return pd.concat(frames, ignore_index=True)
+```
+
+抽取层最容易被忽视的是**下推过滤**：能在源端用 `WHERE` 过滤的，绝不要全量拉到内存再筛。数据量大时，这一步决定管道是分钟级还是小时级。
+
+## 3. 转换（Transform）：脏数据变干净
+
+转换是 ETL 的真正价值所在，常见动作：
+
+- **清洗**：去重、填补缺失、修正类型（字符串日期转 `datetime`）。
+- **标准化**：统一单位、枚举映射（如 `'M'`/`'male'`/`'男'` → `'male'`）。
+- **富化**：关联维表、算派生字段（如从 `created_at` 算出 `is_weekend`）。
+- **聚合**：从明细 rollup 成统计表。
+
+```python
+def transform(df: pd.DataFrame) -> pd.DataFrame:
+    # 去重：按业务主键，保留最后一条（以最新状态为准）
+    df = df.drop_duplicates(subset=["id"], keep="last")
+    # 类型修正：API 常把数字给成字符串
+    df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
+    # 标准化枚举：把各种写法归一
+    gender_map = {"M": "male", "男": "male", "F": "female", "女": "female"}
+    df["gender"] = df["gender"].map(gender_map).fillna("unknown")
+    # 富化：派生字段，向量化一行搞定
+    df["is_weekend"] = df["created_at"].dt.dayofweek >= 5
+    return df
+```
+
+<Callout type="warn" title="转换层不要藏着业务副作用">
+  转换层应该是幂等的纯变换：同样的输入永远得到同样的输出，不写库、不发请求、
+  不更新外部状态。把副作用（发通知、调接口）放到 Load 或专门的任务里。
+  否则重跑管道时会重复触发副作用，这是线上事故的高发区。
+</Callout>
+
+## 4. 加载（Load）：写入目标
+
+Load 要保证**幂等**——管道可能因失败重跑，重复写入不能产生脏数据。
+
+```python
+def load(df: pd.DataFrame):
+    # 全量覆盖式：先 truncate 再写，最简单也最安全，适合小表
+    df.to_sql("dwd_orders", con=warehouse, if_exists="replace", index=False)
+
+    # 增量 upsert：大表不能全量重写，按主键merge（以 SQLAlchemy + 业务库为例的伪代码）
+    # 思路：先按 id 删掉目标表里本次要更新的行，再 insert 新行，避免整表锁
+    # with warehouse.begin() as conn:
+    #     conn.execute(delete(dwd).where(dwd.c.id.in_(df["id"].tolist())))
+    #     conn.execute(insert(dwd), df.to_dict("records"))
+    pass
+```
+
+<Callout type="tip" title="幂等才是可重跑的前提">
+  管道一定会失败重跑。Load 用 upsert / replace 而非 append，才能保证「重跑 3 次」
+  和「跑 1 次」结果一致。append 模式重跑会重复插入，数据翻倍且难排查。
+</Callout>
+
+## 5. 增量 ETL：别每次全量重跑
+
+全量重跑在数据量上去之后不可持续。增量靠的是**水位线（watermark）**：记录上次处理到的位置，下次只取「新数据」。
+
+| 策略 | 做法 | 适用 |
+|------|------|------|
+| 按时间水位 | 记录 `max(updated_at)`，下次 `WHERE updated_at > :since` | 源表有可靠更新时间 |
+| 按自增 ID | 记录 `max(id)`，下次取更大 ID | 只增不删、ID 单调 |
+| CDC（变更数据捕获） | 读 binlog / WAL，捕获增删改 | 要求近实时、源库支持 |
+
+```python
+import json, pathlib
+
+STATE_FILE = pathlib.Path("etl_state.json")
+
+def last_run() -> str:
+    # 水位线持久化到文件/表；生产环境放元数据表而非本地文件
+    if STATE_FILE.exists():
+        return json.loads(STATE_FILE.read_text())["watermark"]
+    return "1970-01-01"
+
+def save_watermark(wm: str):
+    STATE_FILE.write_text(json.dumps({"watermark": wm}))
+
+def extract_incremental():
+    since = last_run()
+    df = pd.read_sql(
+        "SELECT * FROM orders WHERE updated_at > %(since)s",
+        con=db_engine, params={"since": since},
+    )
+    if not df.empty:
+        # 处理完再推进水位线；注意：先处理成功再落水位，避免丢数据
+        save_watermark(df["updated_at"].max().isoformat())
+    return df
+```
+
+<Callout type="danger" title="水位线推进顺序的致命坑">
+  必须先「处理成功」再「推进水位线」。如果反过来——先推进再处理，
+  一旦处理中途崩溃，水位线已前进，中间这批数据就永远丢了。
+</Callout>
+
+## 6. 调度与可观测
+
+ETL 不是「跑一次」，而是「每天跑、失败了要报警、慢了要知道为什么」。
+
+- **调度**：用 cron、Airflow、Prefect 等定时触发；核心参数是**重试次数**与**重试退避**。
+- **可观测**：每跑一次记录行数（抽取/写入各多少）、耗时、失败原因；行数异常（如突然 0 行）应触发告警。
+- **重试**：对网络/限流类错误用指数退避重试；对数据错误（schema 不符）不要重试，直接失败报警。
+
+```python
+import time
+
+def with_retry(fn, max_retries=3, base_delay=2):
+    # 指数退避：2s、4s、8s……避免对源系统雪崩式重试
+    for attempt in range(max_retries):
+        try:
+            return fn()
+        except (ConnectionError, TimeoutError) as e:
+            if attempt == max_retries - 1:
+                raise
+            time.sleep(base_delay * (2 ** attempt))
+    return None
+
+def run_etl():
+    raw = with_retry(extract_incremental)
+    clean = transform(raw)
+    # 把行数/耗时上报到监控系统（Prometheus / 日志）；这里简化为打印
+    print("[etl] metrics:", {"extracted": len(raw), "loaded": len(clean)})
+    load(clean)
+```
+
+## 7. 对比：ETL vs ELT vs 流式
+
+| 维度 | 批处理 ETL | ELT（仓库内转换） | 流式（Kafka/Flink） |
+|------|-----------|------------------|-------------------|
+| 时延 | 小时/天级 | 小时级 | 秒/分钟级 |
+| 算力位置 | 管道进程 | 数据仓库 | 流计算集群 |
+| 保留原始 | 否（转换后即丢） | 是（原始先进仓） | 通常否 |
+| 复杂度 | 低 | 中 | 高 |
+| 典型场景 | 每日报表、知识库重建 | 即席分析、回溯 | 实时监控、特征实时更新 |
+
+<Callout type="note" title="别为『实时』而实时">
+  大多数 AI 工程场景（知识库更新、评测集构建、语料清洗）天级/小时级批处理足够。
+  流式架构成本高、运维重，先把批处理 ETL 做对做稳，确有低时延需求再上流式。
+</Callout>
+
+## 8. 运行方式
+
+```bash
+pip install pandas sqlalchemy
+python etl_pipeline.py
+```
+
+最小可运行骨架（增量抽取 + 转换 + 幂等加载 + 重试）：
+
+```python
+import pandas as pd, time, json, pathlib
+STATE_FILE = pathlib.Path("etl_state.json")
+
+def last_run():
+    return json.loads(STATE_FILE.read_text())["wm"] if STATE_FILE.exists() else "1970-01-01"
+def save_wm(wm): STATE_FILE.write_text(json.dumps({"wm": wm}))
+
+def extract():
+    df = pd.DataFrame({"id":[1,2,3], "v":["a","b","c"]})
+    return df
+def transform(df): return df.drop_duplicates("id")
+def load(df): print("loaded", len(df), "rows")
+
+def run():
+    df = extract()
+    df = transform(df)
+    load(df)
+    save_wm("2026-07-29")
+
+run()
+```
+## 小结
+
+- ETL = 抽取（只读）+ 转换（纯变换）+ 加载（幂等写），三段职责清晰才好测试与重跑。
+- 抽取层要**下推过滤**，别全量拉内存；转换层要**幂等无副作用**。
+- 增量靠**水位线**：先处理成功再推进，顺序反了会丢数据。
+- Load 用 upsert / replace 而非 append，保证可重跑。
+- 调度+重试+指标上报构成可观测；网络错误指数退避重试，数据错误直接失败。
+- 批处理 ETL 适合绝大多数 AI 场景，别过早上流式。
+
+## 延伸阅读 / 参考
+
+- pandas I/O 文档（读多源）：https://pandas.pydata.org/docs/user_guide/io.html
+- SQLAlchemy 官方文档：https://docs.sqlalchemy.org/
+- Airflow 调度概念：https://airflow.apache.org/docs/apache-airflow/stable/concepts/index.html
+- Prefect 文档（Python 原生编排）：https://docs.prefect.io/
+- 大数据 CDC 简介（Debezium）：https://debezium.io/documentation/
+- 数据仓库 ELT 模式讨论：https://www.stitchdata.com/etl-vs-elt/

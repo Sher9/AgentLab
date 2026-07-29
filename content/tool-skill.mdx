@@ -1,0 +1,180 @@
+---
+title: Agent 插件 / Skill 开发：契约、注册发现与上下文注入
+description: 讲清如何为 Agent 平台开发可复用的插件/Skill——统一的插件契约（manifest）、注册与自动发现机制、运行期上下文注入的三种方式，并给出与框架无关的骨架与对比、踩坑。
+category: 工具开发
+order: 6
+difficulty: 进阶
+duration: 22 分钟
+tags: [Skill, 插件, 契约, 注册发现, 上下文注入]
+date: 2026-07-29
+---
+
+# Agent 插件 / Skill 开发：契约、注册发现与上下文注入
+
+当 Agent 能力变多，把每项能力（查天气、写代码、生成图表）都塞进主程序会迅速腐化。更好的做法是**插件 / Skill**：独立开发、按需加载、平台统一调度。本篇聚焦三件事——**插件契约（manifest）、注册发现、上下文注入**——并给出与具体框架无关的骨架。注意：不同平台的 SDK API 差异很大，下文用『思路 + 伪代码』表达，落地请以官方文档为准。
+
+## 1. 为什么需要插件 / Skill 机制
+
+- **隔离演进**：某个能力改动不影响主程序，独立发版；
+- **按需加载**：只在命中触发词时加载对应插件，省上下文与启动成本；
+- **生态扩展**：第三方能为同一平台贡献能力，形成市场。
+
+核心抽象只有一个：**插件 = 一段『声明自己能做什么 + 提供执行体』的契约**。
+
+<Callout type="note" title="Skill 与插件的同与异">
+  很多平台里『Skill』≈ 带『触发词/意图』的轻量插件：它不一定是个独立进程，
+  而是一份『何时启用 + 该做什么』的描述，被宿主在运行时注入。下文统称插件/Skill，
+  区别主要在『颗粒度』而非本质。
+</Callout>
+
+## 2. 插件契约（Manifest）
+
+契约是插件与平台的『接口协议』，通常用一份描述文件声明。一个最小可用契约长这样（伪代码，字段名以你用的平台官方文档为准）：
+
+```ts
+// skill.manifest.ts —— 插件契约骨架（伪代码，落地以官方文档为准）
+export interface SkillManifest {
+  name: string;            // 唯一标识，如 'weather'
+  version: string;         // 语义化版本，便于依赖解析
+  description: string;     // 一句话说明『能做什么』，用于匹配意图
+  triggers: string[];      // 触发词/意图关键词，如 ['天气', 'weather']
+  tools: ToolSpec[];       // 该插件暴露的工具清单
+  permissions: string[];   // 声明需要的权限（读文件/发网络等），最小授权
+  entry: string;           // 执行体入口，如 './index.ts' 或命令
+}
+
+export interface ToolSpec {
+  name: string;            // 工具名
+  description: string;     // 工具描述（回答 WHEN）
+  parameters: object;      // JSON Schema 形式的参数定义
+}
+```
+
+<Callout type="tip" title="description 就是你的检索入口">
+  和 m1、tool-openapi 一致：平台的『意图路由 / 检索』大多靠 `description` + `triggers`
+  匹配用户问题。把『用户会怎么问』写进描述，能同时提升命中率与召回率。
+</Callout>
+
+## 3. 注册与自动发现
+
+插件写好后，平台怎么知道它的存在？两类机制：
+
+- **显式注册**：主程序维护一份插件清单，启动时逐个 `import` 并校验 manifest；
+- **自动发现（目录扫描）**：约定 `skills/` 目录，平台启动时扫描子目录里的 manifest，动态加载。
+
+```ts
+// registry.ts —— 目录扫描式自动发现（骨架，伪代码）
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const SKILL_DIR = './skills';
+
+// 扫描每个子目录，读取并校验 manifest，注册进内存表
+function discoverSkills(): Map<string, SkillManifest> {
+  const registry = new Map<string, SkillManifest>();
+  for (const dir of readdirSync(SKILL_DIR)) {
+    const manifestPath = join(SKILL_DIR, dir, 'manifest.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as SkillManifest;
+    // 校验必要字段，缺则跳过并告警，避免一个坏插件拖垮全部
+    if (!manifest.name || !manifest.entry) {
+      console.warn(`跳过非法插件：${dir}`);
+      continue;
+    }
+    registry.set(manifest.name, manifest); // 以 name 为唯一键
+  }
+  return registry;
+}
+```
+
+<Callout type="warn" title="发现不等于信任">
+  自动发现降低了接入门槛，但也意味着『放进目录就能被执行』。
+  务必配合 manifest 校验 + 权限白名单，禁止插件静默索取它不该有的权限。
+</Callout>
+
+## 4. 上下文注入：三种方式
+
+插件被命中后要『做事』，但它运行在宿主里，需要宿主把上下文喂进来。三种常见注入方式：
+
+| 方式 | 机制 | 适合 |
+|------|------|------|
+| 参数注入 | 宿主把用户输入/变量作为 tool 参数传入 | 结构化、一次性调用 |
+| 上下文对象 | 传给执行体一个 `ctx` 对象（含 user/memory/logger） | 需要多轮状态、日志、记忆 |
+| 提示注入 | 把 Skill 的指令文本拼进 system prompt，由模型遵循 | 偏『指导模型怎么做』的软能力 |
+
+```ts
+// inject.ts —— 通过上下文对象注入（骨架，伪代码）
+export interface Ctx {
+  userId: string;
+  memory: Record<string, unknown>; // 跨轮记忆，按需读取
+  logger: { info: (m: string) => void };
+  // 严禁把原始密钥放这里；只暴露受控的 API
+}
+
+// 插件执行体签名：拿到 args（参数注入）+ ctx（上下文注入）
+async function run(args: unknown, ctx: Ctx): Promise<string> {
+  ctx.logger.info(`用户 ${ctx.userId} 调用天气插件`);
+  const pref = ctx.memory['city']; // 从记忆里取用户偏好城市
+  // ... 真正逻辑 ...
+  return '结果文本';
+}
+```
+
+<Callout type="danger" title="不要无脑注入全部上下文">
+  把整个对话历史/全部记忆塞给每个插件，既烧 token 又有隐私泄露风险。
+  上下文注入应『按需最小化』：只给当前插件真正需要的字段，敏感字段脱敏或禁止注入。
+</Callout>
+
+## 5. 对比：内嵌 vs 插件 vs 微服务
+
+| 形态 | 耦合度 | 上线成本 | 隔离性 | 适用 |
+|------|--------|----------|--------|------|
+| 主程序内嵌 | 高 | 低 | 差 | 能力少、变化慢 |
+| 插件/Skill（本进程加载） | 中 | 中 | 中 | 同进程、需共享内存/上下文 |
+| 微服务（独立进程/RPC） | 低 | 高 | 好 | 高风险、需独立扩缩容/沙箱 |
+
+<Callout type="tip" title="先插件，后微服务">
+  多数团队应从『同进程插件』起步：开发快、上下文共享易。只有当某插件
+  需要独立沙箱、独立扩缩容或第三方不可信时，再拆成微服务。
+</Callout>
+
+## 6. 常见坑
+
+<Callout type="danger" title="权限最小化漏做">
+  插件若默认拿到全盘文件/网络权限，一个劣质或恶意插件就能拖垮宿主。
+  每个插件在 manifest 显式声明所需权限，宿主按白名单授予，超权直接拒绝。
+</Callout>
+
+<Callout type="warn" title="触发词打架">
+  两个插件 triggers 重叠时，平台可能误命中。建立『冲突检测』：
+  发现同名触发或高相似意图时告警，并设计优先级/消歧策略。
+</Callout>
+
+<Callout type="warn" title="版本漂移">
+  主程序升级后插件 API（ctx 字段、tool 格式）变了，旧插件会静默失败。
+  用 manifest 的 `version` 做契约兼容检查，不兼容的插件拒绝加载并提示升级。
+</Callout>
+
+<Callout type="note" title="调试靠结构化日志">
+  插件跑在宿主内部，问题难定位。让每个插件通过注入的 `ctx.logger` 打结构化日志，
+  宿主统一收集，出问题能回溯『哪个插件、哪一步、什么入参』。
+</Callout>
+
+## 小结
+
+- 插件/Skill = 『声明能做什么 + 提供执行体』的契约；manifest 是平台与插件的唯一接口。
+- 注册发现两种：显式清单 / 目录扫描；发现必须配合校验与权限白名单，不信任即不加载。
+- 上下文注入三式：参数、上下文对象、提示注入；原则是『按需最小化』，敏感字段不进插件。
+- 红线：权限最小化、触发词消歧、版本兼容检查、结构化日志、不无脑注入全部上下文。
+
+<Callout type="note" title="下一步">
+  插件有了执行能力，若它还涉及『运行任意代码』，就必须放进沙箱隔离——
+  这就是 **tool-sandbox（工具沙箱与安全执行）** 的范畴。
+</Callout>
+
+## 延伸阅读 / 参考
+
+- 你所使用 Agent 平台的 Skill/Plugin 官方开发文档（SKILL.md 结构、触发词、工具权限，以官方为准，API 易变）
+- 插件化架构与『约定优于配置』原则（目录扫描式发现的设计范式）
+- 最小权限原则（Principle of Least Privilege）与安全沙箱资料
+- m1-tool-calling：工具定义与回填格式（插件的 tools 字段与之对齐）
+- 微服务 vs 单体权衡：何时把插件拆成独立服务

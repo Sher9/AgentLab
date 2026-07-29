@@ -1,0 +1,359 @@
+---
+title: 人在回路：让 Agent 可控可信任
+description: 深入人在回路（HITL）的设计：确认/编辑、审批流、人机分工、信任建设，给出可运行的审批状态机与服务端骨架、对比与踩坑。
+category: 产品工程
+order: 3
+difficulty: 进阶
+duration: 38 分钟
+tags: [HITL, 人在回路, 审批流, 人机分工, 信任]
+date: 2026-07-29
+---
+
+# 人在回路：让 Agent 可控可信任
+
+当 Agent 从『聊聊天』走向『真的替你办事』——发邮件、改数据库、执行交易——一个根本问题浮现：**谁来为结果负责？** 模型会错、会跑偏、会被注入攻击。把有副作用的动作完全交给它，等于把公司流程挂在一颗概率弹上。
+
+人在回路（Human-in-the-Loop, HITL）就是答案：让人在关键节点介入确认、编辑、审批，既保留 Agent 的自动化效率，又把『最终责任』留在人手里。这一篇讲清确认/编辑、审批流、人机分工、信任建设，并给出可落地的骨架。
+
+## 1. 什么是人在回路（HITL）
+
+HITL 不是『Agent 干一半等人』这么简单，而是一套**在风险与效率之间找平衡**的协作机制。它的核心原则：
+
+- **风险越高，人介入越深**：读文档可以全自动，转钱必须人工审批。
+- **人做决策，Agent 做执行**：Agent 准备好草案，人拍板。
+- **人随时能纠正**：Agent 跑偏时，人能插手改方向，而不是等它跑完。
+
+<Callout type="note" title="HITL 不是退步">
+  有人觉得『Agent 不就是要全自动吗，加人工不是打脸？』。恰恰相反：
+  没有 HITL 的高危自动化是事故源头。HITL 让 Agent 能**安全地**进入生产，
+  是先活下来、再谈全自动的务实路径。
+</Callout>
+
+## 2. 确认与编辑：最轻量的 HITL
+
+最轻量的 HITL 是**先预览、后执行**，用户能直接编辑草案再放行。它成本低、体验顺，适合中低风险动作。
+
+两种形态：
+
+- **确认（Confirm）**：Agent 生成一份待执行方案，用户点『确认』才真正执行。
+- **编辑（Edit）**：不仅能确认，还能在确认前改内容（改邮件正文、改参数），改完再执行。
+
+```ts
+// draft-and-confirm.ts —— 草稿 → 编辑 → 确认 的骨架
+// 关键：Agent 生成的是『待执行草稿』，未经确认绝不触发副作用
+export interface Draft<T> {
+  id: string;
+  payload: T;        // 真正要执行的内容，如邮件正文/SQL
+  status: 'pending' | 'approved' | 'rejected' | 'edited';
+  editedBy?: string; // 若用户改过，记下谁改的，便于审计
+}
+
+// Agent 产出草稿，落入待确认队列，绝不立即执行
+function createDraft<T>(payload: T): Draft<T> {
+  return { id: crypto.randomUUID(), payload, status: 'pending' };
+}
+
+// 用户编辑草稿（在确认前改内容）
+function editDraft<T>(d: Draft<T>, newPayload: T, by: string): Draft<T> {
+  return { ...d, payload: newPayload, status: 'edited', editedBy: by };
+}
+
+// 用户拍板：只有走到 approved，下游才真正执行副作用
+function approve<T>(d: Draft<T>): Draft<T> {
+  return { ...d, status: 'approved' };
+}
+
+// 执行侧：严格检查 status，非 approved 一律拒绝，杜绝『漏审就执行』
+function executeIfApproved<T>(d: Draft<T>, doSideEffect: (p: T) => void) {
+  if (d.status !== 'approved') {
+    throw new Error('草稿未获批准，拒绝执行'); // 安全红线
+  }
+  doSideEffect(d.payload);
+}
+```
+
+<Callout type="tip" title="编辑比确认更省信任成本">
+  纯确认容易让人『无脑点确认』（确认疲劳），反而失去把关意义。
+  允许编辑能把人的注意力拉回内容本身——他必须读懂并可能修改，
+  把关质量更高。代价只是多一个可编辑 UI。
+</Callout>
+
+## 3. 审批流：有副作用动作必经关卡
+
+当动作影响大（金额高、不可逆、跨系统），需要比『自己确认』更重的**审批流**：可能要上级、要多人、要带理由。它本质是工单系统，Agent 是『提案人』，人是『审批人』。
+
+典型要素：
+
+- **阈值路由**：低于额度自动过，高于额度升级审批。
+- **多级审批**：金额越大，审批链越长。
+- **审计留痕**：谁提案、谁批准、何时、原文是什么，全记录。
+
+```ts
+// approval-flow.ts —— 按风险阈值路由审批层级的骨架
+type RiskLevel = 'low' | 'mid' | 'high';
+
+// 根据动作的风险特征定级（真实场景用金额/影响面/可逆性综合算）
+function rankRisk(amount: number): RiskLevel {
+  if (amount <= 100) return 'low';   // 小额：用户自确认即可
+  if (amount <= 5000) return 'mid';  // 中额：直属审批
+  return 'high';                     // 大额：多级审批
+}
+
+// 不同级别对应不同审批人集合
+const APPROVERS: Record<RiskLevel, string[]> = {
+  low: ['owner'],
+  mid: ['owner', 'lead'],
+  high: ['owner', 'lead', 'director'],
+};
+
+interface ApprovalTicket {
+  id: string;
+  risk: RiskLevel;
+  approvers: string[];
+  signed: string[];      // 已签名的人
+  status: 'open' | 'approved' | 'rejected';
+}
+
+function openTicket(amount: number): ApprovalTicket {
+  const risk = rankRisk(amount);
+  return {
+    id: crypto.randomUUID(),
+    risk,
+    approvers: APPROVERS[risk],
+    signed: [],
+    status: 'open',
+  };
+}
+
+// 某人签名：集齐所有审批人才算批准
+function sign(t: ApprovalTicket, person: string): ApprovalTicket {
+  if (!t.approvers.includes(person)) throw new Error('无审批权限');
+  const signed = t.signed.includes(person) ? t.signed : [...t.signed, person];
+  const status = signed.length === t.approvers.length ? 'approved' : 'open';
+  return { ...t, signed, status };
+}
+```
+
+<Callout type="warn" title="审批疲劳会架空 HITL">
+  如果每封邮件都要总监审批，审批人会变『盖章机器』，HITL 形同虚设。
+  用阈值路由让低风险自动过、只把真正高危的送上审批，保住人的注意力。
+</Callout>
+
+## 4. 人机分工：什么该人做、什么该 Agent 做
+
+HITL 设计的核心难题是**边界划分**。划错了：要么人成瓶颈（Agent 啥都要问），要么人成摆设（高危也自动过）。一张可操作的分工表：
+
+| 环节 | 适合 Agent | 适合人 | 理由 |
+|------|-----------|--------|------|
+| 信息检索/摘要 | ✅ | | 机械、海量、可并行 |
+| 草案生成 | ✅ | | 需要发散、耗时长 |
+| 价值判断 | | ✅ | 涉及责任、伦理、偏好 |
+| 不可逆执行 | | ✅（审批） | 出错代价高，需人兜底 |
+| 异常处理 | ✅（初判） | ✅（终审） | Agent 归类，人裁决边界 |
+
+<Callout type="note" title="让人做『人该做的』">
+  人的稀缺注意力应投在『价值判断与责任归属』上，而不是『复制粘贴与格式整理』。
+  Agent 把脏活干完、把选项列清、把风险标好，人才有余力做决策。
+  分工的本质是：**把人的认知带宽留给不可外包的判断**。
+</Callout>
+
+## 5. 信任建设：从透明到授权
+
+HITL 能否落地，取决于用户**敢不敢**把事交给 Agent。信任不是喊出来的，是设计出来的：
+
+- **透明（Transparency）**：Agent 每步做了什么、依据什么，可追溯。
+- **可解释（Explainability）**：提案旁边附『为什么这么建议』，人才能快速判断。
+- **可回滚（Reversibility）**：即使批了，也能撤销。可逆性直接决定人敢不敢批。
+- **渐进授权（Progressive Trust）**：先让 Agent 做只读/低风险，表现稳了再开放写/高风险。
+
+```ts
+// progressive-trust.ts —— 按历史表现动态调整 Agent 权限的骨架
+type Capability = 'read' | 'draft' | 'execute_low' | 'execute_high';
+
+// 权限随『成功率』升级：表现好才解锁更高风险能力
+function nextTier(successRate: number, current: Capability): Capability {
+  const ladder: Capability[] = ['read', 'draft', 'execute_low', 'execute_high'];
+  const i = ladder.indexOf(current);
+  if (successRate > 0.98 && i < ladder.length - 1) return ladder[i + 1];
+  if (successRate < 0.9 && i > 0) return ladder[i - 1]; // 表现差则降级
+  return current;
+}
+
+// 执行前先查当前权限，越权直接拒绝——权限是动态闸门
+function assertAllowed(allowed: Capability, need: Capability) {
+  const ladder: Capability[] = ['read', 'draft', 'execute_low', 'execute_high'];
+  if (ladder.indexOf(allowed) < ladder.indexOf(need)) {
+    throw new Error('Agent 当前权限不足以执行该动作，需人工介入');
+  }
+}
+```
+
+<Callout type="tip" title="可回滚是信任的催化剂">
+  人敢批『发邮件』，是因为知道发错能撤回。给每个高风险动作配『撤销/补偿』路径
+  （如邮件撤回、交易冲正），比任何信任话术都管用。可逆性 ≈ 授权意愿。
+</Callout>
+
+## 6. 三种介入时机：事前拦截 / 事中协同 / 事后复核
+
+HITL 不是只有『执行前点确认』一种姿势。按**介入时机**分三类，组合使用才能既保安全又不拖慢流程：
+
+- **事前拦截（Pre-action gate）**：动作执行前必须获批准，适合不可逆、高危动作。即第 3 节的审批流——闸门在执行之前。
+- **事中协同（In-loop oversight）**：Agent 边干人边看，人可随时打断、纠正方向，适合长任务、可中断流程。对应 product-ux 里的『停止/编辑』控制面。
+- **事后复核（Post-hoc review）**：先自动执行，再让人抽查与审计，适合高频、低风险动作。用抽样兜底代替逐条审批，省人力。
+
+| 时机 | 延迟 | 安全感 | 适用 |
+|------|------|--------|------|
+| 事前拦截 | 高（先等审批） | 最高 | 不可逆 / 高危 |
+| 事中协同 | 中 | 高 | 长任务 / 可中断 |
+| 事后复核 | 低 | 中（靠抽查兜底） | 高频低风险 |
+
+<Callout type="tip" title="混合使用最稳">
+  生产里几乎都是三者在跑：高危走事前、长任务走事中、海量低风险走事后。
+  别只押一种——单模式要么太慢（全事前）、要么太险（全事后）。
+</Callout>
+
+### 6.1 异步审批与超时升级
+
+同步弹窗审批有个隐患：审批人不在，工单积压，Agent 主链路**卡死**。解决是把审批做成**异步队列**，并加超时升级——超时未批自动转上级，既不让流程停摆，也不放过风险。
+
+```ts
+// async-approval.ts —— 异步审批队列 + 超时升级骨架
+// 真实场景：Agent 提案入队，审批人异步处理；超时未批自动升级给更高级别
+interface QueueItem {
+  ticket: ApprovalTicket;   // 复用第 3 节的审批工单
+  createdAt: number;
+  timeoutMs: number;
+  escalateTo?: string;      // 超时后升级到的审批人
+}
+
+const queue: QueueItem[] = [];
+function enqueue(item: QueueItem) { queue.push(item); }
+
+// 定时器扫描：超时就升级，避免 HITL 变成死锁
+setInterval(() => {
+  const now = Date.now();
+  for (const it of queue) {
+    if (it.ticket.status === 'open' && now - it.createdAt > it.timeoutMs) {
+      if (it.escalateTo) {
+        it.ticket.approvers.push(it.escalateTo); // 扩大审批人集合
+        it.createdAt = now;                       // 重置计时，给新人处理窗口
+        console.log(`工单 ${it.ticket.id} 超时，已升级至 ${it.escalateTo}`);
+      }
+    }
+  }
+}, 1000);
+```
+
+<Callout type="warn" title="异步别忘了通知">
+  异步审批的前提是**审批人真的会知道**。入队后要主动推送
+  （IM / 邮件 / 站内信），否则队列默默超时升级，到了总监那他一脸茫然。
+  通知机制是异步 HITL 的半条命。
+</Callout>
+
+## 7. 对比：全自动 vs 全人工 vs HITL
+
+| 模式 | 效率 | 安全 | 适用 |
+|------|------|------|------|
+| 全自动（无 HITL） | 最高 | 最低（高危必翻车） | 只读、可逆、低风险 |
+| 全人工（Agent 只建议） | 最低 | 最高 | 极端高危、强监管 |
+| HITL（分级介入） | 中高 | 高 | 绝大多数生产场景 |
+
+<Callout type="note" title="没有银弹，只有分级">
+  别在非此即彼里纠结。正确做法是**按风险分级**：低风险全自动、中风险确认、
+  高风险审批、极端风险全人工。一套系统里同时跑三种模式才是生产常态。
+</Callout>
+
+## 8. 可运行骨架：把 HITL 接进 Agent 主循环
+
+把前面几节拼进一个最小可跑的 Agent 执行骨架：Agent 产出动作 → 判断是否需审批 → 等人/自动 → 批准后执行。这里用伪编排演示**控制流**，模型调用细节略去。
+
+```ts
+// hitl-agent.ts —— 带人工审批闸门的 Agent 执行骨架
+type Action =
+  | { type: 'send_email'; to: string; body: string; risk: number }
+  | { type: 'refund'; orderId: string; amount: number };
+
+// 决策：动作风险高于阈值，必须走审批；否则自动执行
+const AUTO_THRESHOLD = 100;
+
+async function runAgent(actions: Action[], humanApprove: (a: Action) => Promise<boolean>) {
+  for (const action of actions) {
+    const needsApproval = action.risk > AUTO_THRESHOLD;
+
+    if (needsApproval) {
+      // 暂停，等人审批；人拒了就跳过，绝不偷偷执行
+      const ok = await humanApprove(action);
+      if (!ok) {
+        console.log(`动作被人工拒绝，跳过：${action.type}`);
+        continue;
+      }
+    }
+    // 到达这里，要么低风险自动过，要么已获人工批准
+    await execute(action);
+    console.log(`已执行：${action.type}`);
+  }
+}
+
+// 真实执行副作用（发邮件/退款），此处仅打印
+async function execute(action: Action) {
+  // 实际调用下游系统；务必带审计日志：谁提案、谁批准、何时
+  console.log('execute ->', action);
+}
+
+// 用法示例：把 humanApprove 接成前端弹窗/审批工单
+// await runAgent(draftedActions, (a) => showApprovalDialog(a));
+```
+
+<Callout type="danger" title="审批前不要有副作用">
+  致命错误：Agent 『先执行、后补审批』。一旦执行不可逆（如已转钱），
+  审批就成摆设。规则只有一条：**未获批准，零副作用**。把闸门放在副作用之前。
+</Callout>
+
+## 9. 踩坑与最佳实践
+
+<Callout type="danger" title="确认疲劳导致盲批">
+  高频确认会让用户形成『一路点确认』的肌肉记忆，HITL 名存实亡。
+  用阈值路由减少确认次数、允许编辑拉回注意力、对高风险才强拦截。
+</Callout>
+
+<Callout type="warn" title="把审批当成阻塞点卡死流程">
+  审批人不在、工单积压，Agent 整条链路卡住。要设计超时升级
+  （自动转上级）与异步通知（审批人了才推），别让人在回路变成死锁。
+</Callout>
+
+<Callout type="warn" title="缺审计，出事查不清">
+  HITL 的价值一半在『拦错』，一半在『留痕』。谁提案、谁批、原文是什么、
+  何时执行，必须落库。没有审计的 HITL 在合规与复盘时等于零。
+</Callout>
+
+<Callout type="tip" title="给 Agent 附上『为什么』">
+  审批人拍板快慢，取决于他能否快速理解 Agent 的意图。提案旁附一句
+  『建议退款：订单超时未发货，符合风控规则 X』，审批耗时与误拒率双降。
+</Callout>
+
+<Callout type="note" title="权限要可降级">
+  表现差的 Agent 应自动收回高危权限（见第 5 节渐进授权）。
+  权限只升不降，迟早出大事故。把成功率监控接进权限闸门。
+</Callout>
+
+## 小结
+
+- HITL 是效率与安全的平衡机制：风险越高，人介入越深；人做决策，Agent 做执行。
+- 轻量 HITL = 草稿+确认/编辑；重度 HITL = 按阈值路由的审批流，集齐审批人才放行。
+- 人机分工原则：Agent 干机械/海量/发散的活，人守住价值判断与不可逆执行。
+- 信任靠设计：透明、可解释、可回滚、渐进授权——可逆性直接决定授权意愿。
+- 对比三模式：全自动（低风险）、全人工（极端高危）、HITL 分级（生产常态）。
+- 红线：审批前零副作用、防确认疲劳、审批不阻塞、审计留痕、权限可降级。
+
+<Callout type="note" title="下一步">
+  HITL 解决了『高危动作有人兜底』，但 Agent 跑起来时的『流式输出、取消、背压』
+  又是另一组体验问题。这就是 **product-stream（流式输出体验）** 的主题。
+</Callout>
+
+## 延伸阅读 / 参考
+
+- *Human-in-the-Loop Machine Learning*（Robert Monarch）：HITL 的系统化方法论
+- Google PAIR：人与 AI 协作的交互与信任设计指南
+- OAUTH / 工单系统（如 Jira、审批流中间件）的权限与审计模型参考
+- Anthropic：Agent 安全部署中 Human oversight 的实践建议
+- 渐进式自动化（Progressive Automation）在工业与 DevOps 中的权限演进案例

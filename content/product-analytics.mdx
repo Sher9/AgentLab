@@ -1,0 +1,184 @@
+---
+title: 产品数据分析：用数据驱动 Agent 迭代
+description: 从埋点设计、会话分析到质量与成本看板，讲透 Agent 产品如何用数据形成『观测—归因—迭代』闭环，给出事件埋点、会话漏斗、成本聚合与看板的可运行骨架。
+category: 产品工程
+order: 6
+difficulty: 进阶
+duration: 23 分钟
+tags: [埋点, 会话分析, 成本看板, 质量指标, 迭代闭环]
+date: 2026-07-29
+---
+
+# 产品数据分析：用数据驱动 Agent 迭代
+
+功能上线只是开始。Agent 产品最大的不确定性在于『用户到底用得顺不顺、花了多少钱、答得对不对』——这些只能靠数据回答。这一篇讲：埋点设计、会话分析、质量/成本看板，以及如何用它们形成迭代闭环。
+
+## 1. 先想清楚要回答什么问题
+
+别一上来就埋几十个事件。先列『必须回答的业务问题』，再反推埋什么：
+
+- **用得顺不顺**：会话完成率、人工接管率、重试/降级触发率；
+- **花了多少钱**：每会话 token 成本、每用户日成本、成本分布长尾；
+- **答得对不对**：用户点赞/点踩、二次追问率、人工抽检通过率；
+- **卡在哪**：哪一步工具调用最慢/最易失败、哪个意图漏斗流失最大。
+
+<Callout type="note" title="事件设计原则">
+  一个事件 = 一个『用户/系统动作』，含 `event`、`tenant_id`、`user_id`、`session_id`、时间戳、
+  以及该动作关心的字段。用 `session_id` 串联整段对话，用 `tenant_id` 做多租户分群。
+  字段宁少勿乱：每个字段都要对应一个能驱动决策的问题，否则就是噪音。
+</Callout>
+
+## 2. 埋点：在关键节点发事件
+
+把埋点收敛到一个 `track()` 函数，业务代码一行调用，避免散落难维护。
+
+```ts
+// analytics.ts —— 统一埋点入口（事件送到消息队列/数仓）
+type Event = {
+  event: string;          // session.start / tool.call / llm.token / session.end
+  tenantId: string;
+  userId: string;
+  sessionId: string;
+  at: number;             // 毫秒时间戳
+  props?: Record<string, unknown>;
+};
+
+async function track(e: Event) {
+  // 真实场景：发到 Kafka / 写入数仓，别阻塞主链路（fire-and-forget）
+  await queue.publish('analytics', { ...e, at: Date.now() });
+}
+
+// 在 Agent 链路的关键节点埋点
+await track({ event: 'llm.token', tenantId, userId, sessionId,
+  props: { model: 'gpt-4o-mini', promptTokens: 1200, completionTokens: 300 } });
+await track({ event: 'tool.call', tenantId, userId, sessionId,
+  props: { tool: 'search_order', ok: false, latencyMs: 1500 } });
+```
+
+<Callout type="tip" title="成本事件要带 model 与 token">
+  成本归因的最小粒度是『某租户 + 某会话 + 某模型 + token 数』。埋点时务必带 `model` 字段，
+  否则月底算不清『是谁把 GPT-4 用爆了』。降级到小模型时也要记，便于对比省钱效果。
+</Callout>
+
+## 3. 会话分析：漏斗与流失
+
+把一段会话当成漏斗：开始 → 首轮有效回复 → 任务完成 / 用户满意。用 `session_id` 聚合。
+
+```sql
+-- 会话完成率：有正常结束事件的会话占比
+SELECT
+  COUNT(DISTINCT session_id) FILTER (
+    WHERE event = 'session.end' AND props->>'outcome' = 'done'
+  )::float / NULLIF(COUNT(DISTINCT session_id), 0) AS completion_rate
+FROM analytics_events
+WHERE tenant_id = 't_001' AND at BETWEEN :start AND :end;
+
+-- 工具失败 Top：定位最脆弱的依赖
+SELECT props->>'tool' AS tool, COUNT(*) AS fails
+FROM analytics_events
+WHERE event = 'tool.call' AND props->>'ok' = 'false'
+GROUP BY 1 ORDER BY fails DESC LIMIT 10;
+```
+
+<Callout type="warn" title="别只看均值">
+  完成率、延迟的均值会掩盖长尾。一个会话平均 8s，但 P99 可能 40s——体感由 P99 决定。
+  看板务必同时展示 P50/P90/P99，长尾才是用户吐槽的来源。
+</Callout>
+
+## 4. 质量与成本看板
+
+质量与成本是 Agent 产品两条生命线，必须合在一张看板，避免『体验好了但成本炸了』或反过来。
+
+| 指标 | 含义 | 预警阈值 |
+|------|------|----------|
+| 完成率 | 会话正常结束占比 | 周环比跌 > 5% |
+| 人工接管率 | 转人工/重试占比 | 持续上升 |
+| 单会话成本 | token 成本均值 | 超预算线 |
+| 降级触发率 | 走兜底占比 | 突增 = 上游劣化 |
+| 二次追问率 | 用户同一问题再问 | 高 = 首答质量差 |
+
+```ts
+// cost-dashboard.ts —— 按租户/模型聚合成本的示意查询
+async function costByTenant(start: Date, end: Date) {
+  return db.query(`
+    SELECT tenant_id,
+           SUM((props->>'promptTokens')::int
+             + (props->>'completionTokens')::int) AS total_tokens,
+           COUNT(*) AS calls
+    FROM analytics_events
+    WHERE event = 'llm.token' AND at BETWEEN $1 AND $2
+    GROUP BY tenant_id
+    ORDER BY total_tokens DESC`, [start, end]);
+}
+```
+
+<Callout type="danger" title="成本要看分布不是看总数">
+  只看全站总成本会漏掉『某租户/某用户把成本拉爆』。按 `tenant_id` 和 `user_id` 下钻，
+  长尾用户往往贡献不成比例的开销——这正是配额（见 product-multi-tenant）要拦的对象。
+</Callout>
+
+## 5. 迭代闭环：从数据到行动
+
+数据本身不产生价值，闭环才产生。一个可落地的节奏：
+
+```
+看板发现异常（如完成率跌）
+  → 下钻定位（是某工具失败率升？还是某意图答非所问？）
+  → 归因（prompt 改动？上游模型更新？新用户群？）
+  → 改（修工具 / 调 prompt / 加兜底）
+  → 灰度上线，看板验证指标回升
+  → 固化成监控阈值，下次自动报警
+```
+
+<Callout type="tip" title="把指标变成告警而非报表">
+  看板给人看会『偶尔才看』。把关键指标接告警（完成率跌、降级率突增、成本超预算），
+  异常自动推到 IM/值班，才能从『事后复盘』变成『事中止损』。
+</Callout>
+
+## 6. 对比：埋点 vs 日志 vs 链路追踪
+
+| 维度 | 埋点事件 | 应用日志 | LLM 链路追踪 |
+|------|----------|----------|--------------|
+| 目的 | 业务指标/漏斗 | 排障细节 | 单次调用内部步骤 |
+| 聚合 | 适合大规模聚合 | 适合查单条 | 适合定位单次慢调用 |
+| 用户视角 | 有（session/user） | 通常无 | 部分有 |
+| 典型工具 | 数仓/Kafka | ELK/Loki | LangSmith/Phoenix |
+
+三者互补：埋点看『面』、日志查『点』、追踪剖『一次调用的里』。
+
+## 7. 踩坑清单
+
+<Callout type="danger" title="埋点阻塞主链路">
+  埋点若同步写库/发网络请求，上游抖动会拖慢甚至搞挂业务接口。
+  必须异步（消息队列/fire-and-forget），并保证『埋点失败不影响主流程』。
+</Callout>
+
+<Callout type="warn" title="PII 进埋点等于合规事故">
+  用户原话、手机号、订单号等别原样进事件 `props`。要么脱敏、要么只存哈希、要么只记 id。
+  分析用文本时走独立、受控的抽样通道，而非全量落数仓。
+</Callout>
+
+<Callout type="warn" title="只看总数不看分布">
+  均值掩盖长尾，总数掩盖长尾租户。P99 与按租户下钻是必看项，否则问题藏在聚合里。
+</Callout>
+
+<Callout type="tip" title="指标要能反推到动作">
+  每个上墙指标都要能回答『它异常了我会改什么』。答不上来的指标别上墙，
+  那是噪音不是洞察。看板贵在少而准。
+</Callout>
+
+## 小结
+
+- 埋点前先列『必须回答的业务问题』，再反推事件字段；统一 `track()` 入口，异步发送。
+- 会话分析用 `session_id` 串漏斗，工具失败/长尾延迟用 SQL 下钻，别只看均值要看 P99。
+- 质量与成本合一张看板：完成率、接管率、单会话成本、降级率、二次追问率。
+- 闭环 = 看板发现 → 下钻归因 → 改 → 灰度验证 → 固化告警。指标要能反推动作。
+- 红线：埋点异步不阻塞、PII 不进埋点、成本按租户下钻、告警而非只做报表。
+
+## 延伸阅读 / 参考
+
+- *Metrics, dashboards & alerts*（Google SRE）：RED/USE 指标法与告警设计
+- OpenTelemetry 文档：LLM 链路追踪的 span 设计与成本归因
+- LangSmith / Phoenix 文档：Agent 单次调用的质量与延迟剖析
+- 事件溯源（Event Sourcing）模式：用不可变事件流支撑分析
+- 本系列 `product-multi-tenant`（按租户成本下钻）、`deploy-monitor`（告警接入）

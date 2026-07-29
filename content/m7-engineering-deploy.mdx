@@ -1,0 +1,337 @@
+---
+title: 工程化部署：配置、密钥、健康检查与灰度回滚
+description: 从玩具到生产，Agent 服务要过配置分层、密钥安全、健康检查、优雅启停、灰度发布、快速回滚与可观测内建几关。给出可运行骨架与多阶段 Dockerfile。
+category: 部署运维
+order: 1
+difficulty: 高级
+duration: 32 分钟
+tags: [工程化, 部署, 密钥, 健康检查, 灰度, 回滚, 可观测]
+date: 2026-07-29
+---
+
+# 工程化部署：配置、密钥、健康检查与灰度回滚
+
+本地 `npx tsx` 一跑通、终端里吐出正确回答，那种『成了』的爽感我们都懂。但 **demo 能跑 ≠ 能上线**。
+
+当你的 Agent 从『我自己的笔记本』走向『每天几万次真实请求』时，光有『会答对的模型』远远不够。这一篇不重复讲成本/流式/缓存（那是另一视角），而是聚焦**把 Agent 服务安全、可恢复、可观测地交付到生产**必须补的工程化手段：配置分层、密钥管理、健康检查、优雅启停、灰度发布、快速回滚、可观测内建。
+
+<Callout type="note" title="读者画像">
+  本文假设你已能跑通前面的 Agent 骨架，熟悉 `async/await`、TypeScript 与基础 Docker。
+  我们把重点放在『生产环境怎么落地』，给出可复制的骨架与思路（框架类以官方文档为准）。
+</Callout>
+
+## 1. 配置管理：环境分层与单一来源
+
+最早期的错误是把数据库地址、模型名、阈值直接写死在代码里。一旦要换环境（本地→预发→生产），就得改代码重发版。正确做法是**配置与代码分离**，遵循 12-Factor 的『Config in Environment』。
+
+### 1.1 三层配置来源
+
+| 来源 | 例子 | 特点 |
+|------|------|------|
+| 环境变量 | `OPENAI_API_KEY`、`LOG_LEVEL` | 敏感/环境相关，绝不进代码库 |
+| 配置文件 | `config/default.yaml` | 非敏感默认值，可进版本库 |
+| 远程配置 | 配置中心 / Secret Manager | 热更新、灰度下发、集中管控 |
+
+### 1.2 用 Zod 做启动期配置校验
+
+配置最怕『少配一个变量，跑起来才崩在半路』。把配置在**进程启动时一次性校验**，缺了立刻 fail-fast：
+
+```ts
+// config.ts —— 用 Zod 集中校验配置，缺失即启动失败（fail-fast）
+import { z } from 'zod';
+
+const ConfigSchema = z.object({
+  NODE_ENV: z.enum(['development', 'staging', 'production']).default('development'),
+  PORT: z.coerce.number().int().positive().default(3000),
+  OPENAI_API_KEY: z.string().min(1, '缺少 OPENAI_API_KEY'),
+  LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  MAX_AGENT_STEPS: z.coerce.number().int().positive().default(8), // Agent 循环上限
+  MODEL_DEFAULT: z.string().default('gpt-4o-mini'),
+});
+
+// 进程启动时执行一次；任一必填缺失 → 抛出清晰错误，绝不带病启动
+export const config = ConfigSchema.parse(process.env);
+```
+
+<Callout type="warn" title="fail-fast 优于带病运行">
+  配置缺失时，**启动即报错退出**比『运行时某次请求才 500』好一万倍。
+  容器编排（K8s）会因启动失败而不把流量切过来，避免把请求发给半残实例。
+</Callout>
+
+## 2. 密钥管理：不落盘、不进日志、最小权限
+
+密钥泄露是生产事故头号来源。Agent 尤其高危：它同时持有 `OPENAI_API_KEY` 与用户的私有数据。
+
+### 2.1 红线清单
+
+- **绝不**把密钥写进代码、提交进 Git、或打进镜像层（镜像可被 `docker history` 扒出）；
+- **绝不** `console.log(process.env)` 或把含密钥的对象原样打进日志；
+- 用 **Secret Manager**（AWS Secrets Manager / GCP Secret Manager / Vault）注入，运行时从环境变量或挂载文件读取；
+- 密钥设**最小权限**与**定期轮换**（rotation），泄露面可控；
+- 多租户场景：每个租户的第三方密钥隔离存储，别共用一把全局钥匙。
+
+<Callout type="danger" title="镜像层会泄露密钥">
+  如果在 Dockerfile 里写 `ENV OPENAI_API_KEY=sk-xxx` 或 `RUN export ...`，密钥会固化进镜像层，
+  任何能拉到镜像的人都能 `docker history` 看到。密钥只通过运行时环境变量 / 挂载注入。
+</Callout>
+
+### 2.2 运行时读取密钥骨架
+
+```ts
+// 从挂载的密钥文件读取（Secret Manager 常挂载到 /run/secrets/xxx）
+import { readFileSync } from 'node:fs';
+
+function readSecret(path: string, envKey: string): string {
+  // 优先用挂载文件（生产），退化到环境变量（本地）
+  if (path && existsSync(path)) return readFileSync(path, 'utf8').trim();
+  const v = process.env[envKey];
+  if (!v) throw new Error(`密钥缺失：${envKey}`);
+  return v;
+}
+```
+
+## 3. 健康检查：让编排器知道『我能接活吗』
+
+编排系统（K8s / 负载均衡）靠**健康检查**决定『要不要给我发流量』。Agent 服务至少要实现两类：
+
+| 探针 | 含义 | 失败后果 | 实现要点 |
+|------|------|----------|----------|
+| Liveness | 进程是否还活着 | 重启容器 | 轻量，只查进程本身 |
+| Readiness | 是否**准备好**接流量 | 停止发新流量，但不重启 | 查 DB/模型连通性、密钥是否就位 |
+
+<Callout type="tip" title="readiness 要查真实依赖">
+  readiness 不能只回 `200 OK`。如果数据库连不上、密钥没挂载，应该返回 **非 2xx**，
+  让编排器先别把用户流量切过来，而不是让每个请求都 500。
+</Callout>
+
+```ts
+// health.ts —— Express 下的双探针骨架（思路，框架 API 以官方为准）
+import express from 'express';
+import { config } from './config.js';
+
+const app = express();
+
+// liveness：进程活着就过
+app.get('/healthz', (_req, res) => res.status(200).json({ status: 'alive' }));
+
+// readiness：依赖就绪才放行
+app.get('/readyz', async (_req, res) => {
+  try {
+    // 真实场景：ping 一下模型/DB，确认能接活
+    const ok = await checkDependencies();
+    if (!ok) return res.status(503).json({ status: 'not ready' });
+    res.status(200).json({ status: 'ready' });
+  } catch {
+    res.status(503).json({ status: 'not ready' });
+  }
+});
+
+app.listen(config.PORT, () => console.log(`listening on ${config.PORT}`));
+```
+
+## 4. 优雅启停：别在请求半路杀进程
+
+默认 `Ctrl+C` / `SIGTERM` 会立刻杀进程，正在处理的 Agent 请求会被腰斩、工具调用可能只执行一半。生产要做**优雅关闭（graceful shutdown）**：收到信号后停止接新流量、等存量请求跑完再退出。
+
+```ts
+// graceful-shutdown.ts —— 捕获 SIGTERM，先停监听再退出
+const server = app.listen(config.PORT);
+
+let shuttingDown = false;
+process.on('SIGTERM', () => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log('收到 SIGTERM，开始优雅关闭…');
+  server.close(() => {
+    // 不再接受新连接；已建立的请求处理完才会触发此回调
+    console.log('已停止接新流量，进程退出');
+    process.exit(0);
+  });
+  // 兜底：若 30s 内仍有请求没结束，强制退出，避免无限挂起
+  setTimeout(() => process.exit(1), 30_000).unref();
+});
+```
+
+<Callout type="note" title="为什么需要优雅关闭">
+  滚动更新时，旧 Pod 收到 SIGTERM，若立刻杀掉，正在进行长 Agent 循环（多轮工具调用）的请求会失败。
+  优雅关闭让负载均衡先把新流量切走、存量请求自然收敛，用户体验从『偶发 500』变成『无感更新』。
+</Callout>
+
+## 5. 灰度发布：把爆炸半径压到最小
+
+新版本（新 prompt、新模型、新工具）一定有概率引入回归。灰度（canary）让你先放 5% 流量验证，再逐步放大。
+
+| 策略 | 做法 | 适用 |
+|------|------|------|
+| 金丝雀（Canary） | 新版本先接 5%~10% 流量，指标 OK 才全量 | 大多数在线服务 |
+| 蓝绿（Blue-Green） | 两套全量环境，切流量瞬间切换，出问题秒回切 | 要求零停机、可瞬间回退 |
+| 影子（Shadow） | 新版本复制真实流量但不返回给用户，只对比结果 | 上线前用真实流量做『试车』 |
+
+<Callout type="tip" title="灰度要配指标门禁">
+  灰度不是『放了就不管』。新版本的错误率/延迟/Eval 分一旦劣于基线，应**自动暂停放大甚至自动回滚**。
+  没有门禁的灰度只是『把故障慢一点放出来』。
+</Callout>
+
+## 6. 回滚：比『修好』更快的是『退回去』
+
+上线出事时，最稳的动作往往不是现场 debug，而是**立刻回滚到上一个好版本**。回滚要满足：快速、可逆、不丢数据。
+
+### 6.1 让回滚廉价的三个前提
+
+- **版本化一切**：镜像打 immutable tag（别用 `latest`），代码可一键切回旧 commit；
+- **DB 迁移向后兼容**：新版本读旧 schema 必须能跑（expand/contract 模式），否则回滚后数据库对不上；
+- **特性开关（Feature Flag）**：用开关而非代码回滚来关掉某个有问题的能力，回滚粒度更细、更稳。
+
+```ts
+// feature-flag.ts —— 用开关隔离风险功能，出问题关开关即可，无需发版
+const flags = new Map<string, boolean>([
+  ['use_new_planner', false], // 新规划器默认关闭，验证通过再开
+]);
+
+export function isOn(name: string): boolean {
+  return flags.get(name) ?? false;
+}
+
+// 用法：新能力用开关包住
+if (isOn('use_new_planner')) {
+  return await newPlanner.run(input);
+}
+return await oldPlanner.run(input); // 默认走老路径，回滚只需改开关
+```
+
+<Callout type="warn" title="DB 迁移是回滚的头号杀手">
+  如果新版本改了表结构且旧代码读不了，回滚后旧代码会狂报错。遵循
+  『先加列不删列（expand）→ 新代码兼容新旧 → 确认无旧代码后再删列（contract）』，
+  保证任意时刻旧代码都能跑。这是回滚可行性的命门。
+</Callout>
+
+## 7. 可观测内建：部署层也要埋点
+
+Agent 应用层有 Tracing（见 M6），但**部署层**也要有自己的可观测：指标（metrics）、结构化日志（logs）、链路（traces）三位一体。
+
+- **Metrics**：请求数、错误率、P95 延迟、CPU/内存、队列积压——暴露给 Prometheus 抓取；
+- **结构化日志**：用 JSON 日志而非 `console.log` 字符串，方便采集与检索；日志必须脱敏；
+- **Traces**：把应用层 trace_id 透传到部署层，跨层关联一次请求。
+
+```ts
+// logging.ts —— 结构化日志骨架（思路，框架 API 以官方为准）
+function log(level: string, msg: string, meta: Record<string, unknown> = {}) {
+  // 统一 JSON 输出，便于 Loki/ELK 采集；绝不在 meta 里放密钥与 PII
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(),
+    level,
+    msg,
+    traceId: meta.traceId,
+    // 注意：meta 中不得包含 process.env 或用户敏感字段
+  }));
+}
+```
+
+<Callout type="danger" title="日志脱敏是合规红线">
+  调试时随手 `console.log(messages)` 可能把 `OPENAI_API_KEY`、用户手机号、对话隐私写进日志。
+  上线前：日志脱敏、密钥走环境变量、禁止打印完整 header 与明文 token。
+</Callout>
+
+## 8. 部署形态对比
+
+| 形态 | 代表 | 优点 | 缺点 | 适合场景 |
+| --- | --- | --- | --- | --- |
+| 无状态函数 | Serverless（云函数/边缘函数） | 零运维、按量付费、自动扩缩 | 冷启动、难维持长连接、流式不友好 | 偶发、低频、短任务 |
+| 常驻服务 | 容器 / 长驻进程 | 长连接友好、流式顺畅、可复用连接 | 需自己管扩缩容与可用性 | 高并发、流式、长会话 |
+| 队列削峰 | 入队 + Worker 异步消费 | 削峰填谷、任务不丢、可重试 | 架构重、有端到端延迟 | 批量、重任务、可异步 |
+
+<Callout type="tip" title="混合架构最常见">
+  真实项目往往是混合的：常驻服务承接实时对话与流式，队列承接重活（长文档摘要、批量检索），
+  函数承接 webhook / 定时触发。按『实时性』切分流量，而不是一刀切。
+</Callout>
+
+## 9. 容器化：多阶段 Dockerfile 骨架
+
+Agent 服务通常用多阶段构建把『构建依赖』与『运行依赖』分开，得到最小镜像：
+
+```dockerfile
+# ---- 构建阶段：装全部依赖、编译 ----
+FROM node:20-alpine AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build   # 若用 tsx 可省略，这里演示通用形态
+
+# ---- 运行阶段：只拿运行时需要的东西 ----
+FROM node:20-alpine AS run
+WORKDIR /app
+ENV NODE_ENV=production
+COPY package*.json ./
+RUN npm ci --omit=dev   # 只装生产依赖，镜像更小
+COPY --from=build /app/dist ./dist
+# 密钥一律运行时注入，绝不在 ENV 写密钥
+EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
+  CMD wget -qO- http://localhost:3000/healthz || exit 1
+CMD ["node", "dist/server.js"]
+```
+
+<Callout type="warn" title=".dockerignore 别忘了">
+  不写 `.dockerignore` 会把 `node_modules`、`.env`、本地日志全打进构建上下文，既慢又可能泄露密钥。
+  至少忽略 `node_modules`、`.env`、`.git`、日志目录。
+</Callout>
+
+## 10. 踩坑清单
+
+<Callout type="danger" title="配置漂移">
+  预发和生产配置不一致（比如生产漏了某个阈值），导致『预发好好的，上线就崩』。
+  解法：配置校验统一、同一套校验代码覆盖所有环境、敏感项走 Secret Manager 不手工贴。
+</Callout>
+
+<Callout type="danger" title="密钥泄露">
+  密钥进 Git / 进镜像层 / 进日志，是最高危事故。定期扫仓库历史、镜像层，
+  用 Secret Manager + 最小权限 + 轮换三件套兜底。
+</Callout>
+
+<Callout type="warn" title="零停机是假的">
+  没做优雅关闭的滚动更新，会让进行中的长 Agent 请求被腰斩。
+  务必实现 SIGTERM 优雅关闭 + readiness 探针，让流量先走、请求先收敛。
+</Callout>
+
+<Callout type="danger" title="回滚被 DB 迁移卡死">
+  新版本改了不兼容的表结构，回滚后旧代码读不了库。遵循 expand/contract，
+  保证任意时刻旧代码都能跑。回滚前先确认数据库向后兼容。
+</Callout>
+
+<Callout type="warn" title="灰度没有门禁">
+  放了 10% 流量却没人盯指标，等发现问题时故障已放大。灰度必须配自动门禁：
+  错误率/延迟/Eval 分劣于基线即暂停放大或自动回滚。
+</Callout>
+
+<Callout type="warn" title="日志泄露隐私">
+  把完整 messages、密钥、用户 PII 写进日志。部署层日志也要脱敏，
+  敏感字段只存哈希或摘要，trace_id 透传用于跨层关联即可。
+</Callout>
+
+## 11. 生产就绪检查表
+
+上线前逐条勾：配置启动时 Zod 校验 ✅｜密钥走 Secret Manager、不进镜像/日志 ✅｜双探针就绪 ✅｜优雅关闭 ✅｜灰度 + 门禁 ✅｜回滚路径验证过（含 DB 兼容）✅｜结构化日志脱敏 ✅｜metrics/traces 已接 Dashboard ✅｜多阶段镜像 + `.dockerignore` ✅。
+
+## 小结
+
+- **配置**：与代码分离、启动时 Zod 校验、fail-fast，绝不带病启动。
+- **密钥**：不落盘/不进日志/最小权限/可轮换，只读挂载文件或环境变量。
+- **健康检查**：liveness 查存活、readiness 查依赖就绪，让编排器正确调度流量。
+- **优雅启停**：捕获 SIGTERM，先停接流再等存量请求收敛，避免长 Agent 循环被腰斩。
+- **灰度 + 回滚**：金丝雀先放小流量配门禁；回滚靠版本化、DB 向后兼容、特性开关。
+- **可观测内建**：metrics + 结构化脱敏日志 + trace 透传，三位一体接 Dashboard。
+- **容器化**：多阶段构建 + `.dockerignore` + HEALTHCHECK，镜像最小且安全。
+
+<Callout type="note" title="下一步">
+  工程化部署手法都就位了，但『怎么把它们组合成一个能交付的真实项目』还需要一条完整线索：
+  从需求拆解、模块划分到上线监控的端到端实战，正是 **M8 实战** 要带你走一遍的。
+</Callout>
+
+## 延伸阅读 / 参考
+
+- 12-Factor App（Config、Logs、Build/Release/Run 原则，部署设计的思想底座）
+- Kubernetes 官方文档（liveness/readiness/startup 探针、Deployment 滚动更新与回滚，以官方为准）
+- HashiCorp Vault / 各云 Secret Manager 文档（密钥注入与轮换）
+- OpenTelemetry 官方文档（metrics/logs/traces 三种信号的采集与导出）
+- *Site Reliability Engineering*（Google SRE 书，灰度、错误预算、回滚的工程方法论）

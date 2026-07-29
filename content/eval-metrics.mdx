@@ -1,0 +1,361 @@
+---
+title: 评估指标：自动指标、LLM-as-Judge、任务完成度与人工校准
+description: 系统梳理 Agent/LLM 系统的评估指标体系：基于规则的自动指标、LLM-as-Judge、任务完成度与人工校准，给出可运行代码骨架、指标对比与常见坑，帮助你把『质量』变成可量化、可回归的数字。
+category: 评估调优
+order: 2
+difficulty: 高级
+duration: 34 分钟
+tags: [评估指标, LLM-as-Judge, 任务完成度, 人工校准, 回归测试]
+date: 2026-07-29
+---
+
+# 评估指标：自动指标、LLM-as-Judge、任务完成度与人工校准
+
+M6（可观测与评估）讲了 Tracing、成本追踪和 Dashboard 的总貌。这一篇把『**用什么指标衡量质量**』单独拆开讲透——因为『这个 Agent 好不好』如果只靠『我觉得还行』，团队就没法迭代、没法回归、更没法向老板交差。
+
+评估指标分四大类，刚好对应四种可信度来源：**规则**（确定、可解释但覆盖窄）、**LLM-as-Judge**（覆盖广、接近人类但会漂移）、**任务完成度**（端到端、最贴近业务但难标注）、**人工校准**（金标准、最贵但不可省）。下面逐一拆解，并给你能跑的骨架。
+
+## 1. 为什么评估是 Agent 工程的命脉
+
+没有度量的优化就是盲调。一个真实的迭代循环长这样：
+
+```
+改 Prompt / 换模型 / 加工具
+   ↓
+跑同一组评测集（固定输入）
+   ↓
+算指标（和上一版比）
+   ↓
+指标涨 → 合并；指标跌 → 回滚
+```
+
+<Callout type="note" title="先有数据集，再有指标">
+  指标必须跑在**固定、版本化的评测集**上，才有可比性。今天换批样本、明天换批样本，
+  指标涨了你也分不清是改好了还是样本变简单了。评测集的构建见 data-eval-set，
+  本篇只聚焦『跑完之后怎么打分』。
+</Callout>
+
+评估要解决三个问题：**对不对**（事实/格式正确）、**好不好**（有用、连贯、安全）、**完没完成**（任务到底办成了没有）。不同指标回答不同问题，别指望一个 F1 走天下。
+
+## 2. 指标分类框架
+
+| 类别 | 典型指标 | 可信度来源 | 成本 | 擅长回答 |
+|------|----------|------------|------|----------|
+| 自动/规则指标 | 精确率/召回/F1、ROUGE、BLEU、正则命中 | 规则/真值 | 极低 | 对不对、格式对不对 |
+| LLM-as-Judge | 相关性、无害性、有用性、连贯性 | 强模型打分 | 中（每次多一次调用） | 好不好、像不像人 |
+| 任务完成度 | 端到端成功率、步骤准确率、工具命中率 | 业务结果 | 高（需真跑） | 完没完成 |
+| 人工校准 | 人类一致性、Kappa、 pairwise 偏好 | 人 | 极高 | 金标准、校准 judge |
+
+实战里通常是『**规则做初筛 + LLM-Judge 做主评 + 人工做校准与抽检**』三层叠加。
+
+## 3. 自动指标（基于规则）
+
+这一类不依赖模型，确定性最强、成本最低，适合做『硬门槛』——答非所问、格式错、关键字段缺失，先用规则一票否决。
+
+### 3.1 分类任务的精确率 / 召回 / F1
+
+当输出是可枚举类别（意图识别、工单分类、安全/不安全），直接拿预测和标注对：
+
+```ts
+// metrics-cls.ts —— 多分类的精确率/召回/F1（纯函数，无外部依赖）
+type Label = string;
+
+// 统计每个类别的 TP / FP / FN
+function confusion(yTrue: Label[], yPred: Label[]): Map<Label, { tp: number; fp: number; fn: number }> {
+  const labels = new Set([...yTrue, ...yPred]);
+  const stat = new Map<Label, { tp: number; fp: number; fn: number }>();
+  for (const l of labels) stat.set(l, { tp: 0, fp: 0, fn: 0 });
+
+  for (let i = 0; i < yTrue.length; i++) {
+    if (yTrue[i] === yPred[i]) stat.get(yTrue[i])!.tp++;       // 预测对
+    else { stat.get(yPred[i])!.fp++; stat.get(yTrue[i])!.fn++; } // 预测错
+  }
+  return stat;
+}
+
+// 宏平均 F1：每个类算 F1 再平均，避免大类掩盖小类
+function macroF1(yTrue: Label[], yPred: Label[]): number {
+  const stat = confusion(yTrue, yPred);
+  let sum = 0;
+  for (const { tp, fp, fn } of stat.values()) {
+    const p = tp + fp === 0 ? 0 : tp / (tp + fp);
+    const r = tp + fn === 0 ? 0 : tp / (tp + fn);
+    const f1 = p + r === 0 ? 0 : (2 * p * r) / (p + r);
+    sum += f1;
+  }
+  return sum / stat.size;
+}
+```
+
+### 3.2 文本相似度指标 ROUGE / BLEU
+
+当『答案有标准文本』（摘要、翻译、固定话术），用 n-gram 重叠度量：
+
+- **BLEU**：看生成里有多少 n-gram 出现在参考里，偏『precision』，机器翻译常用；
+- **ROUGE**：看参考里有多少被生成覆盖，偏『recall』，摘要常用。
+
+<Callout type="warn" title="ROUGE/BLEU 对生成式 Agent 不敏感">
+  同一件事可以用十种说法讲对。ROUGE/BLEU 只认字面重叠，措辞不同就扣分——
+  所以对『开放问答、客服话术』这类任务，它们会系统性低估好答案。
+  这类场景请交给 LLM-as-Judge（第 4 节）或语义指标（如 BERTScore）。
+</Callout>
+
+### 3.3 结构/约束指标
+
+很多 Agent 输出是 JSON、含必填字段、需满足业务规则。这类最适合用**确定性校验**：
+
+```ts
+import { z } from 'zod';
+
+// 用 Zod 当『格式红线』：字段缺失、类型错、枚举越界 → 直接 0 分
+const AnswerSchema = z.object({
+  intent: z.enum(['退款', '查询', '投诉']),
+  order_id: z.string().regex(/^\d{6,}$/, '订单号格式'),
+  confidence: z.number().min(0).max(1),
+});
+
+function formatScore(raw: string): number {
+  let json: unknown;
+  try { json = JSON.parse(raw); } catch { return 0; } // 不是合法 JSON → 0 分
+  return AnswerSchema.safeParse(json).success ? 1 : 0;  // 结构不符 → 0 分
+}
+```
+
+## 4. LLM-as-Judge：用强模型当评委
+
+当『对不对』不能靠字面匹配（开放问答、有用性、无害性、连贯性），最务实的做法是**再调一次强模型当裁判**。核心是：把『评分标准』写进 system prompt，让 judge 按维度输出结构化分数，再用 Zod 解析。
+
+### 4.1 原理与三个关键设计
+
+1. **Criteria 化**：别让 judge 打一个笼统的『几分』，而是拆成『事实正确性 / 相关性 / 有害性』等维度，每维给 rubric（什么算 5 分、什么算 1 分）。
+2. **结构化输出**：让 judge 输出 JSON（用 `response_format` 或 `strict` 工具），再 Zod 校验，避免『我觉得挺好』这种不可解析文本。
+3. **参考注入**：有标准答案就把它作为 `reference` 一起给 judge；没有就做 pairwise（两个候选比优劣）。
+
+<Callout type="tip" title="Judge 模型尽量比被评模型强">
+  让弱模型评强模型，打分会系统性宽松且不稳定。实战建议：被评用 gpt-4o-mini，
+  judge 用 gpt-4o 或更强的模型。judge 本身的可靠性，靠第 6 节的人工校准来兜底。
+</Callout>
+
+### 4.2 可运行骨架：多维度 Judge
+
+```ts
+// llm-judge.ts —— LLM-as-Judge 多维度评分骨架（可运行）
+import OpenAI from 'openai';
+import 'dotenv/config';
+import { z } from 'zod';
+
+const client = new OpenAI();
+
+// ① 用 Zod 定义 judge 输出结构，单一事实来源 + 解析校验
+const JudgeResult = z.object({
+  factuality: z.number().int().min(1).max(5),   // 事实正确性
+  relevance: z.number().int().min(1).max(5),    // 是否切题
+  helpfulness: z.number().int().min(1).max(5),  // 是否有用
+  reason: z.string().min(1),                    // 给分理由，便于人工复核
+});
+type JudgeResultT = z.infer<typeof JudgeResult>;
+
+// ② 单个样本的评分函数
+async function judge(question: string, answer: string, reference?: string): Promise<JudgeResultT> {
+  const refBlock = reference ? `\n参考标准答案：\n${reference}\n` : '';
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o', // judge 用更强的模型
+    // strict + json_schema 保证输出可被 Zod 解析，杜绝格式漂移
+    response_format: { type: 'json_schema', json_schema: {
+      name: 'judge', strict: true,
+      schema: {
+        type: 'object',
+        properties: {
+          factuality: { type: 'integer' },
+          relevance: { type: 'integer' },
+          helpfulness: { type: 'integer' },
+          reason: { type: 'string' },
+        },
+        required: ['factuality', 'relevance', 'helpfulness', 'reason'],
+        additionalProperties: false,
+      },
+    }},
+    messages: [
+      { role: 'system', content:
+        '你是严格的评估裁判。按 rubric 给 1-5 分并给理由。' +
+        '事实正确性：答案是否与已知事实/参考一致；' +
+        '相关性：是否直接回答用户问题；' +
+        '有用性：是否真正解决了用户的诉求。' },
+      { role: 'user', content:
+        `用户问题：${question}\n模型回答：${answer}${refBlock}` },
+    ],
+  });
+
+  const parsed = JudgeResult.safeParse(JSON.parse(res.choices[0].message.content!));
+  if (!parsed.success) throw new Error(`judge 输出非法：${parsed.error.message}`);
+  return parsed.data;
+}
+
+// ③ 跑整个评测集，求各维均值
+async function runEvalSet(items: { q: string; a: string; ref?: string }[]) {
+  const scores = await Promise.all(items.map((it) => judge(it.q, it.a, it.ref)));
+  const avg = (k: keyof Omit<JudgeResultT, 'reason'>) =>
+    scores.reduce((s, x) => s + x[k], 0) / scores.length;
+  return { factuality: avg('factuality'), relevance: avg('relevance'), helpfulness: avg('helpfulness') };
+}
+```
+
+### 4.3 提升 Judge 稳定性的技巧
+
+- **多次采样取众数（Self-Consistency）**：同一题让 judge 跑 3~5 次，分数取众数/均值，能压住随机性；
+- **Pairwise 优于绝对分**：问『A 和 B 哪个更好』比『给 A 打几分』更稳定，适合做 A/B 对比；
+- **Rubric 越细越稳**：把『5 分』具体长什么样写进 prompt，比『请客观打分』方差小得多。
+
+<Callout type="warn" title="Judge 也会偏见">
+  LLM-judge 有已知偏向：偏爱更长的答案、偏爱自己的风格、对列出要点的回答更宽容。
+  别把 judge 分数当绝对真理，它只是『便宜的人类近似』。关键决策（上线/回滚）前，
+  用人工校准确认 judge 和你的一致（见第 6 节）。
+</Callout>
+
+## 5. 任务完成度（Task Success）
+
+前两类指标看『单条回答好不好』，而**任务完成度**看『整件事办没办成』——这对 Agent 才是终极指标。Agent 可能每步都『答得漂亮』，但绕了 8 圈没退成款。
+
+两个核心度量：
+
+| 指标 | 定义 | 怎么算 |
+|------|------|--------|
+| 端到端成功率 | 任务最终是否达成预期业务结果 | 真跑一遍，检查系统状态（订单是否真的退款、DB 是否真的写入） |
+| 步骤/轨迹准确率 | 关键步骤是否按正确顺序执行 | 在 trace 上标注『应当有的关键 span』，比对实际轨迹 |
+
+```ts
+// task-success.ts —— 端到端完成度：不只看输出，看副作用
+async function evaluateTask(
+  runAgent: (input: string) => Promise<void>,
+  checkOutcome: () => Promise<boolean> // 直接查系统状态：退款是否落库
+) {
+  const cases = [
+    { input: '把订单 1024 退掉', expectRefunded: 1024 },
+    { input: '查一下小明上周的订单', expectFound: true },
+  ];
+  let success = 0;
+  for (const c of cases) {
+    await runAgent(c.input);
+    // 关键：看『世界有没有被改成预期样子』，而不是看模型说了什么
+    if (await checkOutcome()) success++;
+  }
+  return success / cases.length; // 端到端成功率
+}
+```
+
+<Callout type="danger" title="别用最终文本代替完成度">
+  模型说『已为您退款』 ≠ 钱真的退了。任务完成度必须**校验真实副作用**
+  （数据库状态、外部 API 回执、文件是否生成）。否则 Agent 学会『嘴上退款』
+  就能骗过你的指标——这正是评估里最危险的『指标黑客』。
+</Callout>
+
+## 6. 人工校准：把人当金标准
+
+LLM-Judge 再强也只是近似。两个场景必须有人：
+
+1. **校准 Judge 本身**：抽一批样本，人打的分 vs judge 打的分，算一致性。一致低 → judge prompt 得改；
+2. **定版金标准**：关键版本上线前，人工标注一小批『权威答案』，作为回归基线。
+
+```ts
+// 人工一致性：Cohen's Kappa（衡量人和 judge 的一致，剔除瞎蒙的偶然一致）
+function cohenKappa(a: number[], b: number[]): number {
+  const n = a.length;
+  let agree = 0;
+  for (let i = 0; i < n; i++) if (a[i] === b[i]) agree++;
+  const po = agree / n;                  //  observed 一致率
+  // 简化的随机一致率估计（二分类示例）：各自边际概率乘积之和
+  const pa = a.filter((x) => x === 1).length / n;
+  const pb = b.filter((x) => x === 1).length / n;
+  const pe = pa * pb + (1 - pa) * (1 - pb);
+  return (po - pe) / (1 - pe);           // Kappa>0.6 算可接受，>0.8 很好
+}
+```
+
+<Callout type="tip" title="人工标注要有规范">
+  多人标注前先写『标注指南』（什么算对、边界 case 怎么算），并算标注者间的
+  Inter-Annotator Agreement（IAA）。IAA 低说明指南含糊，不是人的问题。
+  评测集构建的细节见 data-eval-set。
+</Callout>
+
+## 7. 指标对比速查
+
+| 指标 | 覆盖 | 成本 | 可解释 | 何时用 |
+|------|------|------|--------|--------|
+| 精确率/召回/F1 | 窄（分类） | 极低 | 强 | 意图识别、安全二分类 |
+| ROUGE/BLEU | 窄（有标准文本） | 低 | 中 | 摘要、翻译、固定话术 |
+| 结构/约束校验 | 中（格式） | 极低 | 强 | 一切 JSON/字段契约输出 |
+| LLM-as-Judge | 广（开放生成） | 中 | 弱（看 reason） | 有用性/无害性/连贯性 |
+| 任务完成度 | 广（业务） | 高 | 强 | Agent 端到端验收 |
+| 人工校准 | 最广（金标准） | 极高 | 最强 | 校准 judge、定版基线 |
+
+<Callout type="note" title="组合而非单选">
+  生产指标栈通常是：结构校验（门槛）→ LLM-Judge（主评，跑全量）→
+  任务完成度（核心任务抽检）→ 人工（校准 + 关键回归）。每一层弥补上一层的盲区。
+</Callout>
+
+## 8. 按团队阶段选型
+
+不同成熟度的团队，指标栈投入重点不同，别一上来就追求全人工标注：
+
+| 阶段 | 现状 | 推荐指标栈 | 目标 |
+|------|------|------------|------|
+| 原型期 | 只有几十个手搓样本 | 结构校验 + 人工过一遍 | 先保证『不崩、格式对』 |
+| 迭代期 | 有百级评测集、频繁改 Prompt | 结构校验 + LLM-Judge 全量 + 任务完成度抽检 | 每次改动能量化对比 |
+| 生产期 | 千级集、要守 SLA | 以上 + 人工校准基线 + CI 回归门禁 + 最差分位告警 | 防回归、可问责 |
+
+<Callout type="tip" title="从最小可跑的指标栈起步">
+  别等『完美评估体系』ready 再动手。先用结构校验 + 人工抽 20 条建立基线，
+  再逐步加 LLM-Judge、再加完成度抽检。评估体系是长出来的，不是一次设计出来的。
+</Callout>
+
+## 9. 常见坑
+
+<Callout type="danger" title="指标黑客（Reward Hacking）">
+  模型/流程会『迎合指标』而非『做好事』：judge 偏爱长答案 → 它就开始灌水；
+  完成度只看文本 → 它嘴上说退了。对策：指标要戳到真实结果（看副作用），
+  且定期人工抽检，防止指标和真实质量脱节。
+</Callout>
+
+<Callout type="warn" title="评测集泄露/污染">
+  评测样本若进了训练数据或 system prompt 的 few-shot，指标会虚高。
+  评测集必须独立、版本化、与训练/演示数据隔离；跑分前先查重。
+</Callout>
+
+<Callout type="warn" title="Judge 漂移">
+  换 judge 模型版本、改 judge prompt，历史分数就不可比。judge 本身也要版本锁定，
+  并在报告中标注『本次用 gpt-4o@2026-07 评』。否则跨周对比毫无意义。
+</Callout>
+
+<Callout type="warn" title="只看均值，忽略分布">
+  平均分 4.2 可能掩盖『10% 灾难性失败』。务必看**最差分位**（p5/p10）和失败样例，
+  对 Agent 而言一个把用户气走的坏回答，比十个好回答更致命。
+</Callout>
+
+<Callout type="danger" title="用最终文本代替任务完成度">
+  再次强调：模型说『已办』不等于真的办了。完成度必须校验系统真实状态，
+  否则你的评估在奖励一个『好演员』。
+</Callout>
+
+## 小结
+
+- 评估指标分四类：规则（硬门槛）、LLM-as-Judge（主评开放生成）、任务完成度（业务验收）、人工校准（金标准）。
+- 规则指标确定、便宜，适合做格式/分类一票否决；ROUGE/BLEU 对开放生成不敏感。
+- LLM-as-Judge 要 criteria 化、结构化输出、尽量用更强模型，并用多次采样和 pairwise 提升稳定；但它有偏见，只是『便宜的人类近似』。
+- 任务完成度必须校验**真实副作用**，警惕『指标黑客』让 Agent 学会嘴上完成任务。
+- 人工校准不可省：校准 judge 可靠性、定版金标准；关注分布最差分位而非只盯均值。
+- 红线：评测集独立版本化、judge 版本锁定、完成度看副作用、定期人工抽检。
+
+<Callout type="note" title="下一步">
+  指标跑出来后，怎么把『每次改动』都自动回归、怎么在 CI 里卡住质量红线？
+  见 eval-dataset（评测集与回归）与 eval-prompt-opt（Prompt 调优）。
+  而想看清『失败发生在哪一步』，需要链路追踪——见 eval-trace。
+</Callout>
+
+## 延伸阅读 / 参考
+
+- OpenAI `response_format: json_schema` 与 strict 模式文档（Judge 结构化输出，以官方为准）
+- Zod 文档：用 schema 做单一事实来源与解析校验
+- 论文 *Judging LLM-as-a-Judge*（LLM 裁判的偏差与稳定性系统研究）
+- 论文 *G-Eval*（用链式思维提升 LLM 评分质量）
+- Ragas / DeepEval 文档：开源的 LLM 评估指标与数据集框架
+- *HELM / HELM-Lite*（Stanford）：大模型多维度标准化评测基准

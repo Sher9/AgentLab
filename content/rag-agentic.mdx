@@ -1,0 +1,366 @@
+---
+title: Agentic RAG：会自己决定『查什么、查几次』的检索
+description: 把检索从『一次性取 top-k』升级为自主决策的 Agent 过程——检索 Agent、自省检索（Self-RAG）、查询路由，以及与多 Agent 协作的结合。给出 OpenAI SDK + Zod 可运行骨架与思路伪代码。
+category: RAG
+order: 9
+difficulty: 高级
+duration: 40 分钟
+tags: [RAG, Agentic RAG, 检索Agent, 自省检索, 路由]
+date: 2026-07-29
+---
+
+# Agentic RAG：会自己决定『查什么、查几次』的检索
+
+朴素 RAG 是**一次性**的：用户问题 → 向量检索 top-k → 拼进 prompt → 生成。这个流水线在问题清晰、答案单源时够用，但现实里经常翻车：
+
+- 问题太笼统，一次检索召回的块答不全，模型只能硬编；
+- 问题需要**多步取证**（先查 A 的定义，再查 A 和 B 的关系），单轮检索覆盖不了；
+- 检索到了不相关内容，模型却照用不误，产出幻觉。
+
+**Agentic RAG** 的解法：把检索从『固定管道』变成『**自主决策的循环**』——让 Agent 自己决定**查不查、查什么、查几次、查完够不够**。这一篇讲清三种核心形态（检索 Agent、自省检索、路由），并给出可运行骨架。
+
+## 1. 什么是 Agentic RAG
+
+本质差异一句话：**朴素 RAG 的检索是『写死的』，Agentic RAG 的检索是『模型在循环里决策的』**。它把 M1 工具调用的『模型自主调用』思想，套用到了检索这一步。
+
+```
+朴素 RAG：  query ──► 检索(top-k) ──► 生成 ──► 答案
+Agentic：   query ──► [思考:该查什么?] ──► 检索 ──► [够吗?不够再查/换源] ──► 生成
+```
+
+<Callout type="note" title="关键认知">
+  Agentic RAG 不是新数据库，而是一种『检索编排范式』。底层检索仍可能用向量库、
+  图谱或 BM25——Agent 只是在『何时、查哪、查几次』上做决策。它和 rag-graph 是
+  『编排方式』与『数据结构』两个正交维度的组合。
+</Callout>
+
+## 2. 检索 Agent：检索即工具
+
+最直接的形式：把『检索』封装成一个工具，交给 M1 讲过的工具调用循环。模型在循环里自主决定调不调检索、调几次、每次用什么 query。
+
+```ts
+// agentic-retriever.ts —— 检索 Agent 最小可运行骨架
+import OpenAI from 'openai';
+import 'dotenv/config';
+import { z } from 'zod';
+
+const client = new OpenAI();
+
+// 检索工具：输入查询串，返回 top-k 块（真实实现接向量库，这里用桩）
+const retrieveTool = {
+  type: 'function' as const,
+  function: {
+    name: 'retrieve',
+    description: '根据查询语句从知识库检索最相关的文档块',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '检索查询，可与原问题不同（改写后的）' },
+        top_k: { type: 'number', description: '返回的块数，默认 5' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+  },
+};
+
+// 真实检索实现（接 pgvector / Qdrant 等，以官方文档为准）
+async function retrieve(query: string, top_k = 5): Promise<string> {
+  // const hits = await vectorDb.search(embed(query), { limit: top_k });
+  // return hits.map(h => h.text).join('\n\n');
+  return `[桩] 关于『${query}』的检索结果（接向量库后返回真实块）`;
+}
+
+async function agenticRag(userInput: string) {
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: 'user', content: userInput },
+  ];
+
+  // 循环上限防止失控（M1 的红线同样适用）
+  for (let step = 0; step < 6; step++) {
+    const res = await client.chat.completions.create({
+      model: 'gpt-4o',
+      messages,
+      tools: [retrieveTool],
+    });
+    const msg = res.choices[0].message;
+    messages.push(msg);
+
+    // 模型不再要求检索 → 它已收集到足够上下文，直接作答
+    if (!msg.tool_calls?.length) {
+      return msg.content;
+    }
+    // 执行检索工具，把结果回填
+    for (const call of msg.tool_calls) {
+      const { query, top_k } = JSON.parse(call.function.arguments);
+      const result = await retrieve(query, top_k ?? 5);
+      messages.push({ role: 'tool', tool_call_id: call.id, content: result });
+    }
+  }
+  return '检索轮数超限，请简化问题或稍后重试';
+}
+
+// 用法：await agenticRag('对比方案 A 和方案 B 的取舍，并说明适用场景')
+```
+
+<Callout type="tip" title="让模型改写查询最有价值">
+  检索 Agent 最大的增益，是模型会基于『已经看到的块』生成**更精准的下一次查询**
+  （如先查『什么是 X』，再查『X 与 Y 的差异』）。这比把原问题硬检索两次有效得多——
+  本质是『迭代式取证』。
+</Callout>
+
+## 3. 自省检索（Self-RAG）：先判要不要查，再判够不够
+
+Self-RAG 在『检索 Agent』之上加了一层**反思**：模型在生成中插入特殊的『反思标记』（如 `Retrieve` / `IsSup` / `IsRel`），主动决定：
+
+- **Retrieve**：当前这句话需不需要先检索？不需要就直接生成；
+- **IsSupported**：生成的句子是否有检索依据支撑？没有就改写或补查；
+- **IsRelevant**：检索到的块是否和问题相关？不相关就丢弃或换查法。
+
+```
+# 伪代码：Self-RAG 的反思循环（思路，框架 API 以官方为准）
+for each sentence to generate:
+    decision = model.judge(need_retrieve?)        # Retrieve 标记
+    if decision == YES:
+        q = model.rewrite(current_context)        # 改写查询
+        docs = retrieve(q)
+        keep = [d for d in docs if model.judge(d, relevant?)]  # IsRel 过滤
+        if not enough(keep):
+            q = model.rewrite_again(); docs = retrieve(q)      # 自省补查
+    sentence = model.generate(using=keep)
+    if not model.judge(sentence, supported?):     # IsSup 校验
+        sentence = model.regenerate_or_cite(keep) # 缺依据则重生成/加引用
+```
+
+<Callout type="note" title="以官方文档为准">
+  Self-RAG 原论文用『反思 token 训练』或在推理时插入 judge 调用。具体训练/提示实现
+  各框架不同（LlamaIndex、Haystack 等均有变体），API 易变。上面是通用思路骨架，
+  落地时以你所用框架的官方文档为准，不要照抄伪代码当真 API。
+</Callout>
+
+<Callout type="warn" title="反思调用会翻倍成本">
+  每句生成前都插 judge 调用，延迟和 token 显著上升。生产里可对『高价值长答案』开反思，
+  短问答用『朴素检索 + 末尾忠实度校验』（见 rag-generation）更划算。
+</Callout>
+
+## 4. 路由：按问题类型分发
+
+当你的知识源不止一个（向量库 + 图谱 + FAQ 表 + 网页），**路由（Router）**决定『这个问题该去哪个源、用哪种检索策略』。三种实现：
+
+- **LLM 路由**：让模型输出『目标源 + 改写查询』（用 Zod 约束）；
+- **小模型分类器**：用便宜的分类模型做意图识别，再分发；
+- **规则路由**：关键词/正则命中直接走特定源（如『价格』走数据库查询）。
+
+```ts
+// router.ts —— LLM 路由骨架（Zod 约束分发）
+import OpenAI from 'openai';
+import 'dotenv/config';
+import { z } from 'zod';
+
+const client = new OpenAI();
+
+// 路由决策：去哪个源、怎么查
+const RouteDecision = z.object({
+  source: z.enum(['vector', 'graph', 'faq', 'web']),
+  rewritten_query: z.string(),
+  reason: z.string(),
+});
+
+async function route(question: string): Promise<z.infer<typeof RouteDecision>> {
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o-mini', // 路由用小模型，省成本
+    response_format: { type: 'json_schema', json_schema: {
+      name: 'route',
+      schema: {
+        type: 'object',
+        properties: {
+          source: { type: 'string', enum: ['vector', 'graph', 'faq', 'web'] },
+          rewritten_query: { type: 'string' },
+          reason: { type: 'string' },
+        },
+        required: ['source', 'rewritten_query', 'reason'],
+        additionalProperties: false,
+      },
+    }},
+    messages: [
+      { role: 'system', content: '判断问题该走哪个检索源。vector=文档语义检索；graph=实体关系/全局归纳；faq=常见问题；web=实时联网。' },
+      { role: 'user', content: question },
+    ],
+  });
+  return RouteDecision.parse(JSON.parse(res.choices[0].message.content ?? '{}'));
+}
+
+// 之后按 decision.source 调对应检索器，再生成——这就是混合架构的入口
+```
+
+<Callout type="tip" title="路由是小模型的高性价比战场">
+  路由不需要深度推理，gpt-4o-mini 甚至微调小模型即可。把它和『检索 Agent』组合：
+  路由先选源，源内再由 Agent 迭代取证，是生产里很常见的两层结构。
+</Callout>
+
+## 5. 与多 Agent 结合（思路 + 伪代码）
+
+Agentic RAG 天然能嵌进多 Agent 系统（见 AI Agent 分类的 M5 多 Agent 协作）：一个**检索 Agent** 作为『专家成员』，被编排 Agent 调用；或多个检索 Agent 各管一个知识域，由主管 Agent 汇总。
+
+```
+# 伪代码：检索 Agent 作为多 Agent 一员（思路）
+researcher = Agent(role='检索专家', tools=[retrieve, route], loop=agenticRag)
+writer    = Agent(role='写作专家', tools=[draft, cite])
+critic    = Agent(role='审核专家', tools=[faithfulness_check])
+
+plan = orchestrator.decompose(task)             # 拆解子问题
+for sub in plan:
+    ctx = researcher.run(sub)                   # 检索 Agent 自主取证
+    draft = writer.run(sub, ctx)                # 写作 Agent 基于证据起草
+    critic.run(draft, ctx)                       # 审核 Agent 校验忠实度
+final = orchestrator.synthesize(all_drafts)
+```
+
+<Callout type="note" title="以官方文档为准">
+  上面的 `Agent(...)` / `orchestrator` 是示意接口。LangGraph、AutoGen、CrewAI 的
+  Agent/编排 API 各不相同且版本易变，落地时以你所用框架的官方文档为准。这里只表达
+  『检索 Agent 作为可编排成员』的架构意图。
+</Callout>
+
+## 6. 对比：三种 RAG 范式
+
+| 维度 | 朴素 RAG | Agentic RAG | GraphRAG |
+|------|----------|-------------|----------|
+| 检索决策 | 写死，一次 | 模型循环决策 | 图游走 + 社区摘要 |
+| 多步取证 | 不支持 | 原生支持 | 靠图连通 |
+| 适用问题 | 单源点查 | 复杂/多步/需迭代 | 全局归纳/连通 |
+| 成本 | 最低 | 中（多次检索+生成） | 建图高、查询中 |
+| 可控性 | 高（流程固定） | 中（循环需上限） | 中 |
+
+<Callout type="warn" title="Agentic 不是默认选项">
+  复杂度换来的好处，前提是你的确需要『多步取证 / 迭代检索』。多数业务问答用朴素 RAG
+  就够，盲目上 Agentic 只会引入循环失控、成本翻倍的麻烦。先量问题复杂度再决定。
+</Callout>
+
+## 7. 适用场景与不适用
+
+**适用：**
+- 问题复杂、需多源/多步取证（研究助理、尽调、竞品分析）；
+- 单一检索常答不全，需要『查到一半再决定下一步查什么』；
+- 已有多知识源，需要智能路由分发。
+
+**不适用：**
+- 高频、单源、答案明确的问答（朴素 RAG 性价比更高）；
+- 对延迟和成本极度敏感、无法接受多次检索的场景；
+- 检索源不稳定、工具不可靠——Agent 越自主，对工具质量的依赖越强。
+
+<Callout type="tip" title="渐进式升级路径">
+  朴素 RAG → 加路由（先解决『去哪查』）→ 加检索 Agent 循环（解决『查多次』）
+  → 加自省（解决『够不够』）。每层独立上线、独立评估收益，别一次性全堆。
+</Callout>
+
+## 8. 踩坑
+
+<Callout type="danger" title="循环失控烧钱">
+  和 M1 工具调用一样，检索 Agent 必须设『最大轮数 + 总超时』。模型偶尔会反复检索同一件事，
+  没有上限就无限烧 token。建议单轮最多 5～8 次检索、整个问答设总超时。
+</Callout>
+
+<Callout type="warn" title="检索工具不可靠，Agent 越自主越危险">
+  检索源返回脏数据/超时，Agent 可能基于错误信息继续『自信』生成。凡检索结果进上下文前，
+  做长度截断、低分过滤、必要时脱敏；带副作用的动作（如据检索结果发邮件）务必加护栏。
+</Callout>
+
+<Callout type="warn" title="路由判错， downstream 全错">
+  路由把问题分去错误源（如把『实时价格』分去静态向量库），后面检索再努力也答错。
+  路由是小模型决策，要有『兜底源』（如路由不确定时同时走向量 + web）和路由准确率监控。
+</Callout>
+
+<Callout type="note" title="自省别无限递归">
+  Self-RAG 的『不够就补查』要设补查上限，否则模型可能因永远觉得『还差一点』而陷入
+  检索—生成—再检索的死循环。补查 1～2 次仍不足就降级返回『信息有限』的答案。
+</Callout>
+
+<Callout type="warn" title="上下文膨胀压垮窗口">
+  多轮检索把大量块堆进 messages，容易超窗口、稀释注意力。配合 rag-generation 的
+  『上下文压缩』，在每轮检索后先做提纯，再带入下一轮。
+</Callout>
+
+## 9. 工程化：成本、可观测与回放
+
+Agentic RAG 因为『多次检索 + 多次生成』，成本和可调试性都比朴素 RAG 难管。上线前必须补三件事。
+
+**成本控制：**
+- 路由、改写、反思这类『决策动作』全用小模型（4o-mini），只在最终生成用大模型；
+- 检索结果做缓存（相同/近似 query 命中缓存，跳过重复向量查询）；
+- 严格限制单问答的检索轮数上限（见第 8 节红线），从机制上封顶成本。
+
+**可观测（关键）：** 每一步『模型决定查什么、检索返回了什么、最终用了哪些块』都要落日志，否则出了问题完全无法复盘。
+
+```ts
+// trace.ts —— 给检索 Agent 加可观测埋点（最小骨架）
+type Trace = { step: number; decision: string; query?: string; hits?: number; kept?: number };
+
+async function agenticRagTraced(userInput: string) {
+  const trace: Trace[] = [];          // 整轮链路记录，便于回放与评估
+  // ...循环体内...
+  // trace.push({ step, decision: 'retrieve', query, hits: docs.length, kept: filtered.length });
+  // 循环结束后把 trace 上报到观测平台（LangSmith / Phoenix / OTel，以官方为准）
+  return { answer, trace };
+}
+```
+
+<Callout type="tip" title="没埋点就别上 Agentic">
+  Agentic 的失败模式比朴素 RAG 多得多（路由错、循环空转、检索脏数据）。没有逐跳 trace，
+  你连『它到底查了什么、为什么答错』都看不到。可观测不是锦上添花，是上线的前提。
+</Callout>
+
+**回放与回归：** 把 trace 存下来，知识库更新或换模型后，用同一批问题回放，对比答案质量变化——这正是 rag-eval 要讲『回归测试』的价值所在。
+
+## 10. 评估 Agentic RAG
+
+Agentic RAG 的评估要比朴素 RAG 多评两层：**决策质量**与**过程效率**。
+
+| 评估层 | 指标 | 说明 |
+|--------|------|------|
+| 路由层 | 路由准确率 | 问题分去正确源的比例（人工标 + 抽样） |
+| 检索层 | 检索轮数、命中率 | 平均查几次才够、每次召回相关块占比 |
+| 生成层 | 忠实度、答案正确率 | 同 rag-generation / rag-eval 指标 |
+| 效率层 | 成本、延迟、空转率 | 平均 token、端到端耗时、无效检索占比 |
+| 对比基线 | 相对朴素 RAG 提升 | 同一问题集 A/B，重点看『复杂/多步』类问题 Gap |
+
+<Callout type="warn" title="别只看最终答案准确率">
+  准确率涨了但成本翻五倍、延迟翻倍，未必值得。Agentic RAG 的评估必须带上『效率层』，
+  算清『每多一次检索换来的准确率提升是否划算』——这是它和朴素 RAG 决策的核心账。
+</Callout>
+
+## 11. 落地清单与决策树
+
+把前面所有判断收敛成可执行的落地顺序：
+
+```
+1. 先用朴素 RAG 跑通，收集真实问题，标注『哪些答不好』
+2. 答不好的若是『去错源』 → 先上加路由（成本低、收益快）
+3. 答不好的若是『一次查不全』 → 加检索 Agent 循环（迭代取证）
+4. 答不好的若是『模型瞎编无依据』 → 加自省/末尾忠实度校验
+5. 全程埋 trace、设轮数上限、小模型做决策
+6. 用问题集 A/B，确认准确率提升 > 成本/延迟代价才保留
+```
+
+<Callout type="note" title="渐进、可回滚">
+  每一层 Agentic 能力都是『可选插件』，独立开关、独立评估。某层上了之后指标没改善，
+  直接关掉回到上一层——这正是『渐进式升级路径』（第 7 节）的工程落地方式，
+  避免一次性重构成无法定位问题的黑箱。
+</Callout>
+
+## 小结
+
+- Agentic RAG 把『写死的检索』变成『模型在循环里决策的检索』，核心是检索 Agent + 自省 + 路由。
+- 检索 Agent：把检索封装成工具，模型自主决定查不查、查什么、查几次（迭代取证）。
+- 自省检索：插入 Retrieve/IsRel/IsSup 反思标记，先判要不要查、再判答案有没有依据。
+- 路由：按问题类型分发到不同源/策略，是小模型的高性价比战场。
+- 与多 Agent 结合时，检索 Agent 作为可编排的『专家成员』；具体框架 API 以官方为准。
+- 红线：循环上限防失控、检索工具质量兜底、路由有兜底源、自省设补查上限、配合上下文压缩。
+
+## 延伸阅读 / 参考
+
+- 论文 *Self-RAG: Learning to Retrieve, Generate, and Critique through Self-Reflection*（自省检索原始出处，以论文为准）
+- 论文 *CRAG / Adaptive RAG*：矫正型、自适应路由的检索 Agent 思路
+- OpenAI 工具调用文档（检索 Agent 即工具循环，见 m1-tool-calling，以官方为准）
+- LlamaIndex `RouterQueryEngine` / `AgenticRAG`、LangGraph 检索编排：框架层实现（API 易变，以官方为准）
+- M5 多 Agent 协作（AI Agent 分类）：检索 Agent 作为多 Agent 成员的系统化组织

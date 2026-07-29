@@ -1,0 +1,397 @@
+---
+title: 知识库构建：从文档解析到版本化入库
+description: 讲透知识库构建的全链路——PDF/Word/HTML 解析、结构化抽取、元数据设计、分块耦合、版本管理、质量门禁，并对比自建与商用方案，给出生产级可运行骨架。
+category: 数据处理
+order: 3
+difficulty: 进阶
+duration: 35 分钟
+tags: [知识库, 文档解析, RAG, 元数据, 版本管理]
+date: 2026-07-29
+---
+
+# 知识库构建：从文档解析到版本化入库
+
+RAG 好不好，七分看知识库。很多 RAG 效果差的锅，不在检索模型，而在**上游知识库建得烂**：PDF 表格被解析成一坨乱码、Word 标题层级丢失、网页把导航栏当正文、文档改了一版旧内容还在被检索……**知识库构建**就是把散乱的原始文档，变成「能被精准检索、能追溯来源、能随源更新」的结构化资产。
+
+这篇面向有经验的开发者，按真实工程链路讲：**解析 → 结构化 → 元数据 → 分块耦合 → 版本 → 质量门禁**，最后给可运行骨架，并对比自建与商用方案。
+
+## 1. 全景：知识库构建的六段链路
+
+```
+源文档(PDF/Word/HTML)
+   │
+   ▼ ① 解析：抽取出文本 + 版面（标题/段落/表格/图片）
+   ▼ ② 结构化：按层级/语义组织成统一 Document 模型
+   ▼ ③ 元数据：打上 source/type/time/权限/层级 等标签
+   ▼ ④ 分块：版面感知切块，保留标题与上下文
+   ▼ ⑤ 版本：内容哈希去重、增量更新、过期软删
+   ▼ ⑥ 入库：写向量库 + 元数据表，供检索
+```
+
+每一段都是一道质量关卡：解析丢字，后面全错；元数据缺字段，检索无法过滤；不分版本，知识会过期错乱。
+
+<Callout type="note" title="知识库 ≠ 把文件扔进向量库">
+  很多人以为『上传文件就能问答』。实际上直接把整篇 PDF 切块嵌进去，
+  表格、标题、页码全丢，检索命中率很低。知识库构建的本质是**在嵌入之前
+  把文档还原成有结构的语义单元**，嵌入只是最后一步。
+</Callout>
+
+## 2. 文档解析：最脏最累的一层
+
+不同格式解析难度天差地别，先建立认知：
+
+| 格式 | 解析难度 | 关键难点 | 常用库（以官方文档为准） |
+|------|----------|----------|--------------------------|
+| TXT/Markdown | 极低 | 几乎无 | 标准库 |
+| HTML | 低 | 去噪（导航/广告）、保留结构 | `BeautifulSoup` / `markdownify` |
+| Word(.docx) | 中 | 标题样式、表格、批注 | `python-docx` |
+| PDF（有文本层） | 中高 | 版面还原、跨页表格、多栏 | `PyMuPDF`(fitz) / `pdfplumber` |
+| PDF（扫描件） | 高 | 需 OCR，丢失版面 | `pdf2image` + `tesseract` |
+| 图片/手写 | 很高 | OCR + 版面模型 | 商业 OCR / 多模态模型 |
+
+### 2.1 PDF：有文本层 vs 扫描件
+
+PDF 是最常见也最坑的格式。先判断有没有文本层，再选策略：
+
+```python
+# 用 PyMuPDF 检查是否含可读文本层（真实 API，以官方文档为准）
+import fitz  # PyMuPDF
+
+def has_text_layer(path: str) -> bool:
+    doc = fitz.open(path)
+    text = "".join(page.get_text() for page in doc[:3])  # 抽前 3 页探一下
+    doc.close()
+    return len(text.strip()) > 50  # 阈值按经验调
+
+# 有文本层：直接抽文本 + 版面
+def parse_pdf_text(path: str):
+    doc = fitz.open(path)
+    blocks = []
+    for pi, page in enumerate(doc):
+        # get_text("blocks") 返回带坐标的文本块，能区分标题/正文/表格区域
+        for b in page.get_text("blocks"):
+            x0, y0, x1, y1, txt, block_no, block_type = b
+            blocks.append({
+                "page": pi + 1,
+                "bbox": [x0, y0, x1, y1],
+                "text": txt.strip(),
+                "is_image": block_type == 1,  # 1=图片块，0=文本块
+            })
+    doc.close()
+    return blocks
+
+# 扫描件：先转图再 OCR（伪代码，OCR 引擎与参数以官方文档为准）
+# from pdf2image import convert_from_path
+# import pytesseract
+# imgs = convert_from_path(path, dpi=300)
+# text = "\n".join(pytesseract.image_to_string(im, lang="chi_sim+eng") for im in imgs)
+```
+
+<Callout type="warn" title="跨页表格与多栏是 PDF 解析的两大坑">
+  `get_text()` 默认按阅读顺序吐字，遇到**双栏论文**会左右串字；遇到**跨页表格**
+  会断成两截。生产上要用带版面分析能力的解析器（如按 block 坐标重排、或专用
+  PDF 表格库），别指望 `page.get_text()` 一行解决。扫描件务必上 OCR，否则抽不到字。
+</Callout>
+
+### 2.2 Word：靠样式而非靠字体
+
+Word 文档的标题层级藏在**样式（Heading 1/2/3）**里，靠正则匹配「字号大」会漏判。
+
+```python
+from docx import Document  # python-docx
+
+def parse_docx(path: str):
+    doc = Document(path)
+    out = []
+    for p in doc.paragraphs:
+        style = p.style.name if p.style else ""
+        # 用样式名判断层级，比看字号可靠得多
+        level = None
+        if style.startswith("Heading"):
+            level = int(style.replace("Heading", "").strip() or 1)
+        out.append({"level": level, "text": p.text, "style": style})
+    # 表格单独抽：doc.tables
+    for t in doc.tables:
+        rows = [[c.text for c in r.cells] for r in t.rows]
+        out.append({"type": "table", "rows": rows})
+    return out
+```
+
+### 2.3 HTML：先去噪再取正文
+
+网页里导航栏、侧边栏、广告占大半，直接抽会污染知识库。
+
+```python
+from bs4 import BeautifulSoup
+
+def parse_html(html: str):
+    soup = BeautifulSoup(html, "html.parser")
+    # 去噪：删掉和正文无关的标签
+    for tag in soup(["nav", "header", "footer", "script", "style", "aside"]):
+        tag.decompose()
+    # 优先取 <article>/<main>，没有再退回 <body>
+    main = soup.find("article") or soup.find("main") or soup.body
+    # 保留标题层级结构，别只抽纯文本
+    return [{"tag": t.name, "text": t.get_text(strip=True)}
+            for t in main.find_all(["h1","h2","h3","p","li"]) if t.get_text(strip=True)]
+```
+
+<Callout type="tip" title="保留结构，别只留纯文本">
+  解析目标不是『拿到一堆字』，而是『拿到带层级结构的块』。标题、段落、列表、
+  表格的层级关系，后面分块和检索都要用。一旦压成纯文本，层级信息永久丢失。
+</Callout>
+
+## 3. 结构化：统一成 Document 模型
+
+不同解析器产出各不相同，必须归一成统一的 `Document` 模型，下游才能一致处理。
+
+```python
+from dataclasses import dataclass, field
+from typing import Optional
+
+@dataclass
+class DocBlock:
+    """知识库的最小语义单元：一块带结构的文本"""
+    text: str
+    block_type: str = "paragraph"   # paragraph / heading / table / list
+    level: Optional[int] = None     # 标题层级
+    page: Optional[int] = None
+    bbox: Optional[list] = None
+
+@dataclass
+class Document:
+    """一篇文档归一化后的样子"""
+    doc_id: str
+    source: str                     # 原始路径/URL
+    title: str
+    blocks: list = field(default_factory=list)
+    meta: dict = field(default_factory=dict)
+```
+
+统一模型的价值：**下游分块、嵌入、过滤都只认 `Document`，不用关心它来自 PDF 还是 Word**。新增一种格式，只要写一个 parser 产出 `Document` 即可。
+
+## 4. 元数据：检索与权限的基石
+
+元数据决定「能不能精准过滤、能不能溯源、能不能管控权限」。常见的字段：
+
+| 字段 | 作用 | 例子 |
+|------|------|------|
+| `source` | 溯源、去重依据 | `s3://kb/manual.pdf` |
+| `doc_type` | 按类型过滤 | `api_doc` / `faq` / `policy` |
+| `updated_at` | 版本、新鲜度排序 | `2026-07-29` |
+| `owner` / `permission` | 权限隔离（多租户） | `team_a` / `public` |
+| `section_path` | 保留层级（章/节） | `安装/环境要求` |
+| `content_hash` | 变更检测、幂等 | `sha256(...)` |
+
+```python
+import hashlib, json
+
+def build_meta(source: str, blocks: list, doc_type: str) -> dict:
+    # content_hash 用正文拼接算，内容一变哈希就变，是版本与去重的钥匙
+    raw = "\n".join(b.text for b in blocks)
+    h = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return {
+        "source": source,
+        "doc_type": doc_type,
+        "updated_at": "2026-07-29",
+        "content_hash": h,
+        "char_count": len(raw),
+    }
+```
+
+<Callout type="note" title="元数据缺失会让检索退化成全文搜">
+  没有 `doc_type`/`permission`，就做不到『只在 API 文档里搜』『只给 team_a 看』。
+  元数据是 RAG 里**混合检索 + 过滤**的前提。建库时多打几个字段，检索时少写一堆 hack。
+</Callout>
+
+## 5. 分块：与解析强耦合
+
+分块不是独立步骤，好坏取决于解析有没有保留结构。两个关键原则：
+
+- **版面感知**：按标题层级切块，让每块自带「章节标题」上下文，检索命中后模型能看懂它属于哪章。
+- **重叠（overlap）**：块间留 10–20% 重叠，避免一句话被切在两块导致检索不全。
+
+```python
+def chunk_by_heading(doc: Document, max_chars: int = 800, overlap: int = 100):
+    chunks, cur, cur_title = [], [], None
+    for b in doc.blocks:
+        if b.block_type == "heading":
+            cur_title = b.text          # 记录当前章节标题，作为上下文
+        cur.append(b.text)
+        # 当前块超长就截断另起一块，并带上标题上下文 + 尾部重叠
+        if sum(len(x) for x in cur) > max_chars:
+            body = "\n".join(cur)
+            chunks.append({"title": cur_title, "text": body})
+            cur = [body[-overlap:]] if overlap else []   # 重叠尾巴作为新块开头
+    if cur:
+        chunks.append({"title": cur_title, "text": "\n".join(cur)})
+    return chunks
+```
+
+<Callout type="warn" title="别用固定 N 字符硬切">
+  固定长度切块会切断句子、切断表格行，检索命中后模型读到半句话。
+  优先按『标题/段落/语义』切，长度只是上限兜底。表格尤其要整表保留，别拦腰切开。
+</Callout>
+
+## 6. 版本管理：知识会过期
+
+文档在变，知识库必须能跟着变，否则旧答案长期误导用户。核心三招：
+
+- **内容哈希**：每块算 `content_hash`，重建时只处理哈希变化的块（增量更新）。
+- **软删除**：源文档下架时标记 `deleted`，别物理删，保留审计与回滚。
+- **可追溯**：每块记 `source + updated_at`，回答时能把引用回链到原文页码。
+
+```python
+def diff_and_upsert(new_doc: Document, store: dict):
+    """对比新旧哈希，只更新变化的块；返回变更统计（伪代码，store 以实际向量库为准）"""
+    changed = 0
+    new_hashes = {b.meta["content_hash"] for b in new_doc.blocks}
+    # 旧块里哈希不在新集合的 → 源已删除，软删
+    for old in store.get(new_doc.doc_id, []):
+        if old["content_hash"] not in new_hashes:
+            old["deleted"] = True
+            changed += 1
+    # 新块里哈希不在旧集合的 → 新增/更新
+    old_hashes = {o["content_hash"] for o in store.get(new_doc.doc_id, [])}
+    for b in new_doc.blocks:
+        if b.meta["content_hash"] not in old_hashes:
+            store.setdefault(new_doc.doc_id, []).append(b.meta)
+            changed += 1
+    return changed
+```
+
+<Callout type="danger" title="直接覆盖会丢历史与回滚能力">
+  重建知识库若每次 truncate 全表再全量写入，一旦新解析出 bug，旧库已被清空无解。
+  用『哈希 diff + 软删』做增量，任何一次错误都能靠未删除的旧版本恢复。
+</Callout>
+
+## 7. 质量门禁：建库也要拦脏数据
+
+解析和入库之间要有门禁，否则坏文档污染整个库。
+
+```python
+def build_gate(doc: Document) -> list[str]:
+    """返回未通过的检查项列表；非空即阻断"""
+    fails = []
+    if not doc.blocks:
+        fails.append("解析为空：可能 PDF 是扫描件忘了 OCR")
+    empty_ratio = sum(1 for b in doc.blocks if not b.text.strip()) / max(1, len(doc.blocks))
+    if empty_ratio > 0.3:
+        fails.append(f"空块比例过高 {empty_ratio:.0%}：解析可能错位")
+    if doc.meta["char_count"] < 50:
+        fails.append("正文过短：疑似只抽到封面/目录")
+    return fails
+```
+
+## 8. 可运行骨架（端到端）
+
+下面把前面几段拼成一条最小可跑的链路：解析 HTML + PDF → 统一 Document → 元数据 → 分块 → 质量门禁 → 打印结果（落库部分按你的向量库替换）。
+
+```python
+import hashlib, fitz
+from dataclasses import dataclass, field
+from typing import Optional
+
+@dataclass
+class DocBlock:
+    text: str
+    block_type: str = "paragraph"
+    level: Optional[int] = None
+    page: Optional[int] = None
+
+@dataclass
+class Document:
+    doc_id: str
+    source: str
+    title: str
+    blocks: list = field(default_factory=list)
+    meta: dict = field(default_factory=dict)
+
+def parse_pdf(path: str) -> Document:
+    doc = fitz.open(path)
+    blocks = []
+    for pi, page in enumerate(doc):
+        for b in page.get_text("blocks"):
+            x0, y0, x1, y1, txt, _, btype = b
+            if txt.strip():
+                blocks.append(DocBlock(text=txt.strip(),
+                                       block_type="image" if btype == 1 else "paragraph",
+                                       page=pi + 1))
+    doc.close()
+    raw = "\n".join(b.text for b in blocks)
+    return Document(
+        doc_id=path, source=path, title=path.split("/")[-1], blocks=blocks,
+        meta={"content_hash": hashlib.sha256(raw.encode()).hexdigest(),
+              "char_count": len(raw)},
+    )
+
+def chunk_by_heading(doc: Document, max_chars: int = 800):
+    chunks, cur, title = [], [], None
+    for b in doc.blocks:
+        if b.block_type == "heading":
+            title = b.text
+        cur.append(b.text)
+        if sum(len(x) for x in cur) > max_chars:
+            chunks.append({"title": title, "text": "\n".join(cur)})
+            cur = []
+    if cur:
+        chunks.append({"title": title, "text": "\n".join(cur)})
+    return chunks
+
+def build_gate(doc: Document) -> list:
+    fails = []
+    if not doc.blocks:
+        fails.append("解析为空")
+    if doc.meta["char_count"] < 50:
+        fails.append("正文过短")
+    return fails
+
+# 跑一条：先门禁再分块
+doc = parse_pdf("sample.pdf")          # 换成你的文件
+fails = build_gate(doc)
+if fails:
+    raise RuntimeError(f"知识库门禁未通过：{fails}")
+chunks = chunk_by_heading(doc)
+print(f"解析 {len(doc.blocks)} 块，切成 {len(chunks)} 个检索块")
+# 下一步：for c in chunks: embed(c.text) → upsert 进向量库（见 RAG 章节）
+```
+
+## 9. 对比：自建解析 vs 商用知识库平台
+
+| 维度 | 自建（PyMuPDF + 自写管道） | 商用平台（如各云厂商 KB 服务） |
+|------|--------------------------|-------------------------------|
+| 可控性 | 高，逻辑全自己掌握 | 低，黑盒，难调解析细节 |
+| 开发成本 | 高，要处理各种格式坑 | 低，开箱即用 |
+| 成本模型 | 算力自担，边际低 | 按量/席位收费 |
+| 适配特殊格式 | 容易（自己写 parser） | 难（等平台支持） |
+| 维护负担 | 自己扛 | 平台扛 |
+
+<Callout type="note" title="选型的经验法则">
+  文档格式标准、量不大、要快速验证 → 直接用商用平台或开源 RAG 框架的 loader。
+  格式杂（扫描件/双栏论文/内部特殊格式）、对解析质量极度敏感、数据合规不能出内网
+  → 自建解析链路，至少 PDF 这块要自己掌控。
+</Callout>
+
+## 10. 延伸：和下游的衔接
+
+建好的知识库直接喂给 RAG 链路：块文本做 embedding 写入向量库，元数据用于**混合检索的过滤条件**，块里的 `source/page` 用于回答**溯源引用**。知识库质量直接决定 RAG 上限——解析丢一字，检索少一分；版本不更新，答案会过期。
+
+## 小结
+
+- 知识库构建是六段链路：解析 → 结构化 → 元数据 → 分块 → 版本 → 入库，每段都是质量关。
+- PDF 先判文本层；有文本层用版面块解析，扫描件必须 OCR；跨页表格与多栏是两大坑。
+- Word 靠**样式**判标题层级，HTML 先**去噪**再取正文，且全程**保留结构**别压成纯文本。
+- 归一化成统一 `Document` 模型，下游只认模型不认来源，扩展性最好。
+- 元数据是过滤/权限/溯源的前提：source、doc_type、permission、content_hash 必打。
+- 分块要版面感知 + 重叠，别固定长度硬切；表格整表保留。
+- 版本靠 content_hash 增量更新 + 软删，别每次全量覆盖，否则丢了回滚能力。
+- 建库也要质量门禁（空解析/空块率/过短），失败即阻断。
+
+## 延伸阅读 / 参考
+
+- PyMuPDF（fitz）文档：https://pymupdf.readthedocs.io/
+- pdfplumber（PDF 表格解析）：https://github.com/jsvine/pdfplumber
+- python-docx 文档：https://python-docx.readthedocs.io/
+- BeautifulSoup 文档：https://www.crummy.com/software/BeautifulSoup/bs4/doc/
+- RAG 切分策略（rag-chunking 章节）：./rag-chunking.mdx
+- 混合检索与元数据过滤（rag-hybrid 章节）：./rag-hybrid.mdx

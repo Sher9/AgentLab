@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>产品数据分析：用数据驱动 Agent 迭代 · AgentLab</title>
+  <meta name="description" content="从埋点设计、会话分析到质量与成本看板，讲透 Agent 产品如何用数据形成『观测—归因—迭代』闭环，给出事件埋点、会话漏斗、成本聚合与看板的可运行骨架。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="产品数据分析：用数据驱动 Agent 迭代 · AgentLab"/>
+  <meta property="og:description" content="从埋点设计、会话分析到质量与成本看板，讲透 Agent 产品如何用数据形成『观测—归因—迭代』闭环，给出事件埋点、会话漏斗、成本聚合与看板的可运行骨架。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#product">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">💡</span>
+        <span class="art-moduleName">产品工程</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">23 分钟</span>
+      </div>
+      <h1 class="art-title">产品数据分析：用数据驱动 Agent 迭代</h1>
+      <p class="art-desc">从埋点设计、会话分析到质量与成本看板，讲透 Agent 产品如何用数据形成『观测—归因—迭代』闭环，给出事件埋点、会话漏斗、成本聚合与看板的可运行骨架。</p>
+      <div class="art-tags"><span class="art-tag">#埋点</span><span class="art-tag">#会话分析</span><span class="art-tag">#成本看板</span><span class="art-tag">#质量指标</span><span class="art-tag">#迭代闭环</span></div>
+    </div>
+    <div class="prose"><h1>产品数据分析：用数据驱动 Agent 迭代</h1>
+<p>功能上线只是开始。Agent 产品最大的不确定性在于『用户到底用得顺不顺、花了多少钱、答得对不对』——这些只能靠数据回答。这一篇讲：埋点设计、会话分析、质量/成本看板，以及如何用它们形成迭代闭环。</p>
+<h2 id="1-先想清楚要回答什么问题">1. 先想清楚要回答什么问题</h2>
+<p>别一上来就埋几十个事件。先列『必须回答的业务问题』，再反推埋什么：</p>
+<ul>
+<li><strong>用得顺不顺</strong>：会话完成率、人工接管率、重试/降级触发率；</li>
+<li><strong>花了多少钱</strong>：每会话 token 成本、每用户日成本、成本分布长尾；</li>
+<li><strong>答得对不对</strong>：用户点赞/点踩、二次追问率、人工抽检通过率；</li>
+<li><strong>卡在哪</strong>：哪一步工具调用最慢/最易失败、哪个意图漏斗流失最大。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">事件设计原则</span></div><div class="co-body"><p>  一个事件 = 一个『用户/系统动作』，含 <code>event</code>、<code>tenant_id</code>、<code>user_id</code>、<code>session_id</code>、时间戳、
+  以及该动作关心的字段。用 <code>session_id</code> 串联整段对话，用 <code>tenant_id</code> 做多租户分群。
+  字段宁少勿乱：每个字段都要对应一个能驱动决策的问题，否则就是噪音。</p>
+</div></div><h2 id="2-埋点-在关键节点发事件">2. 埋点：在关键节点发事件</h2>
+<p>把埋点收敛到一个 <code>track()</code> 函数，业务代码一行调用，避免散落难维护。</p>
+<pre><code class="language-ts">// analytics.ts —— 统一埋点入口（事件送到消息队列/数仓）
+type Event = {
+  event: string;          // session.start / tool.call / llm.token / session.end
+  tenantId: string;
+  userId: string;
+  sessionId: string;
+  at: number;             // 毫秒时间戳
+  props?: Record&lt;string, unknown&gt;;
+};
+
+async function track(e: Event) {
+  // 真实场景：发到 Kafka / 写入数仓，别阻塞主链路（fire-and-forget）
+  await queue.publish('analytics', { ...e, at: Date.now() });
+}
+
+// 在 Agent 链路的关键节点埋点
+await track({ event: 'llm.token', tenantId, userId, sessionId,
+  props: { model: 'gpt-4o-mini', promptTokens: 1200, completionTokens: 300 } });
+await track({ event: 'tool.call', tenantId, userId, sessionId,
+  props: { tool: 'search_order', ok: false, latencyMs: 1500 } });
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">成本事件要带 model 与 token</span></div><div class="co-body"><p>  成本归因的最小粒度是『某租户 + 某会话 + 某模型 + token 数』。埋点时务必带 <code>model</code> 字段，
+  否则月底算不清『是谁把 GPT-4 用爆了』。降级到小模型时也要记，便于对比省钱效果。</p>
+</div></div><h2 id="3-会话分析-漏斗与流失">3. 会话分析：漏斗与流失</h2>
+<p>把一段会话当成漏斗：开始 → 首轮有效回复 → 任务完成 / 用户满意。用 <code>session_id</code> 聚合。</p>
+<pre><code class="language-sql">-- 会话完成率：有正常结束事件的会话占比
+SELECT
+  COUNT(DISTINCT session_id) FILTER (
+    WHERE event = 'session.end' AND props-&gt;&gt;'outcome' = 'done'
+  )::float / NULLIF(COUNT(DISTINCT session_id), 0) AS completion_rate
+FROM analytics_events
+WHERE tenant_id = 't_001' AND at BETWEEN :start AND :end;
+
+-- 工具失败 Top：定位最脆弱的依赖
+SELECT props-&gt;&gt;'tool' AS tool, COUNT(*) AS fails
+FROM analytics_events
+WHERE event = 'tool.call' AND props-&gt;&gt;'ok' = 'false'
+GROUP BY 1 ORDER BY fails DESC LIMIT 10;
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">别只看均值</span></div><div class="co-body"><p>  完成率、延迟的均值会掩盖长尾。一个会话平均 8s，但 P99 可能 40s——体感由 P99 决定。
+  看板务必同时展示 P50/P90/P99，长尾才是用户吐槽的来源。</p>
+</div></div><h2 id="4-质量与成本看板">4. 质量与成本看板</h2>
+<p>质量与成本是 Agent 产品两条生命线，必须合在一张看板，避免『体验好了但成本炸了』或反过来。</p>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>含义</th>
+<th>预警阈值</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>完成率</td>
+<td>会话正常结束占比</td>
+<td>周环比跌 &gt; 5%</td>
+</tr>
+<tr>
+<td>人工接管率</td>
+<td>转人工/重试占比</td>
+<td>持续上升</td>
+</tr>
+<tr>
+<td>单会话成本</td>
+<td>token 成本均值</td>
+<td>超预算线</td>
+</tr>
+<tr>
+<td>降级触发率</td>
+<td>走兜底占比</td>
+<td>突增 = 上游劣化</td>
+</tr>
+<tr>
+<td>二次追问率</td>
+<td>用户同一问题再问</td>
+<td>高 = 首答质量差</td>
+</tr>
+</tbody></table>
+<pre><code class="language-ts">// cost-dashboard.ts —— 按租户/模型聚合成本的示意查询
+async function costByTenant(start: Date, end: Date) {
+  return db.query(`
+    SELECT tenant_id,
+           SUM((props-&gt;&gt;'promptTokens')::int
+             + (props-&gt;&gt;'completionTokens')::int) AS total_tokens,
+           COUNT(*) AS calls
+    FROM analytics_events
+    WHERE event = 'llm.token' AND at BETWEEN $1 AND $2
+    GROUP BY tenant_id
+    ORDER BY total_tokens DESC`, [start, end]);
+}
+</code></pre><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">成本要看分布不是看总数</span></div><div class="co-body"><p>  只看全站总成本会漏掉『某租户/某用户把成本拉爆』。按 <code>tenant_id</code> 和 <code>user_id</code> 下钻，
+  长尾用户往往贡献不成比例的开销——这正是配额（见 product-multi-tenant）要拦的对象。</p>
+</div></div><h2 id="5-迭代闭环-从数据到行动">5. 迭代闭环：从数据到行动</h2>
+<p>数据本身不产生价值，闭环才产生。一个可落地的节奏：</p>
+<pre><code>看板发现异常（如完成率跌）
+  → 下钻定位（是某工具失败率升？还是某意图答非所问？）
+  → 归因（prompt 改动？上游模型更新？新用户群？）
+  → 改（修工具 / 调 prompt / 加兜底）
+  → 灰度上线，看板验证指标回升
+  → 固化成监控阈值，下次自动报警
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">把指标变成告警而非报表</span></div><div class="co-body"><p>  看板给人看会『偶尔才看』。把关键指标接告警（完成率跌、降级率突增、成本超预算），
+  异常自动推到 IM/值班，才能从『事后复盘』变成『事中止损』。</p>
+</div></div><h2 id="6-对比-埋点-vs-日志-vs-链路追踪">6. 对比：埋点 vs 日志 vs 链路追踪</h2>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>埋点事件</th>
+<th>应用日志</th>
+<th>LLM 链路追踪</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>目的</td>
+<td>业务指标/漏斗</td>
+<td>排障细节</td>
+<td>单次调用内部步骤</td>
+</tr>
+<tr>
+<td>聚合</td>
+<td>适合大规模聚合</td>
+<td>适合查单条</td>
+<td>适合定位单次慢调用</td>
+</tr>
+<tr>
+<td>用户视角</td>
+<td>有（session/user）</td>
+<td>通常无</td>
+<td>部分有</td>
+</tr>
+<tr>
+<td>典型工具</td>
+<td>数仓/Kafka</td>
+<td>ELK/Loki</td>
+<td>LangSmith/Phoenix</td>
+</tr>
+</tbody></table>
+<p>三者互补：埋点看『面』、日志查『点』、追踪剖『一次调用的里』。</p>
+<h2 id="7-踩坑清单">7. 踩坑清单</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">埋点阻塞主链路</span></div><div class="co-body"><p>  埋点若同步写库/发网络请求，上游抖动会拖慢甚至搞挂业务接口。
+  必须异步（消息队列/fire-and-forget），并保证『埋点失败不影响主流程』。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">PII 进埋点等于合规事故</span></div><div class="co-body"><p>  用户原话、手机号、订单号等别原样进事件 <code>props</code>。要么脱敏、要么只存哈希、要么只记 id。
+  分析用文本时走独立、受控的抽样通道，而非全量落数仓。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">只看总数不看分布</span></div><div class="co-body"><p>  均值掩盖长尾，总数掩盖长尾租户。P99 与按租户下钻是必看项，否则问题藏在聚合里。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">指标要能反推到动作</span></div><div class="co-body"><p>  每个上墙指标都要能回答『它异常了我会改什么』。答不上来的指标别上墙，
+  那是噪音不是洞察。看板贵在少而准。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>埋点前先列『必须回答的业务问题』，再反推事件字段；统一 <code>track()</code> 入口，异步发送。</li>
+<li>会话分析用 <code>session_id</code> 串漏斗，工具失败/长尾延迟用 SQL 下钻，别只看均值要看 P99。</li>
+<li>质量与成本合一张看板：完成率、接管率、单会话成本、降级率、二次追问率。</li>
+<li>闭环 = 看板发现 → 下钻归因 → 改 → 灰度验证 → 固化告警。指标要能反推动作。</li>
+<li>红线：埋点异步不阻塞、PII 不进埋点、成本按租户下钻、告警而非只做报表。</li>
+</ul>
+<h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li><em>Metrics, dashboards &amp; alerts</em>（Google SRE）：RED/USE 指标法与告警设计</li>
+<li>OpenTelemetry 文档：LLM 链路追踪的 span 设计与成本归因</li>
+<li>LangSmith / Phoenix 文档：Agent 单次调用的质量与延迟剖析</li>
+<li>事件溯源（Event Sourcing）模式：用不可变事件流支撑分析</li>
+<li>本系列 <code>product-multi-tenant</code>（按租户成本下钻）、<code>deploy-monitor</code>（告警接入）</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="product-multi-tenant.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">多租户与权限：一个后端服务好多个客户</span></a>
+    <span></span>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

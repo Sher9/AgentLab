@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>React Hooks 实战 · AgentLab</title>
+  <meta name="description" content="吃透 React Hooks：useState/useEffect 机制、依赖数组陷阱、自定义 Hook、并发特性（useTransition/useDeferredValue）与状态管理选型，配可运行骨架。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="React Hooks 实战 · AgentLab"/>
+  <meta property="og:description" content="吃透 React Hooks：useState/useEffect 机制、依赖数组陷阱、自定义 Hook、并发特性（useTransition/useDeferredValue）与状态管理选型，配可运行骨架。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#frontend">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🎨</span>
+        <span class="art-moduleName">前端工程</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">38 分钟</span>
+      </div>
+      <h1 class="art-title">React Hooks 实战</h1>
+      <p class="art-desc">吃透 React Hooks：useState/useEffect 机制、依赖数组陷阱、自定义 Hook、并发特性（useTransition/useDeferredValue）与状态管理选型，配可运行骨架。</p>
+      <div class="art-tags"><span class="art-tag">#React</span><span class="art-tag">#Hooks</span><span class="art-tag">#并发渲染</span><span class="art-tag">#状态管理</span></div>
+    </div>
+    <div class="prose"><h1>React Hooks 实战</h1>
+<p>React 从 16.8 引入 Hooks，彻底改变了函数组件的写法：<strong>让函数组件拥有状态与生命周期能力，并取代 class 组件</strong>。但对有经验的开发者来说，Hooks 真正的难点不在 API，而在<strong>渲染模型与闭包</strong>：为什么 <code>useEffect</code> 拿到的是旧值？为什么状态更新没生效？并发特性又解决了什么？</p>
+<p>本篇从机制讲到实战，配可运行骨架、依赖陷阱、自定义 Hook、并发特性与状态管理选型。</p>
+<h2 id="1-心智模型-每次渲染都是独立的闭包">1. 心智模型：每次渲染都是独立的闭包</h2>
+<p>理解 Hooks 的第一性原理：<strong>函数组件每次渲染，都是一次函数调用，拿到的是那一次的 props/state 快照</strong>。Hooks 不是「跨渲染持久化的变量」，而是 React 在内部按「调用顺序」把状态挂到你这次渲染上的机制。</p>
+<pre><code class="language-tsx">function Counter() {
+  const [count, setCount] = useState(0);
+  // 每次渲染：count 是「这次」的快照；setCount 是稳定的调度函数
+  function handle() {
+    setCount(count + 1); // 这里的 count 是闭包捕获的当前值
+  }
+  return &lt;button onClick={handle}&gt;{count}&lt;/button&gt;;
+}
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">核心认知</span></div><div class="co-body"><p>  Hooks 的状态不保存在函数里，而保存在 React 内部（按 fiber + 调用顺序索引）。
+  函数每次重跑只是「重新读取」当前的状态快照。这就是为什么「闭包里的旧值」问题频发。</p>
+</div></div><h2 id="2-usestate-状态与批量更新">2. useState：状态与批量更新</h2>
+<pre><code class="language-tsx">import { useState } from 'react';
+
+function Form() {
+  const [name, setName] = useState(''); // 数组解构：[当前值, 更新函数]
+  // 函数式更新：依赖「上一次状态」时用回调，避免闭包旧值
+  const [list, setList] = useState&lt;string[]&gt;([]);
+  function add() {
+    setList((prev) =&gt; [...prev, name]); // prev 永远是 React 内部最新值
+  }
+  return &lt;input value={name} onChange={(e) =&gt; setName(e.target.value)} /&gt;;
+}
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">优先函数式更新</span></div><div class="co-body"><p>  当新状态依赖旧状态时（自增、累加、push），永远写 <code>setX(prev =&gt; ...)</code>。
+  直接 <code>setX(x + 1)</code> 在并发/快速点击场景下可能基于过期快照计算，丢更新。</p>
+</div></div><p>React 18 起，<strong>事件处理函数内的多次 setState 自动批处理</strong>（合并成一次渲染）。但 <code>setTimeout</code> / <code>Promise</code> 里的更新在 React 17 及之前不批处理，18 起统一批处理。需要刻意「打破批处理」时用 <code>flushSync</code>（极少用）。</p>
+<h2 id="3-useeffect-副作用与依赖数组">3. useEffect：副作用与依赖数组</h2>
+<code>useEffect(fn, deps)</code>：渲染后（commit 后）执行 <code>fn</code>，<code>deps</code> 决定何时重跑，<code>fn</code> 可返回清理函数。<pre><code class="language-tsx">import { useState, useEffect } from 'react';
+
+function UserProfile({ userId }: { userId: string }) {
+  const [user, setUser] = useState(null);
+
+  useEffect(() =&gt; {
+    let cancelled = false; // 防止卸载后 setState（竞态）
+    fetch(`/api/users/${userId}`)
+      .then((r) =&gt; r.json())
+      .then((d) =&gt; { if (!cancelled) setUser(d); });
+
+    // 清理函数：下次 effect 重跑前 / 组件卸载前执行
+    return () =&gt; { cancelled = true; };
+  }, [userId]); // 依赖：userId 变才重新拉取，空数组 = 仅挂载时跑一次
+}
+</code></pre><h3 id="3-1-依赖数组的三档">3.1 依赖数组的三档</h3>
+<table>
+<thead>
+<tr>
+<th>deps</th>
+<th>行为</th>
+<th>典型用途</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>[a, b]</code></td>
+<td>a 或 b 变化才重跑</td>
+<td>依赖具体状态/属性的副作用</td>
+</tr>
+<tr>
+<td><code>[]</code></td>
+<td>仅挂载时跑一次</td>
+<td>初始化、订阅（注意闭包旧值）</td>
+</tr>
+<tr>
+<td>省略 deps</td>
+<td>每次渲染后都跑</td>
+<td>极少用，等于放进 render 的副作用</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">依赖数组漏写 = 过期闭包</span></div><div class="co-body"><p>  若 effect 里读了 <code>count</code> 却没放进 deps，effect 只在初次跑，读到的是 <code>count=0</code> 的快照，
+  后续 <code>count</code> 变了 effect 不会重跑 → 经典「旧值 bug」。eslint 的
+  <code>react-hooks/exhaustive-deps</code> 规则就是帮你抓这个，别轻易 <code>// eslint-disable</code>。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">无限循环</span></div><div class="co-body">  <code>useEffect</code> 里 setState，且 setState 的值又进了 deps → 每次渲染触发 effect → 再渲染…
+<p>  破法：只在值「真正变化」时 setState，或把 setState 移出 deps（用函数式更新 + 正确依赖）。</p>
+</div></div><h2 id="4-useref-跨渲染持有可变值">4. useRef：跨渲染持有可变值</h2>
+<code>useRef</code> 返回一个**可变、跨渲染稳定**的对象 <code>.current</code>，改它**不触发重渲染**。<pre><code class="language-tsx">import { useRef, useEffect } from 'react';
+
+function Timer() {
+  const timerId = useRef&lt;number&gt;(); // 存定时器 id，不引发渲染
+  const renderCount = useRef(0);
+
+  useEffect(() =&gt; {
+    timerId.current = window.setInterval(() =&gt; {
+      renderCount.current++; // 改 ref 不重渲染
+    }, 1000);
+    return () =&gt; clearInterval(timerId.current);
+  }, []);
+
+  // 常见用法：拿到 DOM 节点
+  const inputRef = useRef&lt;HTMLInputElement&gt;(null);
+  // &lt;input ref={inputRef} /&gt;  然后 inputRef.current?.focus()
+}
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">useRef vs useState</span></div><div class="co-body"><p>  需要「DOM 引用 / 定时器 id / 上次渲染值」这类<strong>不需要驱动 UI 重新渲染</strong>的容器时用 useRef。
+  需要「变化要反映到界面」时必须 useState。二者常被混用，记住：ref 改了视图不动。</p>
+</div></div><h2 id="5-usememo-usecallback-性能优化">5. useMemo / useCallback：性能优化</h2>
+<pre><code class="language-tsx">import { useMemo, useCallback } from 'react';
+
+function Expensive({ items, onSelect }: { items: any[]; onSelect: (id: number) =&gt; void }) {
+  // 重计算：仅 items 变才重算（依赖数组）
+  const sorted = useMemo(() =&gt; items.slice().sort((a, b) =&gt; a.v - b.v), [items]);
+  // 函数记忆：onSelect 身份稳定，避免子组件无谓重渲染
+  const handle = useCallback((id: number) =&gt; onSelect(id), [onSelect]);
+
+  return &lt;List data={sorted} onPick={handle} /&gt;;
+}
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">别过早优化</span></div><div class="co-body">  <code>useMemo/useCallback</code> 有自身成本（比较 deps、分配内存）。只有确认「重计算很贵」
+<p>  或「需要稳定引用传给 memo 子组件」时才用。乱加反而拖慢。</p>
+</div></div><h2 id="6-自定义-hook-复用状态逻辑">6. 自定义 Hook：复用状态逻辑</h2>
+<p>自定义 Hook 把「有状态逻辑」抽成函数，是 React 复用单元（类比 Vue 的 composables）。</p>
+<pre><code class="language-tsx">// useDebounce.ts —— 防抖值
+import { useState, useEffect } from 'react';
+export function useDebounce&lt;T&gt;(value: T, delay = 300): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() =&gt; {
+    const id = setTimeout(() =&gt; setDebounced(value), delay);
+    return () =&gt; clearTimeout(id); // 值频繁变时不断重置定时器
+  }, [value, delay]);
+  return debounced;
+}
+
+// useLocalStorage.ts —— 持久化状态
+import { useState, useEffect } from 'react';
+export function useLocalStorage(key: string, init: string) {
+  const [val, setVal] = useState(() =&gt; localStorage.getItem(key) ?? init);
+  useEffect(() =&gt; { localStorage.setItem(key, val); }, [key, val]);
+  return [val, setVal] as const;
+}
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">命名与规则</span></div><div class="co-body"><p>  自定义 Hook 必须 <code>use</code> 开头，且内部只能调用其他 Hook（遵循 Hooks 规则：
+  不在条件/循环里调用 Hook）。这样 React 才能按调用顺序正确关联状态。</p>
+</div></div><h2 id="7-并发特性-usetransition-与-usedeferredvalue">7. 并发特性：useTransition 与 useDeferredValue</h2>
+<p>React 18 引入并发渲染，解决「一次更新卡住整个界面」的问题。核心概念：把更新分成**紧急（用户输入）<strong>与</strong>过渡（非阻塞）**两类。</p>
+<pre><code class="language-tsx">import { useState, useTransition, useDeferredValue } from 'react';
+
+function Search() {
+  const [query, setQuery] = useState('');
+  const [list, setList] = useState([]);
+  const [isPending, startTransition] = useTransition(); // 标记过渡更新
+
+  function onChange(e: React.ChangeEvent&lt;HTMLInputElement&gt;) {
+    setQuery(e.target.value); // 紧急：输入框立刻响应
+    startTransition(() =&gt; {
+      // 过渡：重渲染列表可被打断，不阻塞输入
+      setList(filterBigList(e.target.value));
+    });
+  }
+
+  const deferredQuery = useDeferredValue(query); // 把值「延迟」到空闲再更新
+  return (
+    &lt;&gt;
+      &lt;input value={query} onChange={onChange} /&gt;
+      &lt;ul style={{ opacity: isPending ? 0.5 : 1 }}&gt;
+        {list.map((x) =&gt; &lt;li key={x.id}&gt;{x.name}&lt;/li&gt;)}
+      &lt;/ul&gt;
+    &lt;/&gt;
+  );
+}
+</code></pre><table>
+<thead>
+<tr>
+<th>能力</th>
+<th>useTransition</th>
+<th>useDeferredValue</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>用途</td>
+<td>把「一段状态更新」标记为非紧急</td>
+<td>把「一个值」延迟到渲染空闲</td>
+</tr>
+<tr>
+<td>是否可感知 pending</td>
+<td>是（<code>isPending</code>）</td>
+<td>否（自动在后台过渡）</td>
+</tr>
+<tr>
+<td>适用</td>
+<td>主动包裹更新逻辑</td>
+<td>被动接收一个会变慢的值</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">何时上并发特性</span></div><div class="co-body"><p>  列表上千条、输入即筛选、切换 Tab 卡顿这类「用户操作要秒回，但后续渲染很重」场景，
+  用 <code>useTransition</code>/<code>useDeferredValue</code> 让紧急交互优先、重渲染可被打断。
+  普通小页面用不上，别为了用而用。</p>
+</div></div><h2 id="8-状态管理选型">8. 状态管理选型</h2>
+<p>内置 Hooks 适合局部状态；跨组件/全局状态需要外部方案。</p>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>适用规模</th>
+<th>特点</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>useState/useContext</td>
+<td>中小、低频更新</td>
+<td>简单，但 context 一变全部消费组件重渲染</td>
+</tr>
+<tr>
+<td>Zustand</td>
+<td>中大型</td>
+<td>极简、无 Provider 嵌套、按需订阅、性能好</td>
+</tr>
+<tr>
+<td>Redux Toolkit</td>
+<td>大型/复杂流</td>
+<td>可预测、devtools 强、样板稍多、适合强规范团队</td>
+</tr>
+<tr>
+<td>Jotai/Recoil</td>
+<td>原子化</td>
+<td>细粒度原子状态，天然避免不必要的重渲染</td>
+</tr>
+</tbody></table>
+<pre><code class="language-tsx">// Zustand 最小骨架（思路示意，API 以官方文档为准）
+import { create } from 'zustand';
+const useStore = create((set) =&gt; ({
+  count: 0,
+  inc: () =&gt; set((s) =&gt; ({ count: s.count + 1 })),
+}));
+// 组件里：const count = useStore((s) =&gt; s.count); 仅订阅 count，其他不变不重渲染
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">别用 Context 当全局 store</span></div><div class="co-body">  <code>useContext</code> 适合「主题/用户身份」这类低频变化数据。把一个高频变动的全局状态放进
+<p>  Context，每次更新会让<strong>所有消费组件</strong>重渲染，性能炸裂。高频全局态用 Zustand/Redux 的
+  细粒度订阅。</p>
+</div></div><h2 id="9-复杂状态-usereducer">9. 复杂状态：useReducer</h2>
+<p>当单个 <code>useState</code> 的状态逻辑变复杂（多字段、多种「事件」改变它），用 <code>useReducer</code> 把「状态 + 动作」收敛成纯函数，可读性远超一堆 <code>setX</code>。</p>
+<pre><code class="language-tsx">import { useReducer } from 'react';
+
+type State = { count: number; step: number };
+type Action = { type: 'inc' } | { type: 'dec' } | { type: 'setStep'; step: number };
+
+// reducer：纯函数，(旧状态, 动作) → 新状态；所有变更集中在此，易测试
+function reducer(state: State, action: Action): State {
+  switch (action.type) {
+    case 'inc': return { ...state, count: state.count + state.step };
+    case 'dec': return { ...state, count: state.count - state.step };
+    case 'setStep': return { ...state, step: action.step };
+    default: return state;
+  }
+}
+
+function Stepper() {
+  const [state, dispatch] = useReducer(reducer, { count: 0, step: 1 });
+  return (
+    &lt;&gt;
+      &lt;button onClick={() =&gt; dispatch({ type: 'dec' })}&gt;-&lt;/button&gt;
+      &lt;span&gt;{state.count}&lt;/span&gt;
+      &lt;button onClick={() =&gt; dispatch({ type: 'inc' })}&gt;+&lt;/button&gt;
+      &lt;input
+        type="number"
+        value={state.step}
+        onChange={(e) =&gt; dispatch({ type: 'setStep', step: +e.target.value })}
+      /&gt;
+    &lt;/&gt;
+  );
+}
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">useReducer vs useState</span></div><div class="co-body"><p>  经验法则：状态是「多个相互关联字段」或「变更逻辑有多种分支」→ useReducer；
+  单一独立值 → useState。useReducer 也更易配合状态机思想，避免散落各处的 setState 竞态。</p>
+</div></div><h2 id="10-跨组件通信-usecontext">10. 跨组件通信：useContext</h2>
+<p>当状态需要跨多层组件共享（主题、当前用户），用 <code>createContext</code> + <code>useContext</code> 避免 props 透传（prop drilling）。</p>
+<pre><code class="language-tsx">import { createContext, useContext, useState } from 'react';
+
+// 1. 定义 context（放默认结构，类型即契约）
+const ThemeContext = createContext&lt;{ dark: boolean; toggle: () =&gt; void }&gt;({
+  dark: false,
+  toggle: () =&gt; {},
+});
+
+function App() {
+  const [dark, setDark] = useState(false);
+  return (
+    // 2. Provider 在顶层把值注入，其下任意深度组件都能取
+    &lt;ThemeContext.Provider value={{ dark, toggle: () =&gt; setDark((d) =&gt; !d) }}&gt;
+      &lt;Toolbar /&gt;
+    &lt;/ThemeContext.Provider&gt;
+  );
+}
+
+function Toolbar() {
+  const { dark, toggle } = useContext(ThemeContext); // 3. 任意层直接取，无需 props
+  return &lt;button onClick={toggle}&gt;{dark ? '暗色' : '亮色'}&lt;/button&gt;;
+}
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">Context 的重新渲染范围</span></div><div class="co-body"><p>  Provider 的 <code>value</code> 每次渲染若产生新引用（如内联对象 <code>{ dark, toggle }</code>），所有消费组件都会重渲染。
+  用 <code>useMemo</code> 稳定 value，或把高频变的值拆成独立 Context，缩小受影响范围。</p>
+</div></div><h2 id="11-常见坑与最佳实践">11. 常见坑与最佳实践</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">过期闭包</span></div><div class="co-body">  <code>setTimeout</code> / 事件监听器里读到的 state 是定义时的快照。需要最新值就用
+<p>  函数式更新 <code>setX(prev =&gt; ...)</code>，或把值放进 ref，或把依赖写全。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">在 render 阶段写副作用</span></div><div class="co-body"><p>  组件函数体（render）里不要直接 <code>fetch</code>、改全局、setState（会触发重渲染循环）。
+  副作用一律进 <code>useEffect</code>。strict 模式下 effect 会跑两次（开发期），清理函数必须写对。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">对象/数组做依赖比对引用</span></div><div class="co-body">  <code>useEffect(() =&gt; {...}, [obj])</code> 中 <code>obj</code> 每次渲染是新引用（如 <code>{a:1}</code> 字面量），
+<p>  会误判「变了」导致 effect 每次重跑。要么用原始值做依赖，要么 <code>useMemo</code> 稳定引用，
+  或把比较值拆成基本类型。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">严格模式双调用</span></div><div class="co-body"><p>  React 18 <code>StrictMode</code> 开发期会故意双调用 render 与 effect（挂载-卸载-挂载），
+  用于暴露不纯逻辑。生产不双调用。确保 effect 清理函数能安全重复执行。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>Hooks 状态存在 React 内部、按调用顺序关联；每次渲染是独立闭包快照。</li>
+<li><code>useState</code> 优先函数式更新；<code>useEffect</code> 依赖数组写全（否则过期闭包）；清理函数防泄漏/竞态。</li>
+<li><code>useRef</code> 跨渲染持有可变值不触发渲染；<code>useMemo/useCallback</code> 仅在高成本/稳定引用时加。</li>
+<li>自定义 Hook（<code>use</code> 开头）复用逻辑；并发特性 <code>useTransition/useDeferredValue</code> 解卡顿。</li>
+<li>红线：别用 Context 当高频全局 store、别在 render 写副作用、别漏依赖、别在 effect 里无脑 setState 引发循环。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  React 是纯客户端视图库；当它需要「服务端渲染、路由、流式、缓存」时，
+  就到了 <strong>fe-nextjs（Next.js App Router）</strong> 的领域。</p>
+</div></div><h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>React 官方文档 · Hooks 参考：<a href="https://react.dev/reference/react">https://react.dev/reference/react</a></li>
+<li>你可能不需要 Effect：<a href="https://react.dev/learn/you-might-not-need-an-effect">https://react.dev/learn/you-might-not-need-an-effect</a></li>
+<li>并发特性 useTransition：<a href="https://react.dev/reference/react/useTransition">https://react.dev/reference/react/useTransition</a></li>
+<li>Zustand 文档：<a href="https://github.com/pmndrs/zustand">https://github.com/pmndrs/zustand</a></li>
+<li>Redux Toolkit 文档：<a href="https://redux-toolkit.js.org/">https://redux-toolkit.js.org/</a></li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="fe-vue3.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">Vue3 组合式 API</span></a>
+    <a class="art-pagerLink art-pagerRight" href="fe-nextjs.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">Next.js App Router</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

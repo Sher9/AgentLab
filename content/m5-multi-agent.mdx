@@ -1,0 +1,387 @@
+---
+title: 多 Agent 协作：角色编排、通信与任务分解
+description: 当单 Agent 力不从心，用角色编排、任务分解与通信协议把多个 Agent 组织起来。掌握三种协作拓扑与可运行骨架。
+category: AI Agent
+order: 5
+difficulty: 高级
+duration: 34 分钟
+tags: [多Agent, 编排, 通信, 任务分解]
+date: 2026-07-29
+---
+
+# 多 Agent 协作：角色编排、通信与任务分解
+
+M1 我们让单个 Agent 学会了"调工具"，M2/M3 给了它规划与记忆。但当你面对一个真实的大任务——
+"调研竞品并给出定价建议""把一份 PRD 拆成前后端开发任务并排期"——会发现**一个 Agent 包打天下越来越吃力**：
+
+- **上下文会撑爆**：把检索素材、计算、草稿、评审全塞进一个上下文，注意力被稀释，token 飞涨；
+- **专长没法分工**：调研、计算、写作是三种"角色能力"，塞进同一个 prompt 互相打架；
+- **超长 prompt 易失控**：一个巨无霸 system prompt 既难维护，又容易在长链路里"忘了自己该干嘛"。
+
+多 Agent 协作的思路是：**把"一个全能角色"拆成"多个专一角色"，用编排把它们组织起来**。
+这一篇讲清三种拓扑、任务分解与通信协议，并给你一套**可直接跑的 manager–worker 骨架**。
+
+## 1. 为什么单 Agent 不够
+
+从工程视角，单 Agent 的瓶颈集中在三点：
+
+| 瓶颈 | 现象 | 多 Agent 怎么解 |
+| --- | --- | --- |
+| 上下文隔离 | 检索结果 + 中间草稿 + 最终答案挤在一起，噪声互相干扰 | 每个 worker 只持自己那段上下文，互不污染 |
+| 专长分工 | 让一个模型同时"查资料、算数、写文案"，角色指令互相打架 | 不同 system prompt 塑造不同角色，各司其职 |
+| 长链路失控 | 几十步之后模型忘了最初目标，prompt 越长越难调 | 任务拆小、每步目标单一、manager 负责收口 |
+
+<Callout type="note" title="不是越多越好">
+  多 Agent 不是"堆数量"。一个任务如果单 Agent 跑得挺好，强行拆分只会增加通信成本与不一致风险。
+  只有当"上下文隔离 / 专长分工 / 并行提速"中至少一项明显成立时，才值得上多 Agent。
+</Callout>
+
+## 2. 三种协作拓扑
+
+拓扑指的是 Agent 之间的**连接与数据流向**。选错拓扑，后面再怎么调 prompt 都别扭。
+
+### 2.1 流水线（Pipeline）
+
+A 的输出直接作为 B 的输入，像工厂传送带。适合**强顺序、可串行的工序**。
+
+```
+[ 用户目标 ]
+     │
+     ▼
+┌─────────┐    ┌─────────┐    ┌─────────┐
+│ Agent A │──>│ Agent B │──>│ Agent C │──> 最终结果
+│ 检索     │    │ 提炼     │    │ 撰写     │
+└─────────┘    └─────────┘    └─────────┘
+```
+
+优点：简单、可预测、易调试（每一环输入输出都清晰）。
+缺点：一环慢全链路慢；难以回退（B 发现 A 给的不够，没法轻易"叫 A 重来"）。
+
+### 2.2 共享黑板（Blackboard）
+
+多个 Agent 读写同一块"黑板"状态，谁需要就取、算完就写。适合**多角色围绕同一份状态迭代**。
+
+```
+        ┌──────────── 共享黑板（状态/事实/草稿）────────────┐
+        │                                                    │
+   ┌────▼────┐         ┌─────────┐         ┌─────────┐
+   │ Agent X │         │ Agent Y │         │ Agent Z │
+   │ 读/写   │────────>│ 读/写   │────────>│ 读/写   │
+   └─────────┘         └─────────┘         └─────────┘
+```
+
+优点：解耦好，Agent 之间不直接耦合；新角色即插即用。
+缺点：黑板本身要设计（字段、并发写冲突）；"谁该动"的调度逻辑容易复杂。
+
+### 2.3 主管-工人（Manager-Worker / 消息总线）
+
+一个 manager 负责**分解任务、派发、汇总**；若干 worker 各管一种能力。适合**任务可拆、需并行**的场景——也是本篇骨架用的拓扑。
+
+```
+            ┌─────────── Manager（主管）───────────┐
+            │  分解目标 → 派发 → 收结果 → 汇总       │
+            └───┬──────────────┬──────────────┬────┘
+                │              │              │
+          派发  ▼        派发   ▼        派发   ▼
+            ┌─────────┐   ┌─────────┐   ┌─────────┐
+            │ Worker1 │   │ Worker2 │   │ Worker3 │
+            │ 检索     │   │ 计算     │   │ 写作     │
+            └────┬────┘   └────┬────┘   └────┬────┘
+                 └──── 回传结果 ───┴──────────┘
+```
+
+优点：并行度高、职责清晰、可弹性增减 worker。
+缺点：manager 是单点（它挂了全完）；拆分质量直接决定成败；需要明确的通信协议。
+
+<Callout type="tip" title="先用 Manager-Worker 起步">
+  对大多数业务系统，Manager-Worker 是最务实的起点：它把"拆任务"和"干活"分开，
+  天然对应你已有的团队分工心智模型，也最容易在单文件里跑通（见第 5 节）。
+</Callout>
+
+## 3. 任务分解：把目标拆给子 Agent
+
+多 Agent 系统的成败，七成在"怎么拆"。一条好的子任务应当满足：
+
+- **可独立执行**：worker 拿到子任务 + 必要上下文就能干，不依赖其他 worker 的"内部状态"；
+- **目标单一**：一个子任务只问一件事（"查 2025 年 X 的营收"而非"调研并写报告"）；
+- **结果可汇总**：产出是结构化、可合并的（数字、要点列表、草稿段落），而不是一句含糊自然语言；
+- **边界清晰**：明确"输入是什么、交付物是什么"，避免 worker 之间互相甩锅。
+
+常见拆分维度：
+
+| 维度 | 例子 |
+| --- | --- |
+| 按能力 | 检索型 / 计算型 / 写作型 / 校验型 |
+| 按数据源 | 内部库查询 / 外部网页调研 / 代码执行 |
+| 按阶段 | 信息收集 → 分析 → 产出 → 自检 |
+
+<Callout type="warn" title="别拆太碎">
+  拆得太细，manager 的派发/汇总开销会超过并行收益，且子任务间上下文传递容易丢信息。
+  经验值：一次分解出 2～5 个 worker 任务通常最划算。
+</Callout>
+
+## 4. 通信协议：Agent 之间怎么"说话"
+
+多 Agent 之间必须有**约定的消息格式**，否则就是一群人各说各话。最小可用的消息结构：
+
+```ts
+// 一条 Agent 间消息的最小字段
+interface AgentMessage {
+  sender: string;    // 谁发的，如 'manager' / 'worker:research'
+  recipient: string; // 发给谁，'*' 表示广播（黑板场景）
+  type: 'task' | 'result' | 'ask' | 'done'; // 消息用途
+  payload: unknown;  // 具体内容：子任务描述 / 执行结果 / 追问
+  traceId: string;   // 关联同一次用户请求，便于追踪与汇总
+}
+```
+
+几个工程要点：
+
+- **握手与同步**：Manager-Worker 用"派发→回传"的 request/reply 即可；黑板场景需要"写后通知"机制，否则别的 Agent 不知道状态变了。
+- **traceId 贯穿始终**：把一次用户请求的所有消息串起来，后面做可观测（M6）时才能还原整条链路。
+- **失败要可表达**：worker 执行失败不是"静默"，而应回一条 `type: 'result'` 但带错误字段的消息，让 manager 决定重试还是降级。
+
+<Callout type="note" title="协议越简单越稳">
+  生产里别急着上复杂的 Agent 通信框架。先用"函数调用 + 结构化返回"实现协议，
+  等拓扑真的稳定了再考虑消息总线。过早抽象通信层是常见浪费。
+</Callout>
+
+## 5. 可运行骨架：Manager + 两个 Worker
+
+下面是一份**单文件、逻辑自洽**的 manager–worker 编排示例（你可直接 `npx tsx` 跑）：
+
+- **Manager**：接收用户目标，调用模型把目标拆成子任务（用工具 `plan_tasks` + Zod 校验）；
+- **Worker 1（研究员）**：带"研究员"system prompt 的模型调用，配一个 `web_search` 工具；
+- **Worker 2（计算员）**：带"计算员"system prompt 的模型调用，配一个 `calculate` 工具；
+- **汇总**：manager 收齐两个 worker 的结果，再调一次模型生成最终答案；
+- **护栏**：拆解循环、worker 重试、整体步骤均设上限，防死循环。
+
+```ts
+// multi-agent.ts —— Manager-Worker 编排骨架（单文件可运行）
+import OpenAI from 'openai';
+import 'dotenv/config';
+import { z } from 'zod';
+import { zodToJsonSchema } from 'zod-to-json-schema';
+
+const client = new OpenAI();
+
+// ① 用 Zod 定义"子任务"结构，单一事实来源，顺便给模型当参数 schema
+const SubTask = z.object({
+  id: z.string().describe('子任务唯一 id，如 t1'),
+  title: z.string().describe('一句话描述要干什么'),
+  worker: z.enum(['research', 'calculate']).describe('派给哪个工人'),
+  input: z.string().describe('交给该工人的具体输入/问题'),
+});
+const PlanSchema = z.object({
+  tasks: z.array(SubTask).describe('拆解出的子任务列表'),
+});
+
+// ② Manager 的"拆解工具"：让模型把目标拆成结构化子任务
+const planTool: OpenAI.Chat.Completions.ChatCompletionTool = {
+  type: 'function',
+  function: {
+    name: 'plan_tasks',
+    description: '把用户目标拆成可独立执行的子任务',
+    parameters: zodToJsonSchema(PlanSchema) as Record<string, unknown>,
+  },
+};
+
+// ③ 两个 Worker 各自的工具：研究员能"搜"，计算员能"算"
+const workerTools: Record<string, OpenAI.Chat.Completions.ChatCompletionTool[]> = {
+  research: [
+    {
+      type: 'function',
+      function: {
+        name: 'web_search',
+        description: '检索某关键词的简要资料',
+        parameters: {
+          type: 'object',
+          properties: { query: { type: 'string', description: '检索词' } },
+          required: ['query'],
+        },
+      },
+    },
+  ],
+  calculate: [
+    {
+      type: 'function',
+      function: {
+        name: 'calculate',
+        description: '计算一段算术表达式',
+        parameters: {
+          type: 'object',
+          properties: { expression: { type: 'string', description: '如 (12+8)*3' } },
+          required: ['expression'],
+        },
+      },
+    },
+  ],
+};
+
+// 工具的"真实实现"（这里用假数据，实际换成检索/计算服务）
+function runTool(name: string, args: any): string {
+  if (name === 'web_search') return `关于「${args.query}」的摘要：市场规模约 120 亿，年增 18%。`;
+  if (name === 'calculate') {
+    // 仅作演示：用 Function 做安全求值，生产请用专用计算引擎
+    const v = Function('"use strict";return (' + args.expression + ')')();
+    return `计算结果：${v}`;
+  }
+  return '未知工具';
+}
+
+// ④ Worker：带角色 system prompt 的模型调用 + 工具闭环，带重试上限
+async function runWorker(
+  worker: 'research' | 'calculate',
+  task: z.infer<typeof SubTask>
+): Promise<string> {
+  const system =
+    worker === 'research'
+      ? '你是研究员，只基于检索结果作答，不要编造。'
+      : '你是计算员，只做计算并给出数字结论。';
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: 'system', content: system },
+    { role: 'user', content: task.input },
+  ];
+
+  const MAX_TURNS = 4; // 防工具循环失控
+  for (let t = 0; t < MAX_TURNS; t++) {
+    const res = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages,
+      tools: workerTools[worker],
+    });
+    const msg = res.choices[0].message;
+    messages.push(msg);
+    if (!msg.tool_calls || msg.tool_calls.length === 0) return String(msg.content);
+    for (const call of msg.tool_calls) {
+      const args = JSON.parse(call.function.arguments);
+      const out = runTool(call.function.name, args);
+      messages.push({ role: 'tool', tool_call_id: call.id, content: out });
+    }
+  }
+  return '（worker 超步数未收敛）';
+}
+
+// ⑤ Manager：拆解 → 派发 → 汇总，整体步骤设上限
+async function manager(goal: string): Promise<string> {
+  // 5.1 让模型拆目标（带循环上限，防反复要求拆）
+  let tasks: z.infer<typeof SubTask>[] = [];
+  const planMsgs: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: 'system', content: '你是项目经理，把目标拆成 research/calculate 两类子任务。' },
+    { role: 'user', content: goal },
+  ];
+  for (let step = 0; step < 3 && tasks.length === 0; step++) {
+    const res = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: planMsgs,
+      tools: [planTool],
+    });
+    const msg = res.choices[0].message;
+    planMsgs.push(msg);
+    if (!msg.tool_calls || msg.tool_calls.length === 0) break;
+    const call = msg.tool_calls[0];
+    const parsed = PlanSchema.safeParse(JSON.parse(call.function.arguments)); // Zod 校验
+    if (!parsed.success) {
+      planMsgs.push({ role: 'tool', tool_call_id: call.id, content: '格式错误，请重拆' });
+      continue;
+    }
+    tasks = parsed.data.tasks;
+    planMsgs.push({ role: 'tool', tool_call_id: call.id, content: '已收到计划' });
+  }
+  if (tasks.length === 0) return '（无法将目标拆分为有效子任务）';
+
+  // 5.2 并行派发给对应 worker，各自拿回结果
+  const results = await Promise.all(
+    tasks.map(async (task) => ({
+      id: task.id,
+      worker: task.worker,
+      output: await runWorker(task.worker, task),
+    }))
+  );
+
+  // 5.3 Manager 汇总：把各 worker 结果喂回模型生成最终答案
+  const summary = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: '你是汇总官，基于各工人结果给出最终简明答案。' },
+      {
+        role: 'user',
+        content:
+          `目标：${goal}\n` +
+          results.map((r) => `[${r.worker}] ${r.output}`).join('\n'),
+      },
+    ],
+  });
+  return String(summary.choices[0].message.content);
+}
+
+manager('调研某市场规模，并算出若年增 18% 三年后的体量。').then(console.log);
+```
+
+运行方式（见文末）：`npm i openai dotenv zod` 然后 `npx tsx multi-agent.ts`。
+
+骨架里三处"护栏"请注意：
+
+- **`planTool` 的循环上限（3）**：防止 manager 反复要求重新拆解；
+- **`runWorker` 的 `MAX_TURNS`（4）**：防止 worker 在工具调用里打转；
+- **`PlanSchema.safeParse`**：拆解结果不合法就打回重拆，而不是带着脏数据往下跑。
+
+<Callout type="tip" title="先跑通再替换真工具">
+  骨架里 `web_search` / `calculate` 是假实现。先让整条编排链路在假数据上跑通，
+  确认拆分与汇总逻辑没问题，再把工具换成真实检索/计算服务——这样出问题时能定位是"编排"还是"工具"的锅。
+</Callout>
+
+## 6. 踩坑指南
+
+<Callout type="danger" title="循环委派：A 派 B，B 又派 A">
+  最隐蔽的死锁。manager 把一个任务派给 worker，worker 觉得"这不该我干"又塞回 manager，
+  两人互相踢皮球直到耗尽上限。对策：每个子任务**写死派给谁**（如 `worker` 字段），
+  worker 一律不拥有"再派发"权限，只能执行或报错。
+</Callout>
+
+<Callout type="danger" title="缺少终止条件">
+  没有"什么时候算完"的明确判据，系统会在"再做一轮吧"里无限循环。对策：
+  ① 子任务数量有限且可枚举；② 每层循环都有步数上限；③ manager 汇总后直接结束，不再回灌给自己。
+</Callout>
+
+<Callout type="warn" title="上下文膨胀">
+  每个 worker 把整段历史打包传递，或 manager 把 worker 的全部原始输出（含检索噪音）原样汇总，
+  会让最终汇总那次调用的上下文爆炸。对策：worker 只回传"结论性"结果，长素材留在 worker 本地。
+</Callout>
+
+<Callout type="warn" title="结果不一致难汇总">
+  两个 worker 基于不同假设给出冲突结论（一个按人民币、一个按美元），manager 直接拼一起就出洋相。
+  对策：在子任务 `input` 里锁定口径（单位、范围、视角），汇总时让模型显式处理冲突。
+</Callout>
+
+<Callout type="note" title="Manager 是单点，也是瓶颈">
+  所有派发与汇总都过 manager。任务多了它会成为吞吐瓶颈，且它一旦出错全局崩。
+  简单场景可接受；规模上去后考虑"分组主管"或把汇总也拆成独立 worker。
+</Callout>
+
+## 7. 三种拓扑对比表
+
+| 拓扑 | 适用场景 | 优点 | 缺点 |
+| --- | --- | --- | --- |
+| 流水线 Pipeline | 强顺序工序（采集→清洗→产出） | 简单、可预测、易调试 | 单环慢则全慢；难回退 |
+| 共享黑板 Blackboard | 多角色围绕同一状态迭代 | 解耦好、角色可插拔 | 黑板设计复杂；调度逻辑重 |
+| 主管-工人 Manager-Worker | 任务可拆、需并行 | 并行度高、职责清晰、易扩展 | manager 单点；拆分质量定生死 |
+
+<Callout type="tip" title="选型速记">
+  要串行 → 流水线；要围绕同一份状态反复打磨 → 黑板；要"拆了并行干再合" → Manager-Worker。
+  不确定就先上 Manager-Worker，它的心智模型最贴近真实团队协作。
+</Callout>
+
+## 小结
+
+- 单 Agent 的瓶颈是**上下文隔离、专长分工、长链路失控**；多 Agent 用"分角色 + 编排"化解。
+- 三种拓扑：流水线（串行）、黑板（共享状态）、Manager-Worker（派发-汇总）；本篇骨架用后者。
+- 任务分解要满足**可独立执行、目标单一、结果可汇总、边界清晰**；一次拆 2～5 个最划算。
+- 通信协议的核心是统一消息格式（sender/recipient/type/payload/traceId）+ 明确的握手与终止条件。
+- 骨架关键点：Zod 校验拆解结果、worker 带角色 system prompt 与工具闭环、三层步数上限防死循环。
+- 三大雷区：循环委派、缺终止条件、上下文膨胀——都要用"权限收敛 + 步数上限 + 精简回传"堵住。
+
+<Callout type="note" title="下一步">
+  骨架跑起来了，但"它到底拆得对不对、worker 有没有跑偏、花了多少 token"——这些你目前是看不见的。
+  这就是 **M6 评估与可观测** 要解决的：给多 Agent 系统装上"仪表盘"与"体检表"。
+</Callout>

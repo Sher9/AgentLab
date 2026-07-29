@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Python 核心与现代语法 · AgentLab</title>
+  <meta name="description" content="类型注解/typing、虚拟环境与 pyproject、模块与包机制、函数进阶、生成器/异步、高频标准库——面向有经验开发者的 Python 核心要点与踩坑。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="Python 核心与现代语法 · AgentLab"/>
+  <meta property="og:description" content="类型注解/typing、虚拟环境与 pyproject、模块与包机制、函数进阶、生成器/异步、高频标准库——面向有经验开发者的 Python 核心要点与踩坑。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#python">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🐍</span>
+        <span class="art-moduleName">Python</span>
+        <span class="art-diff">入门</span>
+        <span class="art-dur">35 分钟</span>
+      </div>
+      <h1 class="art-title">Python 核心与现代语法</h1>
+      <p class="art-desc">类型注解/typing、虚拟环境与 pyproject、模块与包机制、函数进阶、生成器/异步、高频标准库——面向有经验开发者的 Python 核心要点与踩坑。</p>
+      <div class="art-tags"><span class="art-tag">#Python</span><span class="art-tag">#语法</span><span class="art-tag">#类型注解</span><span class="art-tag">#工程基础</span></div>
+    </div>
+    <div class="prose"><h1>Python 核心与现代语法</h1>
+<p>Python 上手快，但「能跑」和「懂它」之间隔着一整套核心机制。这篇面向写过多门语言的开发者，挑出最常用、也最容易踩坑的点：对象模型、类型注解、<code>typing</code> 进阶、虚拟环境与 <code>pyproject</code>、模块与包、函数进阶、生成器/异步、高频标准库。读完你会对「Python 到底在底层怎么做事」有更扎实的直觉。</p>
+<h2 id="1-对象模型-一切皆对象">1. 对象模型：一切皆对象</h2>
+<p>Python 里没有「原始类型」的概念。数字、字符串、函数、类、模块都是对象，都活在堆上，变量只是名字（引用）。理解这一点，后面所有「坑」都顺理成章。</p>
+<pre><code class="language-python"># 变量是名字绑定，不是盒子
+a = [1, 2, 3]
+b = a          # b 和 a 指向同一个列表对象，不是拷贝
+b.append(4)
+print(a)       # [1, 2, 3, 4] —— a 也变了，因为它们是同一个对象
+
+# 用 id 看身份；is 比的是身份，== 比的是值
+print(a is b)        # True：同一个对象
+print(1 == 1.0)      # True：值相等；但 1 is 1.0 为 False
+</code></pre><h3 id="1-1-可变与不可变">1.1 可变与不可变</h3>
+<p>这是 Python 里最高频的隐形坑来源。对象按「能否原地修改」分两类：</p>
+<table>
+<thead>
+<tr>
+<th>类别</th>
+<th>类型</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>不可变</td>
+<td><code>int</code> <code>str</code> <code>tuple</code> <code>frozenset</code> <code>bytes</code></td>
+<td>修改会得到新对象，原对象不变</td>
+</tr>
+<tr>
+<td>可变</td>
+<td><code>list</code> <code>dict</code> <code>set</code> <code>bytearray</code></td>
+<td>可原地增删改，所有引用同步看到变化</td>
+</tr>
+</tbody></table>
+<pre><code class="language-python">s = "hello"
+s += " world"   # 不是改原字符串，而是新建一个字符串对象再绑定给 s
+
+d = {"x": 1}
+e = d
+e["x"] = 99
+print(d["x"])   # 99：dict 是可变的，e 和 d 共享同一对象
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">为什么这很重要</span></div><div class="co-body"><p>  可变/不可变直接决定了函数参数传递时「会不会意外改到外部」。也决定了哪些类型能当
+  dict 的 key（只有可哈希的不可变类型能当 key）。理解这一点，下面『可变默认参数陷阱』就顺理成章了。</p>
+</div></div><h2 id="2-类型注解与-typing-进阶">2. 类型注解与 typing 进阶</h2>
+<p>Python 3.5 起支持<strong>可选的类型注解</strong>：它不运行、只给类型检查器（mypy/pyright）和 IDE 看，能在写代码时抓出大量 bug。3.9+ 推荐直接写 <code>list[int]</code>、<code>dict[str, int]</code>，少依赖 <code>typing</code>。</p>
+<pre><code class="language-python"># 基础：参数与返回值注解
+def greet(name: str, times: int = 1) -&gt; str:
+    return name * times
+
+scores: list[int] = [90, 85, 77]
+</code></pre><h3 id="2-1-容器与可选类型">2.1 容器与可选类型</h3>
+<pre><code class="language-python">from typing import Optional, Union
+
+def find_user(uid: int) -&gt; Optional[dict]:
+    """返回用户字典，找不到返回 None。Optional[X] 等价于 X | None。"""
+    ...
+
+# Union 表示多种可能；Python 3.10+ 可直接写 int | str
+def parse(raw: str) -&gt; Union[int, str]:
+    return int(raw) if raw.isdigit() else raw
+</code></pre><h3 id="2-2-泛型与-typevar">2.2 泛型与 TypeVar</h3>
+<p>当你要写「对任意类型 T 都成立的容器/函数」时，用 <code>TypeVar</code> 表达约束：</p>
+<pre><code class="language-python">from typing import TypeVar, Sequence
+
+T = TypeVar("T")
+
+def first(items: Sequence[T]) -&gt; Optional[T]:
+    """返回序列第一个元素，空序列返回 None。T 会被推导成实际元素类型。"""
+    return items[0] if items else None
+
+reveal = first([1, 2, 3])      # 推导为 Optional[int]
+</code></pre><h3 id="2-3-结构化子类型-protocol">2.3 结构化子类型：Protocol</h3>
+<code>Protocol</code> 实现**结构化类型**（duck typing 的静态版本）：只要对象有对应方法/属性就算匹配，不要求继承同一父类。<pre><code class="language-python">from typing import Protocol
+
+class Sized(Protocol):
+    def __len__(self) -&gt; int: ...
+
+def count(obj: Sized) -&gt; int:
+    return len(obj)   # 任何有 __len__ 的对象都能传进来
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">渐进式采用</span></div><div class="co-body"><p>  不必一次性给全项目加注解。从公共函数签名、容易出错的边界开始；配合 pyright 或编辑器
+  检查，性价比最高。类型注解是「静态护栏」，运行时零开销——它不参与任何执行逻辑。</p>
+</div></div><h2 id="3-虚拟环境与-pyproject">3. 虚拟环境与 pyproject</h2>
+<p>能跑的脚本不等于可复现的项目。不同项目要不同版本的同一个库，装到全局必然互相覆盖。虚拟环境给每个项目一个独立的解释器与 <code>site-packages</code>。</p>
+<h3 id="3-1-venv-标准库自带">3.1 venv：标准库自带</h3>
+<pre><code class="language-bash">python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install fastapi
+</code></pre><code>venv</code> 简单，但「锁版本」弱——它只隔离，不记录精确版本。<h3 id="3-2-uv-现代极速替代">3.2 uv：现代极速替代</h3>
+<p><a href="https://github.com/astral-sh/uv">uv</a> 是 Rust 写的包管理器，速度比 pip 快 10–100 倍，并原生管理虚拟环境与锁文件：</p>
+<pre><code class="language-bash"># 安装 uv（一次）
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 建环境 + 装依赖 + 锁版本，一条命令
+uv venv
+uv add fastapi
+uv add --dev pytest ruff
+uv sync          # 按 uv.lock 精确还原，CI 里用这条最稳
+</code></pre><h3 id="3-3-pyproject-toml-项目单一事实来源">3.3 pyproject.toml：项目单一事实来源</h3>
+<p>现代 Python 项目用 <code>pyproject.toml</code> 同时声明依赖、工具配置、打包信息（取代散落的 <code>setup.py</code>/<code>setup.cfg</code>/<code>requirements.txt</code>）：</p>
+<pre><code class="language-toml"># pyproject.toml（节选，uv / PEP 621 风格）
+[project]
+name = "agentlab-demo"
+version = "0.1.0"
+requires-python = "&gt;=3.10"
+dependencies = ["fastapi&gt;=0.110,&lt;0.121"]
+
+[dependency-groups]           # 开发期依赖，不打进生产
+dev = ["pytest&gt;=8.0", "ruff&gt;=0.4"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+</code></pre><table>
+<thead>
+<tr>
+<th>维度</th>
+<th>venv + pip</th>
+<th>uv</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>速度</td>
+<td>慢</td>
+<td>极快（Rust）</td>
+</tr>
+<tr>
+<td>版本锁定</td>
+<td>需手动 freeze</td>
+<td>自动 uv.lock</td>
+</tr>
+<tr>
+<td>管理工具/依赖</td>
+<td>分离</td>
+<td>一体化</td>
+</tr>
+<tr>
+<td>学习成本</td>
+<td>低</td>
+<td>低</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">依赖地狱</span></div><div class="co-body"><p>  没锁版本时写 <code>fastapi&gt;=0.110</code> 看似宽松，但别人三个月后装到 0.120，可能引入不兼容改动，
+  于是出现「我本地好好的，CI 挂了」。生产项目务必提交 lock 文件（uv.lock 或 poetry.lock），
+  并区分「运行依赖」与「开发依赖」，别把 pytest 打进生产镜像。</p>
+</div></div><h2 id="4-模块与包">4. 模块与包</h2>
+<p>Python 用「模块（一个 .py 文件）= 单元，包（含 <code>__init__.py</code> 的目录）= 模块集合」组织代码。理解导入机制，能避免大多数 <code>ImportError</code> 和循环导入。</p>
+<h3 id="4-1-导入解析顺序">4.1 导入解析顺序</h3>
+<code>import foo</code> 时解释器按 <code>sys.path</code>（当前目录 → 已安装包 → 标准库）依次查找名为 <code>foo</code> 的模块/包。<pre><code class="language-python">import sys
+print(sys.path[:3])   # 前几项通常是 ['', 虚拟环境 site-packages, 标准库]
+</code></pre><h3 id="4-2-相对导入与绝对导入">4.2 相对导入与绝对导入</h3>
+<p>包内部推荐用相对导入（<code>.</code> 当前包，<code>..</code> 上级包），包之间用绝对导入（从顶层包名开始）。</p>
+<pre><code class="language-python"># 在 mypkg/sub/worker.py 里
+from . import config          # 相对导入同包的 config
+from ..utils import log       # 相对导入上级包的 utils.log
+from mypkg.models import User # 绝对导入（推荐，更清晰、可重定位）
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">循环导入</span></div><div class="co-body"><p>  模块 A 顶部 <code>import B</code>、模块 B 顶部又 <code>import A</code>，运行时会部分初始化而报错。
+  解法：① 把 import 移到函数内部（延迟导入）；② 抽公共逻辑到第三个模块；
+  ③ 用 <code>TYPE_CHECKING</code> 守卫仅类型用的导入：<code>if TYPE_CHECKING: from .models import User</code>。</p>
+</div></div><h3 id="4-3-命名空间包">4.3 命名空间包</h3>
+<p>没有 <code>__init__.py</code> 的目录也能成为包（PEP 420），适合把一个大包拆到多个发行物里。一般不需要，但知道它存在能少踩「为什么没 <code>__init__</code> 也能 import」的困惑。</p>
+<h2 id="5-函数进阶">5. 函数进阶</h2>
+<h3 id="5-1-args-与-kwargs">5.1 <code>*args</code> 与 <code>**kwargs</code></h3>
+<p>用来接收任意数量的位置参数和关键字参数，常写「包装函数」或「透传参数」时用到。</p>
+<pre><code class="language-python">def f(a, *args, **kwargs):
+    print("固定参数 a =", a)
+    print("多余位置参数 args =", args)      # 元组
+    print("多余关键字参数 kwargs =", kwargs)  # 字典
+
+f(1, 2, 3, name="x", age=20)
+# a=1, args=(2, 3), kwargs={'name': 'x', 'age': 20}
+</code></pre><h3 id="5-2-闭包">5.2 闭包</h3>
+<p>内层函数捕获外层函数的变量，即使外层已返回，变量仍被保留。这是装饰器的底层基础。</p>
+<pre><code class="language-python">def make_counter():
+    count = 0
+    def counter():
+        nonlocal count      # 声明要改写外层变量，否则会被当成新建局部变量
+        count += 1
+        return count
+    return counter          # 返回函数对象本身
+
+c = make_counter()
+print(c(), c())             # 1 2 —— count 在闭包里被保留
+</code></pre><h3 id="5-3-装饰器-decorator">5.3 装饰器 <code>@decorator</code></h3>
+<p>装饰器本质是「接收一个函数、返回一个新函数」的高阶函数，用 <code>@</code> 语法糖套在原函数上。</p>
+<pre><code class="language-python">import time
+import functools
+
+def timer(func):
+    @functools.wraps(func)   # 关键：拷回原函数的 __name__/__doc__，调试和文档都靠它
+    def wrapper(*args, **kwargs):
+        start = time.perf_counter()
+        result = func(*args, **kwargs)
+        print(f"{func.__name__} 耗时 {time.perf_counter() - start:.4f}s")
+        return result
+    return wrapper
+
+@timer                  # 等价于：slow = timer(slow)
+def slow(n):
+    time.sleep(n)
+    return "done"
+
+slow(0.1)
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">带参数的装饰器</span></div><div class="co-body"><p>  需要配置的装饰器，多包一层：<code>def retry(times=3): def deco(f): ... return deco</code>。
+  可叠加多个：<code>@timer @retry(3) def f(): ...</code>，执行顺序是自下而上包裹。</p>
+</div></div><h2 id="6-生成器与迭代器">6. 生成器与迭代器</h2>
+<p>迭代器是「按需吐元素」的对象，核心协议是 <code>__iter__</code> / <code>__next__</code>。生成器是用 <code>yield</code> 写出的迭代器语法糖，最大价值是<strong>惰性</strong>：不一次性占用全部内存。</p>
+<pre><code class="language-python"># 生成器函数：遇到 yield 暂停并返回，下次从中断处继续
+def fib(n):
+    a, b = 0, 1
+    for _ in range(n):
+        yield a          # 每要一个才算一个
+        a, b = b, a + b
+
+for x in fib(5):
+    print(x)             # 0 1 1 2 3
+
+# 生成器表达式：和列表推导类似，但不立刻展开
+squares = (x * x for x in range(10))   # 注意是 () 不是 []
+print(next(squares))    # 0，惰性取第一个
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">何时用生成器</span></div><div class="co-body"><p>  处理大文件、流式数据、无限序列时，生成器把内存占用从 O(n) 压到 O(1)。
+  需要随机访问或多次遍历时，才用列表（生成器只能遍历一次，用完即尽）。</p>
+</div></div><h2 id="7-asyncio-异步并发">7. asyncio：异步并发</h2>
+<code>async/await</code> 用**协程**实现单线程内的并发 IO。遇到 <code>await</code> 时把控制权交还事件循环去跑别的协程——适合「等网络/等磁盘」密集的场景。<pre><code class="language-python">import asyncio
+
+async def fetch(name, delay):
+    print(f"{name} 开始")
+    await asyncio.sleep(delay)   # 模拟 IO 等待；等待期间事件循环去跑别的协程
+    print(f"{name} 结束")
+    return name
+
+async def main():
+    # gather 并发跑多个协程，总耗时取最长的那个，而非相加
+    results = await asyncio.gather(
+        fetch("A", 1), fetch("B", 2), fetch("C", 1)
+    )
+    print(results)
+
+asyncio.run(main())   # 启动事件循环
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">async 不是万能加速</span></div><div class="co-body"><p>  异步只加速 IO 等待，对 CPU 密集计算毫无帮助（还被 GIL 锁住）。
+  真要并行算，用 <code>asyncio.to_thread(...)</code> 或 <code>concurrent.futures.ProcessPoolExecutor</code> 多进程。
+  另外：<code>await</code> 只能在 <code>async def</code> 里用；忘了 <code>await</code> 拿到的是协程对象而非结果。</p>
+</div></div><h2 id="8-高频标准库">8. 高频标准库</h2>
+<p>不用装任何第三方包就能解决大量日常需求。</p>
+<ul>
+<li><strong><code>pathlib</code></strong>：面向对象的路径处理，跨平台且可读，取代老旧的 <code>os.path</code>。<pre><code class="language-python">  from pathlib import Path
+  p = Path("data") / "a.txt"     # 路径拼接，自动用对分隔符
+  p.write_text("hello")          # 写文件一行搞定
+  for f in p.parent.glob("*.txt"):
+      print(f.name)
+  </code></pre></li>
+<li><strong><code>dataclasses</code></strong>：少写样板代码的「数据类」，自动生成 <code>__init__</code>/<code>__repr__</code> 等。<pre><code class="language-python">  from dataclasses import dataclass, field
+
+  @dataclass
+  class Point:
+      x: int
+      y: int
+      tags: list[str] = field(default_factory=list)  # 用 default_factory 避免可变默认陷阱
+  </code></pre></li>
+<li><strong><code>collections</code></strong>：<code>Counter</code>（计数）、<code>defaultdict</code>（缺省值字典）、<code>deque</code>（双端队列）。<pre><code class="language-python">  from collections import Counter
+  print(Counter("abracadabra")["a"])   # 5
+  </code></pre></li>
+<li><strong><code>itertools</code></strong>：<code>groupby</code>、<code>chain</code>、<code>islice</code> 等惰性迭代工具，处理大序列神器。</li>
+<li><strong><code>contextlib</code></strong>：<code>contextmanager</code> 装饰器把函数变 <code>with</code> 上下文管理器。<pre><code class="language-python">  from contextlib import contextmanager
+  @contextmanager
+  def tag(name):
+      print(f"&lt;{name}&gt;")
+      yield
+      print(f"&lt;/{name}&gt;")
+  </code></pre></li>
+<li><strong><code>enum</code></strong>：用 <code>Enum</code>/<code>IntEnum</code> 取代魔法字符串，可读性 + 类型安全双赢。</li>
+</ul>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">可变默认参数陷阱</span></div><div class="co-body">  <pre><code class="language-python">  def f(x=[]):          # 默认列表在函数定义时只创建一次，被所有调用共享
+      x.append(1)
+      return x
+  print(f())  # [1]
+  print(f())  # [1, 1]  出乎意料！
+  </code></pre>
+<p>  正确写法是用 <code>None</code> 作哨兵或用 <code>field(default_factory=list)</code>：
+  <pre><code class="language-python">  def f(x=None):
+      x = x or []
+      x.append(1)
+      return x
+  </code></pre>
+  根因是 1.1 节的『可变对象共享』：可变默认参数在函数定义期绑定一次，所有调用共享同一对象。</p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">不要在生产用 eval/exec</span></div><div class="co-body"><p>  第 5 节装饰器、<code>exec</code> 求值表达式等只在可信输入下安全。任何来自用户/网络的字符串
+  喂给 <code>eval</code>/<code>exec</code>/<code>pickle.loads</code> 都是远程代码执行漏洞。表达式求值请走安全的解析器（如 <code>ast.literal_eval</code> 或专用库）。</p>
+</div></div><h2 id="9-适用与不适用场景">9. 适用与不适用场景</h2>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>是否适合 Python</th>
+<th>理由</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>数据/AI/脚本/Web 后端</td>
+<td>非常适合</td>
+<td>生态成熟、开发快、库多</td>
+</tr>
+<tr>
+<td>极致延迟/高频交易</td>
+<td>不太适合</td>
+<td>GIL 与解释开销</td>
+</tr>
+<tr>
+<td>移动端/前端</td>
+<td>不适合</td>
+<td>不是它的主场</td>
+</tr>
+<tr>
+<td>CPU 密集且要榨干多核</td>
+<td>谨慎</td>
+<td>需要多进程或下沉到 C 扩展</td>
+</tr>
+</tbody></table>
+<h2 id="小结">小结</h2>
+<ul>
+<li>Python 一切皆对象，变量是名字绑定；分清可变/不可变是避开大多数隐形 bug 的起点。</li>
+<li>类型注解是可选「静态护栏」，配合 <code>Protocol</code>/<code>TypeVar</code>/<code>Union</code> 表达更精确契约，运行时零开销。</li>
+<li>虚拟环境隔离依赖：<code>venv</code> 轻量，<code>uv</code> 极快且自带锁；<code>pyproject.toml</code> 是现代项目的单一事实来源。</li>
+<li>模块导入靠 <code>sys.path</code>；循环导入用延迟导入或 <code>TYPE_CHECKING</code> 化解；相对/绝对导入要分清。</li>
+<li>函数进阶靠 <code>*args/**kwargs</code>、闭包、<code>@decorator</code>；生成器用 <code>yield</code> 惰性省内存；异步只加速 IO 等待。</li>
+<li>日常最高频标准库：<code>pathlib</code>/<code>dataclasses</code>/<code>collections</code>/<code>itertools</code>/<code>contextlib</code>/<code>enum</code>。</li>
+<li>永远警惕『可变默认参数陷阱』和『eval 注入』——它们是可变对象共享与动态执行的直白后果。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  核心语法吃透后，下一步是用 Python 搭一个真实服务。
+  <strong>FastAPI</strong> 把类型注解、异步、Pydantic 校验串成一套开箱即用的 Web 框架，见 Python 分类下一篇。
+  要把它变得可维护、可交付，则看 Python 工程化那篇。</p>
+</div></div><h2 id="延伸阅读">延伸阅读</h2>
+<ul>
+<li><a href="https://docs.python.org/3/library/typing.html">Python 官方文档：typing</a> — 类型注解权威参考</li>
+<li><a href="https://docs.astral.sh/uv/">uv 官方文档</a> — 现代包与项目管理器</li>
+<li><a href="https://peps.python.org/pep-0621/">PEP 621 – pyproject.toml 标准元数据</a> — 项目声明的规范</li>
+<li><a href="https://docs.python.org/3/tutorial/modules.html">Python 模块与包文档</a> — import 机制详解</li>
+<li><a href="https://docs.python.org/3/library/asyncio.html">asyncio 官方文档</a> — 异步并发权威入口</li>
+<li><a href="https://realpython.com/primer-on-python-decorators/">Real Python：Decorators 指南</a> — 装饰器深入实战</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <span></span>
+    <a class="art-pagerLink art-pagerRight" href="python-fastapi.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">FastAPI 实战：路由、依赖注入、校验、异步与 OpenAPI</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

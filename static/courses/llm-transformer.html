@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Transformer 原理：注意力、位置编码与 KV Cache · AgentLab</title>
+  <meta name="description" content="拆解自注意力数学、多头机制、绝对/相对位置编码、Decoder-only 架构与 KV Cache 的关系，给出可运行的自注意力计算骨架，并讲清这些原理如何决定推理延迟与显存，面向有经验的开发者。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="Transformer 原理：注意力、位置编码与 KV Cache · AgentLab"/>
+  <meta property="og:description" content="拆解自注意力数学、多头机制、绝对/相对位置编码、Decoder-only 架构与 KV Cache 的关系，给出可运行的自注意力计算骨架，并讲清这些原理如何决定推理延迟与显存，面向有经验的开发者。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#llm">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🧠</span>
+        <span class="art-moduleName">LLM大模型</span>
+        <span class="art-diff">高级</span>
+        <span class="art-dur">40 分钟</span>
+      </div>
+      <h1 class="art-title">Transformer 原理：注意力、位置编码与 KV Cache</h1>
+      <p class="art-desc">拆解自注意力数学、多头机制、绝对/相对位置编码、Decoder-only 架构与 KV Cache 的关系，给出可运行的自注意力计算骨架，并讲清这些原理如何决定推理延迟与显存，面向有经验的开发者。</p>
+      <div class="art-tags"><span class="art-tag">#Transformer</span><span class="art-tag">#注意力机制</span><span class="art-tag">#位置编码</span><span class="art-tag">#Decoder-only</span><span class="art-tag">#KV Cache</span></div>
+    </div>
+    <div class="prose"><h1>Transformer 原理：注意力、位置编码与 KV Cache</h1>
+<p>你用 LLM 时，所有『为什么它这么慢/这么吃显存/这么贵』的疑问，答案都藏在 Transformer 的结构里。这篇不堆公式推导，而是<strong>把原理翻译成工程直觉</strong>：注意力怎么算、位置怎么编码、为什么现代大模型几乎都是 Decoder-only、KV Cache 凭什么让自回归生成变快——以及它们如何直接决定你线上的延迟与显存账单。</p>
+<h2 id="1-为什么是-transformer-而不是-rnn">1. 为什么是 Transformer 而不是 RNN</h2>
+<p>RNN 是『逐 token 串行、隐状态传递』，两个问题：无法并行训练、长程依赖会衰减。Transformer 用**自注意力（Self-Attention）**一次性让序列里每个位置『看到』所有位置，天然可并行，且任意两 token 之间路径长度为 1。</p>
+<p>代价：注意力对长度为 n 的序列，计算与显存复杂度都是 <strong>O(n²)</strong>——这正是长上下文贵、KV Cache 必须存在的根本原因。记住这个 O(n²)，后面所有工程决策都源于它。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">O(n²) 是万恶之源也是机会所在</span></div><div class="co-body"><p>  注意力复杂度 O(n²) 意味着：上下文翻倍，注意力的计算量和显存（含 KV Cache）约翻四倍。
+  所有『长上下文优化』（分块、稀疏注意力、KV Cache 量化、窗口注意力）本质上都在和这个平方较劲。</p>
+</div></div><h2 id="2-自注意力机制-一步步算">2. 自注意力机制：一步步算</h2>
+<p>自注意力的输入是一组 token 向量。每个位置产出三个向量：</p>
+<ul>
+<li><strong>Q（Query）</strong>：『我在找什么』；</li>
+<li><strong>K（Key）</strong>：『我能提供什么』；</li>
+<li><strong>V（Value）</strong>：『我实际携带的信息』。</li>
+</ul>
+<p>计算分四步：</p>
+<ol>
+<li>每个 Q 与所有 K 做点积，得到『匹配分数』；</li>
+<li>除以 √d_k 缩放（防止点积过大导致 softmax 梯度消失）；</li>
+<li>对分数做 softmax，得到『注意力权重』（非负、和为 1）；</li>
+<li>用权重对 V 加权求和，得到该位置的新表示。</li>
+</ol>
+<p>矩阵形式：<code>Attention(Q,K,V) = softmax(QKᵀ / √d_k) V</code>。</p>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">缩放 √d_k 不是玄学</span></div><div class="co-body"><p>  点积的方差随维度 d_k 增长；不缩放，softmax 会进入梯度极小的饱和区，训练不动。
+  除以 √d_k 把方差拉回 1，是工程上『能让模型训起来』的关键一步，务必保留。</p>
+</div></div><h2 id="3-可运行骨架-自注意力-纯-numpy">3. 可运行骨架：自注意力（纯 NumPy）</h2>
+<p>下面用 NumPy 写一个单头自注意力，逐行对应上面的四步，方便你建立数值直觉：</p>
+<pre><code class="language-py"># attention.py —— 单头自注意力的最小可运行实现（教学用）
+import numpy as np
+
+def softmax(x: np.ndarray) -&gt; np.ndarray:
+    # 减最大值防溢出：exp 大数会溢出 inf，减去每行最大值不改变结果
+    x = x - np.max(x, axis=-1, keepdims=True)
+    e = np.exp(x)
+    return e / np.sum(e, axis=-1, keepdims=True)
+
+def self_attention(X: np.ndarray, Wq, Wk, Wv) -&gt; np.ndarray:
+    # X: (n, d_model)  n 个 token，每个 d_model 维
+    Q = X @ Wq          # (n, d_k)
+    K = X @ Wk          # (n, d_k)
+    V = X @ Wv          # (n, d_v)
+
+    # 步骤 2+3：分数 → 缩放 → softmax（权重）
+    scores = Q @ K.T / np.sqrt(Q.shape[-1])   # (n, n) 每个位置对其他位置的注意力
+    weights = softmax(scores)                 # 每行和为 1
+
+    # 步骤 4：对 V 加权求和，得到新表示
+    return weights @ V                        # (n, d_v)
+
+# 演示：3 个 token，维度 4
+np.random.seed(0)
+n, d = 3, 4
+X = np.random.randn(n, d)
+Wq = np.random.randn(d, d); Wk = np.random.randn(d, d); Wv = np.random.randn(d, d)
+out = self_attention(X, Wq, Wk, Wv)
+print('输出形状:', out.shape)          # (3, 4)
+print('注意力是双向的: 每个 token 都看到了全部 3 个 token')
+</code></pre><p>运行：<code>pip install numpy</code> 后 <code>python attention.py</code>。注意这里每个位置都『看到了全部位置』——这是<strong>双向</strong>注意力，适合理解（如 BERT 的 Encoder）。但生成式模型不能这么干，见第 5 节。</p>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">教学实现别上生产</span></div><div class="co-body"><p>  上面的 O(n²) 纯 NumPy 实现只为建立直觉，没做因果掩码、没批处理、没 GPU。
+  真实推理请用框架（PyTorch/TF）或推理引擎（vLLM），并开启 KV Cache，否则线上慢到不可用。</p>
+</div></div><h2 id="4-多头注意力与位置编码">4. 多头注意力与位置编码</h2>
+<h3 id="4-1-多头-multi-head">4.1 多头（Multi-Head）</h3>
+<p>单头只能关注一种『关系模式』。多头把 Q/K/V 拆成 h 组，各自在不同子空间算注意力，再把结果拼回——让模型同时关注『语法依赖』『指代』『语义相似』等不同维度。公式：<code>MultiHead = Concat(head₁…head_h) Wᴼ</code>，其中 <code>head_i = Attention(XWq_i, XWk_i, XVv_i)</code>。</p>
+<p>工程含义：头的维度 <code>d_k = d_model / h</code>。头数越多，并行表达能力越强，但计算和显存线性增加。</p>
+<h3 id="4-2-位置编码-没有它-序列是无序词袋">4.2 位置编码：没有它，序列是无序词袋</h3>
+<p>注意力本身<strong>对位置不敏感</strong>——把输入打乱，输出只是对应重排，模型不知道词序。必须显式注入位置信息。</p>
+<table>
+<thead>
+<tr>
+<th>编码方式</th>
+<th>思路</th>
+<th>优点</th>
+<th>局限</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>绝对位置（正弦/学习式）</td>
+<td>给第 i 个位置一个固定/可学的向量，加到 token 嵌入上</td>
+<td>简单</td>
+<td>难外推到训练时未见过的更长序列</td>
+</tr>
+<tr>
+<td>相对位置（如 T5/Transformer-XL）</td>
+<td>在注意力分数里直接建模『i 与 j 的相对距离』</td>
+<td>更贴注意力本质</td>
+<td>实现复杂</td>
+</tr>
+<tr>
+<td>RoPE（旋转位置编码）</td>
+<td>把位置信息『旋转』进 Q/K 的维度，让内积天然含相对位置</td>
+<td>外推性好、成主流</td>
+<td>需特殊处理长上下文扩展</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">为什么 RoPE 成现代标配</span></div><div class="co-body"><p>  RoPE 把位置编码变成『对 Q、K 向量做旋转』，使得 Q_i 与 K_j 的内积只取决于相对距离 (j−i)。
+  这让模型天然具备外推性，且和 KV Cache 兼容（K 一旦算出，旋转就固定了）。GPT/LLaMA/Qwen 等
+  Decoder-only 模型普遍采用，理解它有助于你读懂长上下文扩展技术（如 NTK-aware 缩放）。</p>
+</div></div><h2 id="5-decoder-only-生成式模型的统一选择">5. Decoder-only：生成式模型的统一选择</h2>
+<p>现代大模型（GPT、LLaMA、Qwen、Claude、Gemini 的文本部分）几乎都是 <strong>Decoder-only</strong>：</p>
+<ul>
+<li><strong>Encoder-only</strong>（如 BERT）：双向注意力，擅长『理解/分类/检索』，不擅长生成。</li>
+<li><strong>Encoder-Decoder</strong>（如 T5、初代 BART）：编码端双向、解码端因果，适合『序列到序列』（翻译、摘要）。</li>
+<li><strong>Decoder-only</strong>：只有因果（Causal）注意力——<strong>每个位置只能看到自己和之前的位置</strong>，看不到未来。</li>
+</ul>
+<p>因果注意力靠**下三角掩码（causal mask）**实现：把 <code>QKᵀ</code> 矩阵里『未来位置』的分数设为 −∞，softmax 后权重为 0。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">因果掩码是生成的前提</span></div><div class="co-body"><p>  生成时必须『看不到未来』，否则就是作弊（用答案生成答案）。因果掩码让第 t 个 token 的表示
+  只依赖 1..t，这正好是自回归生成 <code>P(x_t | x_{&lt;t})</code> 的数学形式。所有 Decoder-only 模型的
+  prompt 处理与逐 token 生成，都建立在这张下三角掩码上。</p>
+</div></div><h2 id="6-kv-cache-让自回归生成变快的命门">6. KV Cache：让自回归生成变快的命门</h2>
+<p>不加缓存时，生成第 t 个 token 要把 1..t 全部 token 重新算一遍注意力——复杂度 O(t²) 每步，总生成 O(n³)。<strong>KV Cache</strong> 的做法：把历史 token 已经算好的 K、V 缓存下来，每生成一个新 token 只算『新 token 的 Q』与『缓存的 K/V』做注意力，历史不再重算。</p>
+<pre><code>第 1 步：输入 [x1]，算 K1 V1，缓存；用 Q1 对 KV 缓存注意力 → 预测 x2
+第 2 步：输入 [x1, x2]，但 K1 V1 直接取缓存，只算 x2 的 Q2 K2 V2
+         KV 缓存变为 [K1,K2],[V1,V2]；Q2 对它们注意力 → 预测 x3
+... 每步只算『一个新 token』的 QKV，历史 O(1) 复用
+</code></pre><p>代价：KV Cache 占用<strong>显存</strong>，且随上下文长度 n 和批大小 b 线性增长。显存 ≈ <code>2 × b × n × h_layers × d_head × bytes</code>。这正是『长上下文费显存』的来源，也是 KV Cache 量化、分页（PagedAttention）、窗口缓存等优化的发力点。</p>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">KV Cache 是显存大头</span></div><div class="co-body"><p>  很多人以为模型权重最占显存，其实长上下文 + 大批量下，KV Cache 常超过权重。
+  估算部署显存时务必把 KV Cache 算进去，否则并发一上来就 OOM。vLLM 的 PagedAttention
+  正是为缓解『KV 碎片与峰值』而生。</p>
+</div></div><h2 id="7-原理如何决定推理表现">7. 原理如何决定推理表现</h2>
+<p>把上面的点连成工程直觉：</p>
+<table>
+<thead>
+<tr>
+<th>原理</th>
+<th>决定的工程现象</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>O(n²) 注意力</td>
+<td>上下文越长越慢越贵；长上下文优化都在此发力</td>
+</tr>
+<tr>
+<td>因果掩码</td>
+<td>必须逐 token 自回归生成，首 token 延迟（TTFT）受 prefill 长度影响</td>
+</tr>
+<tr>
+<td>KV Cache</td>
+<td>生成快但吃显存；批量/长窗口受显存约束</td>
+</tr>
+<tr>
+<td>RoPE</td>
+<td>决定长上下文外推能力；扩展窗口常配合 NTK 缩放</td>
+</tr>
+<tr>
+<td>Decoder-only</td>
+<td>统一了『理解+生成』，但分类任务需额外头或 prompt 技巧</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">prefill 与 decode 两段论</span></div><div class="co-body"><p>  一次生成分两段：prefill（把整段 prompt 算成 KV Cache，决定 TTFT）和 decode（逐 token 生成，
+  决定生成速度 TPS）。优化要分开看：长 prompt 卡 prefill，长生成卡 decode 的 KV 显存与带宽。</p>
+</div></div><h2 id="8-完整-decoder-only-层结构">8. 完整 Decoder-only 层结构</h2>
+<p>单个 Transformer 块（block）把前面几节拼起来。一个现代 Decoder-only 层通常包含：</p>
+<ol>
+<li><strong>Token+位置嵌入</strong>：词表查表得到向量，叠加位置编码（RoPE 直接旋进 Q/K）；</li>
+<li><strong>因果多头自注意力</strong>（带 KV Cache）；</li>
+<li><strong>残差连接</strong>：<code>x = x + Attention(norm(x))</code>，防止深层梯度消失；</li>
+<li><strong>RMSNorm / LayerNorm</strong>：在子层前后做归一化，稳定训练；</li>
+<li><strong>前馈网络（FFN）</strong>：对每个位置独立做的两层 MLP（常是『升维→激活→降维』，如 SwiGLU）；</li>
+<li>再次残差：<code>x = x + FFN(norm(x))</code>。</li>
+</ol>
+<p>整个模型 = 嵌入 + N 个这样的块堆叠 + 最后的 <strong>lm_head</strong>（把隐藏向量投影回词表，输出下一个 token 的概率）。</p>
+<pre><code class="language-py"># transformer_block.py —— 一个 Decoder-only 块的极简可运行示意（教学，非生产）
+import numpy as np
+
+def rms_norm(x: np.ndarray, g: np.ndarray, eps=1e-6) -&gt; np.ndarray:
+    # RMSNorm：除以均方根，再乘可学习缩放 g；比 LayerNorm 少一次均值计算，训练更快
+    rms = np.sqrt(np.mean(x**2, axis=-1, keepdims=True) + eps)
+    return x / rms * g
+
+def ffn(x: np.ndarray, w1, w2) -&gt; np.ndarray:
+    # 升维→激活→降维；真实常用 SwiGLU，这里用 ReLU 简化示意
+    return (np.maximum(0, x @ w1)) @ w2
+
+def decoder_block(X, Wq, Wk, Wv, Wo, g1, g2, ff1, ff2, causal_mask):
+    # 子层 1：因果多头注意力 + 残差
+    normed = rms_norm(X, g1)
+    attn = self_attention_masked(normed, Wq, Wk, Wv, Wo, causal_mask)  # 见第 6 节因果掩码
+    X = X + attn                       # 残差连接：保留原始信息流
+    # 子层 2：FFN + 残差
+    normed2 = rms_norm(X, g2)
+    X = X + ffn(normed2, ff1, ff2)
+    return X
+
+# 注：self_attention_masked 是『第 3 节 self_attention』加一步因果掩码（未来位置设 -inf）
+# 真实训练请用框架（PyTorch）+ 混合精度 + 分布式；此示意只为看清数据流与残差。
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">残差连接是深模型能训起来的关键</span></div><div class="co-body"><p>  没有残差，几十层网络的梯度在反向传播时要么消失要么爆炸。残差让信息有『高速直通路』，
+  层深才能堆到几十上百层——今天的大模型动辄数十层，全靠它。看结构时优先确认『残差在哪加』。</p>
+</div></div><h2 id="9-训练目标-下一-token-预测">9. 训练目标：下一 token 预测</h2>
+<p>预训练目标极简却强大：<strong>给定前文，预测下一个 token</strong>，即最大化 <code>P(x_t | x_{&lt;t})</code>。所有参数（嵌入、注意力、FFN、lm_head）都靠这个 cross-entropy 损失端到端学出来。</p>
+<ul>
+<li><strong>自监督</strong>：训练数据不需要人工标注，『把文本自己当标签』，所以能吃海量语料；</li>
+<li><strong>涌现能力</strong>：参数/数据/算力到一定规模后，复杂能力（推理、few-shot）『突然出现』；</li>
+<li><strong>与推理的关系</strong>：你线上每次调用，模型就是在做『这个条件概率下的采样』，温度/top-p 控制随机性。</li>
+</ul>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">理解目标帮你调采样参数</span></div><div class="co-body"><p>  知道模型在输出『概率分布』，就明白：temperature 高=更随机发散、低=更确定保守；
+  top_p 截断长尾噪声。生成代码用低温、头脑风暴用高温——这些旋钮的数学意义都源于此目标。</p>
+</div></div><h2 id="10-现代注意力变体-mqa-与-gqa">10. 现代注意力变体：MQA 与 GQA</h2>
+<p>标准多头注意力给每个头独立的 K/V，KV Cache 随头数线性涨显存。两个变体专为降显存：</p>
+<ul>
+<li><strong>MQA（Multi-Query）</strong>：所有头<strong>共享同一份 K/V</strong>，KV Cache 直接除以头数，显存骤降，但表达力略损；</li>
+<li><strong>GQA（Grouped-Query）</strong>：折中——把头分成若干组，每组共享一份 K/V。显存降了，质量几乎不掉。</li>
+</ul>
+<p>GQA 已成为 Llama 2/3、Qwen、GLM 等的主流选择，是『长上下文 + 大并发』能落地的重要一环。</p>
+<pre><code class="language-py"># 思路示意：GQA 把头分组，组内共享 K/V（以官方实现为准，API 易变）
+# 假设 32 个头分成 8 组 → 只需算 8 份 K/V，KV Cache 缩为 1/4
+# 伪代码骨架：
+#   group = head_id // (num_heads / num_kv_groups)
+#   K_shared = K_groups[group]; V_shared = V_groups[group]
+#   score = Q[head_id] @ K_shared.T / sqrt(d)
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">MQA/GQA 影响跨模型显存估算</span></div><div class="co-body"><p>  同样参数量，用了 GQA 的模型比标准 MHA 在同等并发下省数倍 KV 显存。
+  对比部署成本时，别只看参数量，要看它用 MHA 还是 GQA——这直接决定你能扛多少并发。</p>
+</div></div><h2 id="11-flashattention-与-scaling-law-思路">11. FlashAttention 与 Scaling Law 思路</h2>
+<ul>
+<li><strong>FlashAttention</strong>：不把巨大的 <code>n×n</code> 注意力矩阵全量存进显存，而是『分块计算 + 在线 softmax』，把显存从 O(n²) 降到接近 O(n)，同时因显存带宽更优而更快。它是现代推理引擎（vLLM、TensorRT-LLM）的提速底座。理解它你就能读懂『为什么同样模型在不同引擎上速度差几倍』。</li>
+<li><strong>Scaling Law（规模定律）</strong>：在『算力和数据充足』前提下，模型损失随参数量/数据量/算力呈幂律下降。它解释了『为什么堆大模型有效』，也提示『小模型靠堆数据有上限』。但 Scaling Law 是『平均趋势』，不保证单任务最优——这又回到第 5 篇的『横评才是终审』。</li>
+</ul>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">关注推理引擎而非只关注模型</span></div><div class="co-body"><p>  同一个权重，在原生 PyTorch、vLLM、TensorRT-LLM、llama.cpp 上吞吐可差数倍，
+  核心就在 FlashAttention、PagedAttention、量化等优化。选型时把『模型+引擎』当作整体评估。</p>
+</div></div><h2 id="12-对比-三类架构选型">12. 对比：三类架构选型</h2>
+<table>
+<thead>
+<tr>
+<th>架构</th>
+<th>代表</th>
+<th>擅长</th>
+<th>不擅长</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Encoder-only</td>
+<td>BERT</td>
+<td>分类、检索、NER</td>
+<td>长文本生成</td>
+</tr>
+<tr>
+<td>Encoder-Decoder</td>
+<td>T5/BART</td>
+<td>翻译、摘要（seq2seq）</td>
+<td>开放式对话（不如 Decoder-only 通用）</td>
+</tr>
+<tr>
+<td>Decoder-only</td>
+<td>GPT/LLaMA/Qwen</td>
+<td>通用生成、对话、Agent</td>
+<td>纯分类效率略低（但靠 prompt 可补）</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">为什么 Decoder-only 赢下了时代</span></div><div class="co-body"><p>  它用同一套自回归目标统一了『续写、对话、工具调用、甚至分类』，规模化（scaling law）收益最高，
+  且和 KV Cache、RLHF 后训练链条天然契合。所以今天的基座几乎清一色 Decoder-only。</p>
+</div></div><h2 id="13-常见原理误区与踩坑">13. 常见原理误区与踩坑</h2>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">以为注意力是免费的</span></div><div class="co-body"><p>  注意力 O(n²) 在长上下文下极其昂贵。盲目塞长文档进 prompt 会同时拉高延迟、显存、成本。
+  长文档优先走 RAG（检索片段）而非整篇塞进去——用『检索降 n』换『注意力降 n²』。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">长上下文窗口不等于能用好</span></div><div class="co-body"><p>  模型标称 128k 窗口，但『有效上下文』往往短于标称（中间丢失/ Lost in the Middle）。
+  关键信息放首尾、用结构化分隔、必要时做分块摘要，比单纯依赖大窗口更稳。</p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">忽视 KV Cache 显存导致 OOM</span></div><div class="co-body"><p>  部署时只按模型权重估显存，忽略 KV Cache，并发稍高就 OOM 崩服。务必按
+  <code>峰值并发 × 平均长度</code> 估算 KV 显存，或用 PagedAttention/量化缓压。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">理解原理帮你读报错</span></div><div class="co-body"><p>  看到『prompt 超长被截断』知道是上下文上限；看到『生成越往后越慢』知道 KV 在涨；
+  看到『长文后半段答非所问』想到 Lost in the Middle。原理是排障的地图。</p>
+</div></div><h2 id="14-长上下文扩展-rope-缩放思路">14. 长上下文扩展：RoPE 缩放思路</h2>
+<p>标称上下文窗口常靠『位置编码外推』临时撑大。RoPE 模型要在比训练时更长的序列上工作，需对旋转频率做调整，常见两类：</p>
+<ul>
+<li><strong>位置插值（PI）/ NTK-aware 缩放</strong>：把训练位置区间『压缩』到新窗口内（或平滑调整底数），让长序列的位置仍能映射到模型学过的旋转区间，避免位置越界导致注意力错乱。</li>
+<li><strong>动态/ YaRN 类</strong>：按长度动态选择缩放策略，兼顾长短期表现。</li>
+</ul>
+<p>理解这一点，你就能读懂厂商『支持 128k/200k 上下文』背后的代价——外推越长，越容易在超长区间出现质量衰减（Lost in the Middle），且 KV Cache 显存随之平方上涨。所以『窗口大』不等于『随便塞』。</p>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">窗口扩展有质量代价</span></div><div class="co-body"><p>  外推到远超训练长度的窗口，注意力在远端位置易失准。生产上：关键信息靠结构（首尾、分块、
+  检索）兜底，而不是迷信标称窗口。部署长上下文前，用你的真实长文任务实测有效利用率。</p>
+</div></div><h2 id="15-工程速查表">15. 工程速查表</h2>
+<p>把原理映射到排障动作，存一份随身速查：</p>
+<table>
+<thead>
+<tr>
+<th>现象</th>
+<th>原理根因</th>
+<th>应对</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>长 prompt 首字慢</td>
+<td>prefill 算全部 KV，O(n²)</td>
+<td>精简 prompt / 分块 / 流式尽早吐字</td>
+</tr>
+<tr>
+<td>生成越往后越慢/显存涨</td>
+<td>KV Cache 随长度线性增长</td>
+<td>限制最大生成长度 / KV 量化 / PagedAttention</td>
+</tr>
+<tr>
+<td>长文后半答非所问</td>
+<td>Lost in the Middle + 窗口外推衰减</td>
+<td>关键信息放首尾、RAG 检索、分段摘要</td>
+</tr>
+<tr>
+<td>并发一高就 OOM</td>
+<td>KV Cache 显存未计入</td>
+<td>按并发×长度估 KV 显存、GQA、量化</td>
+</tr>
+<tr>
+<td>换模型后效果大变</td>
+<td>词表/位置编码/训练分布不同</td>
+<td>重做 prompt 适配与横评，不照搬</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">原理是排障地图</span></div><div class="co-body"><p>  你不需要背下每一篇论文，但要知道『慢/贵/错』背后对应哪块结构。
+  这张表就是把 Transformer 原理翻译成『线上出问题往哪看』的索引。</p>
+</div></div><h2 id="16-术语速记">16. 术语速记</h2>
+<ul>
+<li><strong>Self-Attention</strong>：自注意力，让每个位置看到全部位置，O(n²) 复杂度。</li>
+<li><strong>Causal Mask</strong>：因果掩码，下三角矩阵，强制『只看过去』，自回归生成的前提。</li>
+<li><strong>RoPE</strong>：旋转位置编码，把位置信息旋进 Q/K，外推性好、兼容 KV Cache。</li>
+<li><strong>KV Cache</strong>：缓存历史 K/V，把生成从 O(n³) 降到接近 O(n²)，但吃显存。</li>
+<li><strong>GQA/MQA</strong>：分组/多查询注意力，共享 K/V 以省 KV 显存，长上下文部署关键。</li>
+<li><strong>RMSNorm/残差</strong>：归一化与残差连接，让几十层网络能稳定训练。</li>
+<li><strong>lm_head</strong>：末尾投影层，把隐藏向量映射回词表，输出下一 token 概率。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">记住 O(n²) 与 KV Cache 两条主线</span></div><div class="co-body"><p>  整篇原理可压缩成两句话：注意力 O(n²) 决定了长上下文的慢与贵；
+  KV Cache 用缓存把生成变快却转移成显存瓶颈。抓住这两条，其余都是细节。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>Transformer 靠自注意力让任意两 token 路径长度为 1，代价是 O(n²) 复杂度。</li>
+<li>自注意力 = QKᵀ缩放softmax 后对 V 加权；多头在不同子空间并行捕捉关系。</li>
+<li>位置编码补全『词序』信息；RoPE 因外推性与 KV 兼容成为 Decoder-only 主流。</li>
+<li>Decoder-only + 因果掩码 = 自回归生成；是当今基座的统一架构。</li>
+<li>KV Cache 用『缓存历史 K/V』把生成从 O(n³) 降到接近 O(n²)，但显存随 n、批大小线性涨。</li>
+<li>红线：长上下文别无脑塞（用 RAG）、注意 Lost in the Middle、部署必算 KV 显存、教学代码不上生产。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  懂了模型怎么『算』，下一个问题是它怎么『切输入』——token 数量直接决定上面所有成本。
+  见 <strong>分词器</strong>：BPE/WordPiece、token 计费与跨语言差异。</p>
+</div></div><h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>论文 <em>Attention Is All You Need</em>（Transformer 原作，公式与架构源头）</li>
+<li>论文 <em>Root Mean Square Layer Normalization</em> / RoPE 原作（旋转位置编码）</li>
+<li>vLLM 文档 PagedAttention（KV Cache 显存优化，以官方为准）</li>
+<li>HuggingFace Transformers 文档：位置编码、因果掩码的实现细节</li>
+<li><em>Lost in the Middle</em> 论文：长上下文有效利用率的实证</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="llm-models.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">主流模型选型：能力矩阵与决策树</span></a>
+    <a class="art-pagerLink art-pagerRight" href="llm-tokenizer.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">分词器：BPE/WordPiece、计费与跨语言</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,224 @@
+---
+title: 降级与容错：让 Agent 服务稳如老狗
+description: 从超时、限流、重试到兜底话术与优雅降级，讲透 LLM/Agent 产品在生产环境下的容错设计，给出可运行的重试、熔断、降级骨架与踩坑清单。
+category: 产品工程
+order: 4
+difficulty: 进阶
+duration: 22 分钟
+tags: [降级, 容错, 重试, 熔断, 兜底, 超时]
+date: 2026-07-29
+---
+
+# 降级与容错：让 Agent 服务稳如老狗
+
+M 系列我们跑通了 Agent 的能力，但『能跑』和『能扛生产流量』是两回事。LLM 上游动不动就超时、限流、抽风；工具依赖的三方 API 也会挂。这一篇只讲一件事：**当依赖不可用时，怎么让用户体面地拿到结果，而不是白屏或 500**。
+
+要点：超时控制、限流应对、重试退避、兜底话术、优雅降级。全部给可运行骨架。
+
+## 1. 为什么 Agent 特别需要容错
+
+传统 Web 服务调数据库、缓存，延迟和错误相对可控。Agent 链路上多了一层 LLM 上游，故障特征更恶劣：
+
+- **延迟长且抖动大**：一次生成可能 1 秒也可能 30 秒，超时阈值极难拍脑袋定；
+- **限流频繁**：厂商按 RPM/TPM 限流，突发流量直接 429；
+- **部分失败常见**：工具 A 成功、工具 B 超时，整条链路不能因此全崩；
+- **结果非确定性**：即使成功，质量也可能退化，需要『降级到更稳的模型或规则』。
+
+<Callout type="note" title="核心心智">
+  容错的目标不是『永远成功』，而是『**在任何依赖失败时，系统都给出一个可接受的结果或清晰的状态**』。
+  可接受 ≠ 完美：兜底话术、缓存旧答案、走规则分支，都比 500 强。
+</Callout>
+
+## 2. 超时：给每一次调用上锁
+
+没有超时的 LLM 调用是事故源头——一个挂起的长连接会占满你的并发池，连锁拖垮整服务。
+
+```ts
+// withTimeout.ts —— 给任意 Promise 套一层超时（AbortController 优先）
+export async function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  onTimeout?: () => T
+): Promise<T> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    // 关键：把 AbortSignal 传给底层 fetch / SDK，才能真正中断网络请求
+    const result = await Promise.race([
+      promise,
+      new Promise<never>((_, reject) =>
+        ctrl.signal.addEventListener('abort', () => reject(new Error('TIMEOUT')))
+      ),
+    ]);
+    return result;
+  } catch (err: any) {
+    if (err.message === 'TIMEOUT' && onTimeout) return onTimeout(); // 超时兜底
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+```
+
+<Callout type="tip" title="超时值要分级">
+  不要全局一个 30s。读缓存/查库用 500ms；LLM 首字用 10s；整条 Agent 链路用 60s。
+  越靠近用户、越轻量的环节，超时越短，把失败快速暴露给降级逻辑。
+</Callout>
+
+## 3. 重试与退避：别把限流打成雪崩
+
+429（限流）和 5xx 大多可重试，但**盲目重试会把上游打崩**。
+
+```ts
+// retry.ts —— 指数退避 + 抖动，只对可重试错误重试
+async function retry<T>(
+  fn: () => Promise<T>,
+  opts: { max?: number; base?: number; shouldRetry?: (e: any) => boolean } = {}
+): Promise<T> {
+  const max = opts.max ?? 3;
+  const base = opts.base ?? 400;
+  for (let i = 0; i < max; i++) {
+    try {
+      return await fn();
+    } catch (e: any) {
+      const retryable = opts.shouldRetry ? opts.shouldRetry(e) : e?.status >= 500;
+      if (!retryable || i === max - 1) throw e;
+      // 指数退避 + 随机抖动：避免所有请求同时重试造成惊群
+      const wait = base * 2 ** i + Math.random() * base;
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+  throw new Error('unreachable');
+}
+
+const isRetryable = (e: any) =>
+  e?.status === 429 || e?.status >= 500 || e?.code === 'ECONNRESET';
+```
+
+<Callout type="warn" title="429 看 Retry-After">
+  限流响应里通常带 `Retry-After` 头。优先按它等，而不是自己算退避——它才是上游希望你等的真实时长。
+  不读它而硬退避，等于无视上游的限流节拍。
+</Callout>
+
+## 4. 熔断：上游真挂了就别再打
+
+重试解决『偶发抖动』，但上游**持续挂**时，重试只会堆积请求、耗尽资源。这时需要熔断器（Circuit Breaker）：失败率超阈值就『开路』，直接快速失败并走降级，给上游喘息时间。
+
+```ts
+// circuit-breaker.ts —— 最简状态机：CLOSED → OPEN → HALF_OPEN
+class CircuitBreaker {
+  private failures = 0;
+  private state: 'CLOSED' | 'OPEN' | 'HALF_OPEN' = 'CLOSED';
+  private openedAt = 0;
+  constructor(
+    private threshold = 5,      // 连续失败多少次后开路
+    private cooldown = 10_000   // 开路后多久尝试半开
+  ) {}
+
+  async run<T>(fn: () => Promise<T>, fallback: () => T): Promise<T> {
+    if (this.state === 'OPEN') {
+      // 冷却期内直接降级，不碰上游
+      if (Date.now() - this.openedAt < this.cooldown) return fallback();
+      this.state = 'HALF_OPEN'; // 冷却结束，放一个探活请求
+    }
+    try {
+      const r = await fn();
+      this.failures = 0;
+      this.state = 'CLOSED'; // 成功 → 恢复
+      return r;
+    } catch {
+      this.failures++;
+      if (this.failures >= this.threshold) {
+        this.state = 'OPEN';
+        this.openedAt = Date.now();
+      }
+      return fallback(); // 任何失败都走兜底
+    }
+  }
+}
+```
+
+<Callout type="danger" title="降级不等于静默吞错">
+  兜底分支必须**显式、可观测**：记录一次 `fallback_triggered` 事件，并尽量给用户可行动的信息。
+  静默返回空会让问题在监控里消失，直到业务方投诉才发现上游早挂了。
+</Callout>
+
+## 5. 兜底话术与优雅降级
+
+当 LLM 或工具不可用，最差的体验是白屏；较好的体验是『明确告知 + 提供次优解』。
+
+| 级别 | 触发 | 用户感知 | 示例 |
+|------|------|----------|------|
+| 同模型重试 | 偶发超时/429 | 几乎无感 | 自动退避重试 |
+| 降级模型 | 主模型持续 5xx | 稍慢/略简 | 切到小模型生成 |
+| 缓存/规则兜底 | 上游全挂 | 答案可能不个性 | 返回最近相似问答或固定模板 |
+| 明确失败 | 实在无解 | 透明可控 | 『服务繁忙，已为你保留输入，稍后重试』 |
+
+```ts
+// fallback.ts —— 按依赖健康度选择降级分支
+async function answer(userInput: string) {
+  // 1) 先查缓存：命中直接返回，零依赖最稳
+  const cached = await cache.get(hash(userInput));
+  if (cached) return { text: cached, source: 'cache' };
+
+  // 2) 走主链路，套熔断；熔断/超时/限流都落到 fallback
+  return breaker.run(
+    () => callPrimaryLLM(userInput),
+    () => ({
+      text: '当前服务较忙，已为你保留问题，可稍后重试；或查看常见问题。',
+      source: 'fallback', // 标记来源，便于监控区分质量
+    })
+  );
+}
+```
+
+<Callout type="tip" title="保留用户输入">
+  降级时务必把用户的原始输入存下来或回显，避免『白打字』。一句『已为你保留，稍后重试』
+  的成本极低，却能极大缓解挫败感——这是产品体验层面的容错，不是纯技术。
+</Callout>
+
+## 6. 对比：重试 vs 熔断 vs 降级
+
+| 机制 | 解决什么 | 误用后果 |
+|------|----------|----------|
+| 超时 | 防止单请求挂死占资源 | 阈值过低误杀正常慢请求 |
+| 重试退避 | 消化偶发抖动/限流 | 无退避则打崩上游、放大故障 |
+| 熔断 | 上游持续故障时止损 | 阈值太高等于没熔断 |
+| 降级 | 任何失败都给可接受结果 | 兜底话术过于笼统丧失信任 |
+
+## 7. 踩坑清单
+
+<Callout type="danger" title="重试没区分错误类型">
+  把 4xx（参数错、鉴权失败）也重试是浪费：它们不会因重试成功。只对 429/5xx/网络错重试，
+  业务 4xx 应直接失败并告警。
+</Callout>
+
+<Callout type="warn" title="全局共享一个熔断计数是坑">
+  多个工具/模型共用一个 breaker，会导致『工具 A 挂了连累工具 B 也被熔断』。
+  按上游依赖维度（每个 LLM 厂商、每个三方 API）各自建 breaker。
+</Callout>
+
+<Callout type="warn" title="降级分支自己也别挂">
+  兜底话术若来自另一个也会挂的服务，就成了『降级链雪崩』。兜底应尽量本地、无外部依赖
+  （静态模板、本地缓存、纯规则），否则它会在最需要时失效。
+</Callout>
+
+<Callout type="tip" title="给降级加指标">
+  监控 `fallback_rate`（降级占比）、`retry_count`、`circuit_open_seconds`。
+  它们是最早暴露上游劣化的信号，比用户投诉早几小时。
+</Callout>
+
+## 小结
+
+- LLM/Agent 上游延迟长、限流频、部分失败常见，容错不是可选项。
+- 超时分级上锁，重试只看可重试错误并退避+抖动，熔断在持续故障时止损。
+- 降级给用户『可接受的次优解 + 透明状态』，务必保留输入并标记来源。
+- 红线：别把 4xx 也重试、别全局共享 breaker、兜底分支自身要无外部依赖、降级必须可观测。
+
+## 延伸阅读 / 参考
+
+- Microsoft *Patterns for_resilient_ systems*：重试/熔断/舱壁的经典模式说明
+- Resilience4j / Opossum（Node 熔断库）官方文档：生产级熔断实现
+- OpenAI 限流与 `Retry-After` 文档：429 的正确应对方式（以官方为准）
+- Google SRE *Handling Overload*：退避与抖动的工程依据
+- 本系列 `product-multi-tenant`（隔离）、`deploy-monitor`（降级指标监控）

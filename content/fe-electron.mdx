@@ -1,0 +1,183 @@
+---
+title: Electron 桌面应用开发
+description: 理解 Electron 主进程/渲染进程模型、IPC 通信、与 Node 集成方式，写出可运行骨架并掌握打包与常见坑。
+category: 前端工程
+order: 5
+difficulty: 进阶
+duration: 25 分钟
+tags: [Electron, 桌面应用, IPC, 跨平台]
+date: 2026-07-29
+---
+
+# Electron 桌面应用开发
+
+Electron 让你用前端技术（HTML/CSS/JS）构建**原生桌面应用**：VS Code、Figma、Slack 桌面端都基于它。本质是把 Chromium 浏览器和 Node.js 运行时打包进一个二进制，于是同一套 Web 代码既能渲染界面，又能调用操作系统能力（读文件、起本地服务、操作剪贴板）。
+
+<Callout type="note" title="核心模型一句话">
+  Electron = 一个常驻的 **Node.js 主进程**（管窗口和系统）+ 一个或多个 **Chromium 渲染进程**（画界面）。
+  两者不能直接共享变量，一切跨边界通信走 **IPC**。理解这三样就理解了 Electron。
+</Callout>
+
+## 1. 主进程与渲染进程
+
+- **主进程（Main）**：应用入口，跑在 Node 环境，能 `require` 任何 Node 模块、用 `electron` 的 `BrowserWindow` 创建窗口、访问文件系统。
+- **渲染进程（Renderer）**：每个窗口里的网页，本质是一个浏览器标签页，默认**不能直接**用 Node API（出于安全）。
+
+```js
+// main.js —— 主进程：创建窗口并加载页面
+const { app, BrowserWindow } = require('electron');
+const path = require('node:path');
+
+function createWindow() {
+  const win = new BrowserWindow({
+    width: 1000,
+    height: 700,
+    // preload 脚本在渲染进程加载前注入，是主/渲染之间受控的桥
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+    },
+  });
+
+  win.loadFile('index.html'); // 加载渲染进程页面
+}
+
+// app 就绪后再建窗口，避免某些平台初始化未完成
+app.whenReady().then(() => {
+  createWindow();
+  app.on('activate', () => BrowserWindow.getAllWindows().length === 0 && createWindow());
+});
+```
+
+<Callout type="warn" title="别开 nodeIntegration">
+  旧教程会让你设 `nodeIntegration: true` 让渲染进程直接用 Node，这是严重安全隐患：
+  一旦页面被注入恶意脚本，攻击者可任意读写你电脑文件。现代 Electron 默认关闭它，
+  正确做法是用 preload + contextBridge 暴露最小接口。
+</Callout>
+
+## 2. IPC：进程间通信
+
+渲染进程想做系统级操作（如读文件），必须请主进程代劳，双方用 `ipcMain` / `ipcRenderer` 收发消息。
+
+```js
+// preload.js —— 受控暴露接口给渲染进程（只暴露需要的能力，不暴露整个 Node）
+const { contextBridge, ipcRenderer } = require('electron');
+
+contextBridge.exposeInMainWorld('api', {
+  // 渲染进程调用 window.api.readFile('x.txt') → 主进程真正读文件
+  readFile: (p) => ipcRenderer.invoke('file:read', p),
+});
+```
+
+```js
+// main.js 中补充 —— 主进程监听并真正执行
+const { ipcMain } = require('electron');
+const fs = require('node:fs/promises');
+
+ipcMain.handle('file:read', async (_event, filePath) => {
+  // 这里跑在 Node 环境，能安全用 fs；记得校验路径、处理异常
+  return await fs.readFile(filePath, 'utf-8');
+});
+```
+
+```js
+// 渲染进程（渲染进程里的普通 JS）—— 通过桥调用
+const text = await window.api.readFile('README.md');
+console.log(text);
+```
+
+<Callout type="tip" title="invoke/handle 是异步成对">
+  `ipcRenderer.invoke` 对应 `ipcMain.handle`，返回 Promise，能拿到返回值，最适合「请求-响应」。
+  纯通知（无需返回）用 `send` / `on` 即可。具体 API 以官方文档为准，版本间有差异。
+</Callout>
+
+## 3. 与 Node 集成
+
+渲染进程默认无 Node 环境，集成方式有三层，安全等级从高到低：
+
+1. **preload + contextBridge（推荐）**：只暴露白名单函数，最安全。
+2. **preload 里直接用 Node**：preload 本身在 Node 环境，可 `require`，再桥接给页面。
+3. **开启 nodeIntegration（不推荐）**：渲染进程裸用 Node，仅限完全可信的本地内容。
+
+```js
+// 常见场景：渲染进程需要绝对路径，由主进程通过 preload 算好再给
+contextBridge.exposeInMainWorld('env', {
+  getAppPath: () => ipcRenderer.invoke('app:path'),
+});
+```
+
+## 4. 打包发布
+
+主流工具 **electron-builder** 与 **electron-forge**，把源码 + Electron 运行时打成平台安装包（`.dmg`/`.exe`/`.AppImage`）。
+
+```jsonc
+// package.json（electron-builder 配置片段）
+{
+  "scripts": {
+    "pack": "electron-builder" // 打包当前平台；加 --mac/--win/--linux 指定
+  },
+  "build": {
+    "appId": "com.example.desktop",
+    "productName": "MyApp",
+    "files": ["dist/**/*", "main.js", "preload.js"],
+    "mac": { "target": "dmg" },
+    "win": { "target": "nsis" }
+  }
+}
+```
+
+<Callout type="note" title="先 build 前端再打包">
+  渲染进程通常是 Vite/Webpack 产物。正确顺序：先用前端工具 `build` 出 `dist/`，
+  再跑 electron-builder 把 `dist` + 主进程脚本一起打包。CI 里常分两步。
+</Callout>
+
+## 5. 方案对比
+
+| 维度 | Electron | Tauri |
+|------|----------|-------|
+| 内核 | 内置 Chromium + Node | 系统 WebView + Rust |
+| 包体积 | 大（~100MB+） | 小（~10MB） |
+| 语言 | JS/TS 一把梭 | 前端 + Rust 后端 |
+| 生态成熟度 | 极高（VS Code 级） | 较新但增长快 |
+| 系统资源 | 较高 | 较低 |
+
+<Callout type="note" title="Electron 还是 Tauri">
+  要快速复用现有 Web 栈、生态稳，选 Electron；要小体积、低内存、且愿写 Rust，选 Tauri。
+  性能不敏感的内部工具，Electron 上手成本更低。
+</Callout>
+
+## 6. 常见坑
+
+<Callout type="danger" title="远程内容别开 Node 桥">
+  若渲染进程加载了第三方远程网页，绝不能给它 `nodeIntegration` 或暴露敏感 IPC。
+  远程页一旦被 XSS，等于把本机文件系统交出去。只加载可信本地页面。
+</Callout>
+
+<Callout type="warn" title="主进程阻塞卡 UI">
+  主进程是单线程，若在里面跑重 CPU 计算（大文件解析、压缩）会卡住所有窗口。
+  重活放到 Worker 线程、子进程，或交给渲染进程用 Web Worker。
+</Callout>
+
+<Callout type="warn" title="自动更新与签名">
+  桌面应用分发涉及代码签名（否则 Windows 报毒、macOS 拦截）和自动更新（electron-updater）。
+  这两条上线前必做，否则用户装不上、也收不到更新。以官方文档为准，平台政策常变。
+</Callout>
+
+## 小结
+
+- Electron 由主进程（Node，管窗口/系统）和渲染进程（Chromium，画界面）组成，跨边界只走 IPC。
+- 安全集成靠 `preload` + `contextBridge` 暴露白名单接口，别开 `nodeIntegration`。
+- 打包用 electron-builder/forge，注意先 build 前端产物；上线要处理签名与自动更新。
+- 体积/资源吃紧可考虑 Tauri，但 Electron 生态最成熟、复用 Web 成本最低。
+
+<Callout type="note" title="下一步">
+  想用 Vue 顺手搭界面，可结合 **fe-nuxtjs** 的组件写法；
+  要跨到小程序/移动端，则看 **fe-uniapp** 的跨端思路。
+</Callout>
+
+## 延伸阅读
+
+- Electron 官方文档：https://www.electronjs.org/docs/latest
+- 安全指南（必读）：https://www.electronjs.org/docs/latest/tutorial/security
+- electron-builder：https://www.electron.build
+- contextBridge API：https://www.electronjs.org/docs/latest/api/context-bridge
+- Tauri（轻量替代）：https://tauri.app

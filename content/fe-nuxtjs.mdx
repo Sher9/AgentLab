@@ -1,0 +1,198 @@
+---
+title: Nuxt3 全栈框架实战
+description: 理解 Nuxt3 的文件路由、服务端能力、状态管理与模块生态，写出可运行的全栈骨架，并掌握常见坑。
+category: 前端工程
+order: 4
+difficulty: 进阶
+duration: 25 分钟
+tags: [Nuxt3, Vue, 全栈, SSR]
+date: 2026-07-29
+---
+
+# Nuxt3 全栈框架实战
+
+如果你已经写过 Vue3 单页应用（SPA），会遇到两个现实问题：一是对 SEO 不友好（首屏是空 `div`，搜索引擎抓不到内容），二是搞服务端接口得单独起一个 Node 服务。Nuxt3 把这两件事收进了同一个工程——它基于 Vue3，但额外提供了**文件路由、SSR/SSG、内置服务端（Nitro）**，让前端工程师用一套代码同时产出页面和后端 API。
+
+<Callout type="note" title="适用边界">
+  Nuxt3 适合「需要 SSR/SEO 的内容站、带轻量后端的中后台、想用 Vue 但懒得拼 SSR 脚手架」的场景。
+  纯内部工具、对首屏无要求的 SPA，用 Vite + Vue 就够了，上 Nuxt 反而多一层心智负担。
+</Callout>
+
+## 1. 为什么是 Nuxt3 而不是手写 SSR
+
+手写 Vue SSR 要自己接 `createSSRApp`、`renderToString`、客户端 hydration、路由匹配……样板代码多且易错。Nuxt3 用**约定优于配置**把这些收口：
+
+- 页面按 `pages/` 目录结构自动生成路由；
+- 服务端接口按 `server/` 目录自动挂载；
+- 构建产物由 Nitro 引擎统一打包，可部署到 Node、Serverless、边缘（Edge）等多种目标。
+
+<Callout type="tip" title="Nitro 是核心引擎">
+  Nuxt3 的 server 能力来自 **Nitro**。它把 `server/` 下的文件编译成高度优化的 serverless 函数，
+  一份代码能跑在 Node、Deno、Cloudflare Workers、Vercel 等环境。理解 Nitro 才能玩转 Nuxt 的部署。
+</Callout>
+
+## 2. 文件路由：目录即路由
+
+在 `pages/` 下放 `.vue` 文件，Nuxt 自动生成 `vue-router` 配置，无需手写路由表。
+
+```
+├─ pages/
+│  ├─ index.vue          →  /
+│  ├─ about.vue          →  /about
+│  └─ users/
+│     ├─ index.vue       →  /users
+│     └─ [id].vue        →  /users/:id  动态参数
+```
+
+```vue
+<!-- pages/users/[id].vue —— 动态路由 + 数据获取 -->
+<script setup lang="ts">
+// useRoute 拿到路由参数；Nuxt 自动注入，无需 import 路由实例
+const route = useRoute();
+const userId = computed(() => route.params.id);
+
+// useFetch 是 Nuxt 的 SSR 友好请求封装：
+// 服务端渲染时就在服务端把数据拉好，直接进 HTML，避免客户端再发一次请求
+const { data: user, error } = await useFetch(`/api/users/${userId.value}`);
+</script>
+
+<template>
+  <main v-if="user">
+    <h1>{{ user.name }}</h1>
+    <p>ID：{{ userId }}</p>
+  </main>
+  <p v-else-if="error">加载失败</p>
+</template>
+```
+
+<Callout type="warn" title="动态参数永远是字符串">
+  `route.params.id` 是字符串类型。需要数字时务必 `Number()` 转换或校验，
+  直接拿去做数组下标 / 数据库 id 容易出隐蔽 bug。
+</Callout>
+
+## 3. 服务端能力：server 目录
+
+`server/api/` 下的文件自动成为 HTTP 接口；`server/routes/` 可匹配更复杂的路径（含通配）。
+
+```ts
+// server/api/users/[id].ts —— 一个 SSR 期间被 pages 调用的接口
+// 用 defineEventHandler 声明处理函数；event 里能拿请求信息
+export default defineEventHandler(async (event) => {
+  const id = getRouterParam(event, 'id'); // 取动态段
+  if (!id) {
+    throw createError({ statusCode: 400, statusMessage: '缺少 id' });
+  }
+
+  // 真实场景这里查数据库；这里用假数据演示返回结构
+  const user = { id, name: `用户${id}` };
+
+  // 返回对象会被自动序列化为 JSON
+  return { ok: true, data: user };
+});
+```
+
+```ts
+// server/routes/health.get.ts —— 健康检查（文件名后缀 .get 限定方法）
+export default defineEventHandler(() => ({ status: 'up' }));
+```
+
+<Callout type="note" title="服务端代码不进浏览器包">
+  `server/` 下的代码只在 Node/边缘运行时执行，不会被打进客户端 bundle，
+  因此这里可以安全地写密钥、直连数据库等逻辑。
+</Callout>
+
+## 4. 状态管理：useState 与 Pinia
+
+Nuxt 内置 `useState`，是一个**跨组件、且 SSR 安全**的响应式状态（本质是带服务端初始化的 `ref`）。
+
+```ts
+// composables/useCounter.ts —— 组合式函数，自动成为全局可用的 useCounter()
+export const useCounter = () => {
+  // 第一个参数是全局 key；同 key 的 useState 在组件间共享同一份状态
+  return useState('counter', () => 0);
+};
+```
+
+```vue
+<!-- 任意组件调用，状态共享 -->
+<script setup lang="ts">
+const count = useCounter();
+</script>
+<template>
+  <button @click="count++">点了 {{ count }} 次</button>
+</template>
+```
+
+复杂场景（多模块、持久化、devtools）仍可用 **Pinia**，Nuxt 官方提供了 `@pinia/nuxt` 模块自动接入，用法与纯 Vue 项目一致。
+
+## 5. 模块生态：modules
+
+Nuxt 的扩展靠「模块」在构建期注入插件、自动导入、配置。常见如 `@nuxtjs/tailwindcss`、`@pinia/nuxt`、`@nuxtjs/axios`。
+
+```ts
+// nuxt.config.ts —— 通过 modules 数组启用生态模块
+export default defineNuxtConfig({
+  modules: [
+    '@nuxtjs/tailwindcss', // 自动接尾风样式
+    '@pinia/nuxt',         // 接入 Pinia 状态库
+  ],
+  devtools: { enabled: true },
+});
+```
+
+<Callout type="tip" title="优先用官方/社区模块">
+  重复造轮子前先查 Nuxt 模块市场。模块通常已处理好 SSR 兼容、自动导入等坑，
+  比自己手搓插件稳得多。版本敏感 API 以官方文档为准。
+</Callout>
+
+## 6. 方案对比
+
+| 维度 | Nuxt3 | Next.js | Vite + Vue SPA |
+|------|-------|---------|----------------|
+| 语言生态 | Vue | React | Vue |
+| SSR/SSG | ✅ 内置 | ✅ 内置 | ❌ 需手搓 |
+| 服务端 API | ✅ Nitro | ✅ Route Handlers | ❌ 另起服务 |
+| 路由方式 | 文件约定 | 文件约定 | 手写配置 |
+| 部署目标 | Node/Serverless/边缘 | Node/Serverless | 静态托管 |
+
+<Callout type="note" title="Nuxt 还是 Next">
+  选 Nuxt 还是 Next 基本取决于团队押 Vue 还是 React，两者能力对等。
+  只有纯前端、不需要 SSR，才考虑裸 Vite SPA。
+</Callout>
+
+## 7. 常见坑
+
+<Callout type="danger" title="客户端才干的事别写在顶层">
+  访问 `window`、`document`、`localStorage` 的代码不能写在 `setup` 顶层或 `server/`，
+  否则 SSR 阶段（Node 无 DOM）直接崩。需用 `onMounted` 包裹，或用 `import.meta.client` 判断。
+</Callout>
+
+<Callout type="warn" title="自动导入别乱用">
+  Nuxt 会自动导入 `ref`、`useFetch` 等，但**跨文件声明的组合式函数、常量要放在 `composables/` 才自动导入**，
+  否则容易出现「本地能跑、构建找不到」的情况。
+</Callout>
+
+<Callout type="warn" title="hydration 不匹配">
+  服务端渲染的 HTML 与客户端首屏 DOM 不一致会报 hydration 错。
+  典型诱因：用了 `Date.now()`、`Math.random()` 等随渲染变化的値。状态初始化要保持确定性。
+</Callout>
+
+## 小结
+
+- Nuxt3 = Vue3 + 文件路由 + Nitro 服务端，一套工程同时出页面和 API。
+- 路由靠 `pages/` 目录约定；接口靠 `server/api` 与 `server/routes`；共享状态用 `useState` 或 Pinia。
+- 扩展靠模块（`modules` 数组），部署由 Nitro 统一编译到多种目标。
+- 红线：浏览器 API 不可在 SSR 顶层调用、自动导入要放对目录、避免 hydration 不一致。
+
+<Callout type="note" title="下一步">
+  同属全栈框架思路，React 阵营看 **fe-nextjs（App Router）**；
+  若要做桌面端，可继续 **fe-electron**；做跨端小程序则看 **fe-uniapp**。
+</Callout>
+
+## 延伸阅读
+
+- Nuxt 官方文档：https://nuxt.com/docs （路由、server、部署以官方为准）
+- Nitro 引擎文档：https://nitro.build
+- Pinia 状态管理：https://pinia.vuejs.org
+- Nuxt 模块市场：https://nuxt.com/modules
+- Vue3 组合式 API（前置基础）：https://vuejs.org/guide/extras/composition-api-faq.html

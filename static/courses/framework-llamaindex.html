@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>LlamaIndex 实战：数据框架视角的 RAG 与 Agent · AgentLab</title>
+  <meta name="description" content="从数据框架视角拆解 LlamaIndex 的索引/查询/检索/合成链路，对比 LangChain 与原生实现，给出伪代码骨架与踩坑，标注 API 易变、以官方文档为准。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="LlamaIndex 实战：数据框架视角的 RAG 与 Agent · AgentLab"/>
+  <meta property="og:description" content="从数据框架视角拆解 LlamaIndex 的索引/查询/检索/合成链路，对比 LangChain 与原生实现，给出伪代码骨架与踩坑，标注 API 易变、以官方文档为准。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#frameworks">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🏗️</span>
+        <span class="art-moduleName">框架</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">35 分钟</span>
+      </div>
+      <h1 class="art-title">LlamaIndex 实战：数据框架视角的 RAG 与 Agent</h1>
+      <p class="art-desc">从数据框架视角拆解 LlamaIndex 的索引/查询/检索/合成链路，对比 LangChain 与原生实现，给出伪代码骨架与踩坑，标注 API 易变、以官方文档为准。</p>
+      <div class="art-tags"><span class="art-tag">#LlamaIndex</span><span class="art-tag">#RAG</span><span class="art-tag">#索引</span><span class="art-tag">#检索</span><span class="art-tag">#Agent</span><span class="art-tag">#数据框架</span></div>
+    </div>
+    <div class="prose"><h1>LlamaIndex 实战：数据框架视角的 RAG 与 Agent</h1>
+<p>很多 Agent 框架的卖点是『编排』（怎么把 LLM、工具、记忆串起来），而 <strong>LlamaIndex</strong> 的起点不同：它把自己定位成<strong>数据框架</strong>——专门解决『把你的私有数据接进来、切成块、编成索引、按需检索、再喂给 LLM 生成』这一整条链路。</p>
+<p>如果你要做的产品核心是『基于文档/知识库回答』，LlamaIndex 的抽象比通用编排框架更对味。这一篇把它讲透：核心概念、索引与查询的原理、与原生/LangChain 的对比、可运行骨架（含坑）、适用边界。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">框架类文章的阅读约定</span></div><div class="co-body"><p>  本文的代码片段是<strong>思路骨架 + 注释</strong>，不是生产级粘贴即用的代码。LlamaIndex 的
+  Python 与 TypeScript 两套 API 迭代极快（模块从 llama_index 到 llama_index.core
+  的迁移就是一例），接口名、import 路径都易变。请一律以官方文档为准，下面标注的
+  版本仅作对照。凡涉及真实接口处，我都标注了版本区间。</p>
+</div></div><h2 id="1-llamaindex-的定位-数据进-答案出">1. LlamaIndex 的定位：数据进、答案出</h2>
+<p>一句话概括 LlamaIndex 的价值：<strong>把『非结构化数据 → 可检索索引 → LLM 可消费上下文』这条流水线标准化</strong>。</p>
+<p>它默认假设你面对的是这样的场景：</p>
+<ul>
+<li>你有一堆 PDF / 网页 / Notion / 数据库里的知识；</li>
+<li>用户提问，你要从中找到相关片段；</li>
+<li>把片段拼进 prompt，让 LLM 基于它们作答（RAG）。</li>
+</ul>
+<p>所以 LlamaIndex 的顶层抽象围绕『数据』展开，而不是围绕『Agent 控制流』。它当然也能做 Agent（后面第 6 节讲），但那是后来长出来的能力，骨子里它还是个数据框架。</p>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">选它的第一性原理</span></div><div class="co-body"><p>  判断该不该用 LlamaIndex，先问：你的产品难点是『检索与数据管线』还是『多步决策编排』？
+  前者——选它；后者——看 LangGraph / AutoGen。两者交集很大，但切入点不同，
+  抽象重心也跟着不同。不要因为『别人都用 LlamaIndex』就上。</p>
+</div></div><h2 id="2-核心概念-从-document-到-response">2. 核心概念：从 Document 到 Response</h2>
+<p>先把整条链路上的关键对象认全，后面代码才不会晕。</p>
+<table>
+<thead>
+<tr>
+<th>概念</th>
+<th>是什么</th>
+<th>类比</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Document</code></td>
+<td>一份原始数据（一个 PDF、一段网页）</td>
+<td>一整本书</td>
+</tr>
+<tr>
+<td><code>Node</code></td>
+<td>Document 切分后的最小单元（chunk）</td>
+<td>书里的一页/一段</td>
+</tr>
+<tr>
+<td><code>Ingestion Pipeline</code></td>
+<td>加载→切分→元数据增强→嵌入 的流水线</td>
+<td>预处理车间</td>
+</tr>
+<tr>
+<td><code>Index</code></td>
+<td>把 Node 组织成可检索结构（向量/树/关键词表）</td>
+<td>书架+目录</td>
+</tr>
+<tr>
+<td><code>Retriever</code></td>
+<td>给定查询，从 Index 召回相关 Node</td>
+<td>查目录取书</td>
+</tr>
+<tr>
+<td><code>Response Synthesizer</code></td>
+<td>把召回的 Node 拼进 prompt，调 LLM 生成答案</td>
+<td>写答案的人</td>
+</tr>
+<tr>
+<td><code>Query Engine</code></td>
+<td>Retriever + Synthesizer 的组合，对外暴露 <code>query()</code></td>
+<td>一个问答接口</td>
+</tr>
+</tbody></table>
+<p>要点：<strong><code>Node</code> 是核心货币</strong>。所有检索、元数据、引用溯源都挂在 Node 上。理解 Node 之后，LlamaIndex 的一切设计都顺了。</p>
+<h2 id="3-原理-索引与查询两条链路">3. 原理：索引与查询两条链路</h2>
+<p>LlamaIndex 把『建索引』和『查索引』分成两条独立链路，理解这点能避开 80% 的困惑。</p>
+<h3 id="3-1-构建链路-build-ingestion">3.1 构建链路（Build / Ingestion）</h3>
+<pre><code>原始数据（PDF/网页/DB）
+   ↓  Reader（数据连接器，LlamaHub 提供上百种）
+Document
+   ↓  Transformer（切分、清洗、抽元数据、去重）
+Node[]
+   ↓  Embedding Model（把每个 Node 文本变成向量）
+Node[].embedding
+   ↓  写入 Index（默认 VectorStoreIndex，存向量）
+向量索引（可持久化到向量库）
+</code></pre><p>这套链路<strong>只需跑一次</strong>（或数据变更时增量跑），产物是索引。它和每次提问无关，所以可以放后台、上缓存、做批处理。</p>
+<h3 id="3-2-查询链路-query">3.2 查询链路（Query）</h3>
+<pre><code>用户问题
+   ↓  问题也做 Embedding
+query_vector
+   ↓  Retriever：在 Index 里按相似度召回 top-k 个 Node
+相关 Node[]
+   ↓  Post-processor（重排、相似度过滤、冗余去重）
+精炼后 Node[]
+   ↓  Synthesizer：拼成 prompt → 调 LLM
+最终答案（可附带引用来源 Node 的 id）
+</code></pre><p>查询链路每次请求跑一遍，延迟主要来自『embedding 一次 + 检索 + 一次 LLM 调用』。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">构建与查询分离的意义</span></div><div class="co-body"><p>  这套分离让你可以独立优化两端：构建端换切分策略、换嵌入模型、换向量库；
+  查询端换检索器、加重排、换合成策略。这正是 LlamaIndex 作为『数据框架』的护城河——
+  每个环节都能单独替换，而不必推翻重来。</p>
+</div></div><h2 id="4-索引类型-别只盯着向量">4. 索引类型：别只盯着向量</h2>
+<code>VectorStoreIndex</code> 最常用，但 LlamaIndex 还提供几种，按数据形态选：<table>
+<thead>
+<tr>
+<th>索引</th>
+<th>适用</th>
+<th>机制</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>VectorStoreIndex</code></td>
+<td>语义检索型问答（最常见）</td>
+<td>向量相似度召回</td>
+</tr>
+<tr>
+<td><code>SummaryIndex</code></td>
+<td>把全部内容顺序喂给 LLM 做摘要</td>
+<td>无检索，顺序拼接</td>
+</tr>
+<tr>
+<td><code>TreeIndex</code></td>
+<td>层次化、需要先总览再下钻</td>
+<td>自底向上建摘要树</td>
+</tr>
+<tr>
+<td><code>KeywordTableIndex</code></td>
+<td>关键词明确、术语表型检索</td>
+<td>关键词→节点映射</td>
+</tr>
+<tr>
+<td><code>KnowledgeGraphIndex</code></td>
+<td>实体关系型问答</td>
+<td>抽取图谱后检索</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">默认未必最优</span></div><div class="co-body"><p>  多数人无脑用 VectorStoreIndex，但当你的问题高度依赖『精确关键词』（如错误码、
+  专有名词）时，<code>KeywordTableIndex</code> 或混合检索（向量+关键词，见 RAG 分类）往往更稳。
+  选索引类型要回到数据形态，而不是『哪个最火』。</p>
+</div></div><h2 id="5-可运行骨架-思路-伪代码">5. 可运行骨架：思路 + 伪代码</h2>
+<p>下面用 Python 风格给出一条最小 RAG 链路的骨架。<strong>注意</strong>：接口名与 import 以官方文档为准，这里标注的是大致版本区间，重点是讲清每一步『为什么』。</p>
+<pre><code class="language-python"># llamaindex_rag_skeleton.py —— 最小 RAG 链路骨架（示意，API 易变）
+# 约定：LlamaIndex Python &gt;= 0.10 的 import 多在 llama_index.core 下
+# 实际请以 pip 安装版本对应的官方文档为准。
+
+# ① 装载数据：用 Reader 把任意源变成 Document
+#    LlamaHub 上有数百种 Reader（PDF/Notion/DB/Slack...）
+from llama_index.core import SimpleDirectoryReader
+
+documents = SimpleDirectoryReader("./data").load_data()
+# ↑ 一个目录下的文件被读成若干 Document；这里不展开具体 Reader 的参数
+
+# ② 切分与增强：把 Document 变成 Node（chunk）
+#    chunk_size / chunk_overlap 决定召回粒度，是 RAG 质量的第一杠杆
+from llama_index.core.node_parser import SentenceSplitter
+
+splitter = SentenceSplitter(chunk_size=512, chunk_overlap=64)
+nodes = splitter.get_nodes_from_documents(documents)
+# ↑ 每个 Node 自带文本、位置信息、可被附加 metadata（来源/页码）
+
+# ③ 建索引：Document/Node → 向量索引
+#    embed_model 与 llm 通过 Settings 全局配置（见下方 Callout）
+from llama_index.core import VectorStoreIndex
+
+index = VectorStoreIndex(nodes)
+# ↑ 这一步内部会对每个 Node 做 embedding 并构建可检索结构
+
+# ④ 持久化：索引只建一次，落盘后复用
+index.storage_context.persist(persist_dir="./storage")
+# ↑ 生产环境务必持久化，别每次请求都重建索引（贵且慢）
+
+# ⑤ 查询：Retriever 召回 + Synthesizer 合成
+query_engine = index.as_query_engine(similarity_top_k=3)
+response = query_engine.query("我们公司的报销流程是什么？")
+print(response.response)        # 最终答案
+print(response.source_nodes)    # 引用来源 Node，可做溯源展示
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">Settings 是全局开关</span></div><div class="co-body"><p>  LlamaIndex 通过 <code>Settings</code> 统一管理 <code>llm</code> 和 <code>embed_model</code>：
+  <code>from llama_index.core import Settings</code> 后设置 <code>Settings.llm = ...</code>、
+  <code>Settings.embed_model = ...</code>。换模型/换嵌入只改这一处，不必改业务代码。
+  但注意：全局单例在多线程/多租户场景要小心——不同租户若要用不同模型，
+  需用更细粒度的 <code>ServiceContext</code>（旧版）或显式传参，避免串号。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">重建索引是常见浪费</span></div><div class="co-body"><p>  新手最容易犯的错误：把 <code>VectorStoreIndex(nodes)</code> 放在每次 HTTP 请求里。
+  索引构建包含全部 Node 的 embedding 调用，成本与时间都随文档量线性暴涨。
+  正确做法：构建与持久化分离，查询时直接 <code>load_index_from_storage</code> 载入。</p>
+</div></div><h3 id="5-1-接向量库做生产级存储">5.1 接向量库做生产级存储</h3>
+<p>内存索引进程一挂就没了，生产应落到专用向量库（pgvector / Qdrant / Chroma / Milvus）。骨架思路：</p>
+<pre><code class="language-python"># llamaindex_vectorstore_skeleton.py —— 接外部向量库（示意）
+from llama_index.core import VectorStoreIndex, StorageContext
+from llama_index.vector_stores.qdrant import QdrantVectorStore
+# ↑ 不同向量库对应不同 vector_stores 子模块，import 以官方文档为准
+
+# ① 把向量库包装成 LlamaIndex 的 VectorStore 抽象
+vector_store = QdrantVectorStore(collection_name="kb", ...)
+storage_context = StorageContext.from_defaults(vector_store=vector_store)
+
+# ② 建索引时把 Node 写入这个 storage_context，即落进 Qdrant
+index = VectorStoreIndex(nodes, storage_context=storage_context)
+
+# ③ 查询时同一 storage_context 直接检索，无需重建
+query_engine = index.as_query_engine(similarity_top_k=3)
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">抽象的价值在此显现</span></div><div class="co-body"><p>  换成 Chroma / pgvector，只需替换第 ① 行的 VectorStore 实现，其余构建/查询代码不变。
+  这就是 LlamaIndex『数据框架』抽象的好处：存储后端可插拔。</p>
+</div></div><h2 id="6-从-rag-到-agent-llamaindex-的工具与-agent">6. 从 RAG 到 Agent：LlamaIndex 的工具与 Agent</h2>
+<p>LlamaIndex 不止能答知识库问题。它的 <code>QueryEngine</code> / <code>Retriever</code> 本身可以包装成<strong>工具</strong>，交给一个 Agent 去编排——比如『先查知识库，再算个数，再写文件』。</p>
+<pre><code class="language-python"># llamaindex_agent_skeleton.py —— 把检索能力变成 Agent 的工具（示意）
+from llama_index.core.agent import ReActAgent
+from llama_index.core.tools import QueryEngineTool
+
+# 把第 5 节的 query_engine 包装成一个工具，供 Agent 调用
+kb_tool = QueryEngineTool(
+    query_engine=query_engine,
+    metadata=...  # 描述这个工具『什么时候该用、参数怎么填』
+)
+
+# ReActAgent：让 LLM 在循环里自主决定『要不要调 kb_tool』
+agent = ReActAgent.from_tools([kb_tool], llm=...)
+result = agent.chat("对比一下我们 Q2 和 Q3 的报销政策变化")
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">与通用 Agent 框架的关系</span></div><div class="co-body"><p>  LlamaIndex 的 Agent 能力偏向『以数据/检索为工具』的场景。若你的 Agent 需要复杂的
+  状态图、多角色编排、人在回路，LangGraph / AutoGen 表达力更强。LlamaIndex 的优势是：
+  检索即工具，开箱即用，和 RAG 管线无缝衔接。</p>
+</div></div><h2 id="7-对比-llamaindex-vs-其他方案">7. 对比：LlamaIndex vs 其他方案</h2>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>核心定位</th>
+<th>擅长</th>
+<th>不擅长</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>原生 SDK（OpenAI 等 + 自己写）</td>
+<td>完全自控</td>
+<td>零抽象、改啥都行、调试透明</td>
+<td>检索/切分/合成全要自己写</td>
+</tr>
+<tr>
+<td>LlamaIndex</td>
+<td>数据框架 / RAG 专精</td>
+<td>索引、检索、数据连接器开箱即用</td>
+<td>复杂控制流编排偏弱</td>
+</tr>
+<tr>
+<td>LangChain</td>
+<td>通用编排胶水</td>
+<td>串各种组件、生态大</td>
+<td>抽象层厚、版本漂移</td>
+</tr>
+<tr>
+<td>LangGraph</td>
+<td>有状态图编排</td>
+<td>多步、分支、人在回路</td>
+<td>学习曲线陡、对纯 RAG 过重</td>
+</tr>
+<tr>
+<td>AutoGen</td>
+<td>多 Agent 对话</td>
+<td>多角色协作、代码执行</td>
+<td>单知识库问答是大炮打蚊子</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">组合而非二选一</span></div><div class="co-body"><p>  实际项目里常见组合：用 LlamaIndex 做检索与知识库工具，把它的 QueryEngine 当工具
+  挂到 LangGraph / AutoGen 的 Agent 上。各取所长，不要用『一个框架解决所有』的思维。</p>
+</div></div><h2 id="8-踩坑与最佳实践">8. 踩坑与最佳实践</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">切分粒度没调就上线</span></div><div class="co-body">  <code>chunk_size</code> 直接决定召回质量：太大→噪声多、塞爆上下文；太小→语义被切碎、召回不全。
+<p>  没有银弹，必须按你的文档形态做实验（看 Ragas 类指标，见评估调优分类）。
+  默认 512/128 只是起点，不是答案。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">盲目重建索引烧钱</span></div><div class="co-body"><p>  见第 5 节。索引一旦建成要持久化，查询走 <code>load_index_from_storage</code>。
+  把构建放进后台任务/CI，而不是请求路径。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">忽略 metadata 过滤</span></div><div class="co-body"><p>  很多知识库有『部门/时间/权限』维度。检索时只用向量相似度，会召回用户无权看的内容。
+  LlamaIndex 支持 Node 级 metadata 与向量库的 metadata 过滤，务必用上——
+  这既是质量也是合规红线（参考记忆系统篇的 userId 隔离思路）。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">没有引用溯源</span></div><div class="co-body"><p>  RAG 的答案必须可溯源。<code>response.source_nodes</code> 直接给了引用，前端应展示『来自哪份文档哪页』。
+  没有溯源的 RAG 在生产里很难建立信任，也难调试『为什么答错』。</p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">API 版本漂移踩雷</span></div><div class="co-body"><p>  LlamaIndex 迭代快，旧教程里的 <code>GPTVectorStoreIndex</code>、<code>ServiceContext</code>、老的 import 路径
+  很多已废弃。抄代码前先确认你的版本，遇到 import 报错先看官方 migration 指南，
+  不要无脑 <code>pip install</code> 最新版就指望旧代码能跑。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">重排放在检索后</span></div><div class="co-body"><p>  向量召回 top-k 往往含噪声。在 Retriever 之后接一个 Cross-Encoder 重排
+  （LlamaIndex 有 <code>RankGPT</code> / <code>CohereRerank</code> 等 Postprocessor），能显著提升命中。
+  这是性价比极高的质量杠杆，详见 RAG 重排序主题。</p>
+</div></div><h2 id="9-增量更新-知识库不是一次建好就完了">9. 增量更新：知识库不是一次建好就完了</h2>
+<p>真实知识库天天在变：新文档进来、旧文档修订、错误内容要删除。每次全量重建索引既慢又烧 embedding 额度。LlamaIndex 提供<strong>增量写入</strong>的思路——只处理变化的部分。</p>
+<pre><code class="language-python"># llamaindex_incremental_skeleton.py —— 增量更新思路（示意）
+# 核心：用稳定可控的 doc_id 做幂等写入，新文档 insert，旧文档先 delete 再 insert
+
+# ① 给每个源文件一个稳定 doc_id（如文件路径哈希），保证可重入
+doc_id = hashlib.md5(file_path.encode()).hexdigest()
+
+# ② 若索引里已有该 doc_id → 先删旧 Node，再插新 Node（覆盖更新）
+if index.docstore.document_exists(doc_id):
+    index.delete_ref_doc(doc_id)          # 移除旧的，避免残留脏 Node
+index.insert_nodes(new_nodes, doc_id=doc_id)
+
+# ③ 删除整份文档也走 delete_ref_doc，而非全量重建
+# index.delete_ref_doc(removed_doc_id)
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">没有 doc_id 的增量是灾难</span></div><div class="co-body"><p>  不指定稳定 doc_id 就反复 insert，同一份文件会在索引里存成多份（每次 embedding 不同），
+  检索时重复命中、答案被自己污染。增量更新的前提是『用稳定 id 标识一份文档』，
+  这是工程上最容易翻车的地方。</p>
+</div></div><h2 id="10-可观测性-用回调把黑盒变白盒">10. 可观测性：用回调把黑盒变白盒</h2>
+<p>RAG 链路长（切分→嵌入→检索→重排→合成），答错了你往往不知道坏在哪一步。LlamaIndex 的 <strong>Callback</strong> 机制能把每一步的耗时、token、输入输出都打出来，是调试与监控的命脉。</p>
+<pre><code class="language-python"># llamaindex_callback_skeleton.py —— 用回调追踪链路（示意）
+from llama_index.core.callbacks import CallbackManager, LlamaDebugHandler
+
+debug_handler = LlamaDebugHandler()          # 收集每步事件
+Settings.callback_manager = CallbackManager([debug_handler])
+
+# ... 跑一次 query ...
+events = debug_handler.get_events()          # 拿到切分/检索/LLM 各步事件
+for e in events:
+    print(e.event_type, e.payload)           # 看哪步慢、哪步召回为空
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">把回调接到观测平台</span></div><div class="co-body"><p>  生产环境别只打 console。把 CallbackManager 接到 LangSmith / Phoenix / OpenTelemetry，
+  把每次 query 的检索结果、token、延迟做成 trace，才能做质量回归与成本看板
+  （详见评估调优分类的可观测主题）。没有 trace 的 RAG 系统，出了问题只能靠猜。</p>
+</div></div><h2 id="11-适用与不适用">11. 适用与不适用</h2>
+<p><strong>适用：</strong></p>
+<ul>
+<li>产品核心是『基于私有知识库问答/检索』；</li>
+<li>数据源多样（PDF/网页/Notion/DB），需要现成连接器；</li>
+<li>想要开箱即用的索引、检索、合成，不想从零写；</li>
+<li>把检索能力作为工具挂到更大 Agent 里。</li>
+</ul>
+<p><strong>不适用：</strong></p>
+<ul>
+<li>核心难点是复杂多步决策/状态机编排（看 LangGraph）；</li>
+<li>需要多个角色 Agent 对话协作（看 AutoGen）；</li>
+<li>团队对抽象层零容忍、要完全可控可调试（用原生 SDK）；</li>
+<li>极简单次任务，引入框架反而重。</li>
+</ul>
+<h2 id="小结">小结</h2>
+<ul>
+<li>LlamaIndex 是<strong>数据框架</strong>：标准化『数据 → 索引 → 检索 → 合成』链路，而非通用编排框架。</li>
+<li>核心货币是 <code>Node</code>：切分、元数据、引用溯源都挂在它上面。</li>
+<li>构建链路与查询链路分离：索引只建一次并持久化，查询才走检索+LLM。</li>
+<li>索引不止向量一种，按数据形态选；检索后加重排是性价比最高的质量杠杆。</li>
+<li>它能做 Agent，但强项是以检索为工具；复杂编排交给 LangGraph/AutoGen，组合使用。</li>
+<li>红线：切分粒度要调、索引要持久化、metadata 过滤保合规、答案要溯源、API 以官方文档为准。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  如果检索后的『多步编排』才是你的难点，接着看 <strong>framework-langgraph</strong>（状态图编排）
+  与 <strong>framework-autogen</strong>（多 Agent 对话）；若想了解 LlamaIndex 在整个框架版图里的位置，
+  回看 <strong>m3-frameworks</strong> 选型对比。</p>
+</div></div><h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>LlamaIndex 官方文档（core 概念、索引类型、Reader/LlamaHub，以官方为准，API 易变）</li>
+<li>LlamaIndex Python <code>VectorStoreIndex</code> / <code>Settings</code> 用法（注意版本区间与 import 路径）</li>
+<li>LlamaIndex 向量库集成（pgvector / Qdrant / Chroma / Milvus 的 StorageContext 接法）</li>
+<li>RAG 分类相关：切分、向量化、混合检索、重排序（与本篇互补，深做质量）</li>
+<li>论文 <em>Retrieval-Augmented Generation for Knowledge-Intensive NLP</em>（RAG 范式起点）</li>
+<li>LangChain / LangGraph / AutoGen 官方文档（横向对比，确定编排类框架边界）</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="framework-langgraph.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">LangGraph 编排：把 Agent 显式建模成状态图</span></a>
+    <a class="art-pagerLink art-pagerRight" href="framework-autogen.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">AutoGen 实战：多 Agent 对话与代码执行</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

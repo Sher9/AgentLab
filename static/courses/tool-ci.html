@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>CI/CD 基础 · AgentLab</title>
+  <meta name="description" content="掌握 GitHub Actions 流水线、缓存、矩阵与制品，理解持续集成与持续交付的门禁逻辑，给出可运行工作流骨架与踩坑清单。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="CI/CD 基础 · AgentLab"/>
+  <meta property="og:description" content="掌握 GitHub Actions 流水线、缓存、矩阵与制品，理解持续集成与持续交付的门禁逻辑，给出可运行工作流骨架与踩坑清单。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#tools">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🛠️</span>
+        <span class="art-moduleName">开发工具</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">23 分钟</span>
+      </div>
+      <h1 class="art-title">CI/CD 基础</h1>
+      <p class="art-desc">掌握 GitHub Actions 流水线、缓存、矩阵与制品，理解持续集成与持续交付的门禁逻辑，给出可运行工作流骨架与踩坑清单。</p>
+      <div class="art-tags"><span class="art-tag">#CI/CD</span><span class="art-tag">#GitHub Actions</span><span class="art-tag">#流水线</span><span class="art-tag">#缓存</span><span class="art-tag">#矩阵</span></div>
+    </div>
+    <div class="prose"><h1>CI/CD 基础</h1>
+<p>CI（持续集成）让每次提交自动构建、测试；CD（持续交付/部署）把通过门禁的产物自动发布。本篇以 <strong>GitHub Actions</strong> 为主线，讲清流水线结构、缓存加速、矩阵并行、制品传递与质量门禁，并对比其他方案。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">为什么需要 CI</span></div><div class="co-body"><p>  人肉在本地跑测试、手动部署，既慢又易漏。CI 把『构建+测试+部署』固化成代码，
+  每次 push 自动执行，保证主干永远可发布、回归立即可见。</p>
+</div></div><h2 id="1-流水线核心概念">1. 流水线核心概念</h2>
+<p>一次 CI 运行由若干**阶段（stage/job）**组成，每个 job 在一台干净Runner上跑：</p>
+<ul>
+<li><strong>trigger（触发）</strong>：<code>push</code> / <code>pull_request</code> / 定时 <code>schedule</code> / 手动 <code>workflow_dispatch</code>；</li>
+<li><strong>job</strong>：独立环境里的任务（build / test / deploy），默认并行；</li>
+<li><strong>step</strong>：job 内的顺序步骤，执行具体命令或复用 <code>action</code>；</li>
+<li><strong>artifact（制品）</strong>：job 间传递的文件（如构建产物）；</li>
+<li><strong>cache（缓存）</strong>：跨运行复用的目录（如依赖），提速而非传递。</li>
+</ul>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">cache 与 artifact 别混</span></div><div class="co-body"><p>  cache 用于『加速同一任务的重复运行』（不保证存在）；artifact 用于『job 间可靠传递产物』。
+  想让下一个 job 拿到构建结果，用 artifact，不是 cache。</p>
+</div></div><h2 id="2-一个可运行的工作流骨架">2. 一个可运行的工作流骨架</h2>
+<pre><code class="language-yaml"># .github/workflows/ci.yml
+name: CI
+on:
+  push:
+    branches: [main]          # 推到 main 触发
+  pull_request:               # 提 PR 也触发（门禁）
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4      # 拉代码
+      - uses: actions/setup-node@v4    # 装 Node
+        with:
+          node-version: 20
+      - run: npm ci                     # 装依赖（配合缓存）
+      - run: npm test                   # 跑测试，失败则流水线标红
+</code></pre><h2 id="3-缓存-省掉重复安装">3. 缓存：省掉重复安装</h2>
+<code>actions/cache</code> 按 key 命中依赖目录，避免每次 <code>npm ci</code> 从零下载。<pre><code class="language-yaml">      - name: 缓存依赖
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm                  # 要缓存的目录
+          key: ${{ runner.os }}-npm-${{ hashFiles('package-lock.json') }}
+          restore-keys: |               # 锁文件变了也能命中旧缓存兜底
+            ${{ runner.os }}-npm-
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">缓存 key 要绑定锁文件</span></div><div class="co-body"><p>  key 含 <code>package-lock.json</code> 哈希，依赖一变 key 就变、缓存失效。若 key 写死常量，
+  会一直命中旧依赖，跑出与实际不符的结果——隐蔽且难查。</p>
+</div></div><h2 id="4-矩阵-一次跑多环境">4. 矩阵：一次跑多环境</h2>
+<code>matrix</code> 让同一 job 在多个版本/OS 组合上并行，省去复制粘贴。<pre><code class="language-yaml">jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [18, 20]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci &amp;&amp; npm test
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">矩阵配 fail-fast</span></div><div class="co-body"><p>  默认一个组合失败就取消其余，省资源；若想看全矩阵结果，设 <code>fail-fast: false</code>。
+  也可用 <code>exclude</code> 剔除不支持的组合（如某 OS 不兼容某版本）。</p>
+</div></div><h2 id="5-制品与门禁">5. 制品与门禁</h2>
+<p>构建结果用 <code>upload-artifact</code> 产出，后续 job（如部署）再 <code>download-artifact</code> 取用。门禁即『某些 job 不通过则阻断后续』——用 <code>needs</code> 串依赖：</p>
+<pre><code class="language-yaml">jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+  deploy:
+    needs: build            # build 成功才跑 deploy，形成门禁
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: dist }
+      # - run: ./deploy.sh   # 实际部署命令
+</code></pre><table>
+<thead>
+<tr>
+<th>门禁类型</th>
+<th>做法</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>测试门禁</td>
+<td><code>test</code> job 失败 → <code>needs: test</code> 的部署 job 不跑</td>
+</tr>
+<tr>
+<td>代码质量</td>
+<td>在 job 内跑 lint/覆盖率阈值，未达标 <code>exit 1</code></td>
+</tr>
+<tr>
+<td>审批门禁</td>
+<td>部署 job 加 <code>environment</code> 需人工 approve（GitHub Environments）</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">门禁要快且准</span></div><div class="co-body"><p>  门禁太慢没人等得起、太松形同虚设。把慢测试（如 e2e）与快单测分层，
+  快门禁卡 PR、慢门禁放 merge 后跑，兼顾速度与质量。</p>
+</div></div><h2 id="6-方案对比">6. 方案对比</h2>
+<table>
+<thead>
+<tr>
+<th>工具</th>
+<th>定位</th>
+<th>优点</th>
+<th>缺点</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>GitHub Actions</td>
+<td>托管、与 GitHub 深度集成</td>
+<td>YAML 简单、生态 action 多、免费额度</td>
+<td>绑定 GitHub、复杂自托管配置</td>
+</tr>
+<tr>
+<td>GitLab CI</td>
+<td>GitLab 内建</td>
+<td>单仓库一体、child pipeline 强</td>
+<td>需 GitLab 环境</td>
+</tr>
+<tr>
+<td>Jenkins</td>
+<td>自托管老牌</td>
+<td>插件极多、完全可控</td>
+<td>维护重、配置繁琐</td>
+</tr>
+<tr>
+<td>CircleCI / Drone</td>
+<td>托管/轻量</td>
+<td>配置简洁、容器原生</td>
+<td>生态/自由度不及前两者</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">选型看在哪托管</span></div><div class="co-body"><p>  代码在 GitHub 就先用 Actions，零额外基础设施；需要私有化/高度定制再考虑 Jenkins。
+  别为『看起来更专业』提前上重平台，把团队拖进运维泥潭。</p>
+</div></div><h2 id="7-常见坑">7. 常见坑</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">密钥泄露到日志</span></div><div class="co-body"><p>  密码/Token 必须走 <code>secrets</code>，绝不在 YAML 里硬编码或 <code>echo</code> 出来。
+  即便用 secrets，命令报错可能把含密钥的命令行打印进日志——敏感值用
+  <code>echo "::add-mask::${{ secrets.TOKEN }}"</code> 遮蔽，或避免打印。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">缓存投毒</span></div><div class="co-body"><p>  缓存可能带入上次运行的陈旧文件（如部分构建产物），与当前代码不一致导致诡异失败。
+  key 务必含锁文件/源码特征；怀疑时手动清缓存重跑验证。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">PR 里跑危险命令</span></div><div class="co-body">  <code>pull_request</code> 触发时，恶意 PR 可能借机执行 <code>script</code> 偷 secrets。对外部贡献者，
+<p>  敏感 job 改由 <code>pull_request_target</code> + 限定分支，或要求先 review 再跑。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">矩阵爆炸</span></div><div class="co-body"><p>  维度一多（OS×版本×数据库）组合数指数增长，既烧额度又拖时长。
+  控制维度数量，用 <code>exclude</code> 砍掉无意义组合，必要时拆成多个 workflow。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>CI 把构建/测试固化成代码，CD 自动发布；核心是 job、step、触发、制品、缓存。</li>
+<li>cache 加速、artifact 可靠传产物，二者用途不同别混用；key 要绑定锁文件。</li>
+<li>矩阵并行多环境，用 <code>fail-fast</code>/<code>exclude</code> 控成本；<code>needs</code> 串出测试→部署门禁。</li>
+<li>门禁分层：快单测卡 PR、慢 e2e 放 merge 后；选型随代码托管平台走。</li>
+<li>红线：密钥走 secrets 且遮蔽、防缓存投毒、防 PR 执行危险命令、控矩阵规模。</li>
+</ul>
+<h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>GitHub Actions 官方文档（Workflow 语法、cache/upload-artifact）</li>
+<li>GitLab CI 文档（若团队使用 GitLab）</li>
+<li>《Continuous Delivery》（Forsyth/Humble 经典著，门禁与流水线理论）</li>
+<li>OWASP 关于 CI/CD 安全的指南（secrets 与 PR 触发风险）</li>
+<li>actions/setup-node、actions/cache 等官方 action 的 README 与示例</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="tool-terminal.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">终端与 Shell 效率</span></a>
+    <span></span>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

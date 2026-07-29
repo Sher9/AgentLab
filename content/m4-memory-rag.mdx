@@ -1,0 +1,393 @@
+---
+title: 记忆系统：短期/长期记忆与读写策略
+description: 理解 LLM 的无状态本质，掌握短期记忆（滑动窗口/摘要）、长期记忆（键值/向量/摘要）、三类记忆的读写策略与淘汰机制，并给出可运行骨架。RAG 整体已归独立分类，本篇只聚焦记忆。
+category: AI Agent
+order: 4
+difficulty: 进阶
+duration: 32 分钟
+tags: [记忆, 上下文, 向量记忆, 摘要记忆, 读写策略]
+date: 2026-07-29
+---
+
+# 记忆系统：短期/长期记忆与读写策略
+
+M0～M3 里我们做的 Agent 都是『一问一答』：每条请求都是独立的。但真实产品里的 Agent 得记得**上一轮说了什么**、**这个用户是谁**、**之前聊过的偏好**。这一篇只讲**记忆系统**本身——短期/长期记忆、向量记忆、摘要记忆，以及最容易被忽略的**读写策略**。RAG（检索增强生成）作为一个完整主题已归入独立分类，本篇不展开其端到端流水线，只把『向量记忆』作为长期记忆的一种形态来讲。
+
+## 1. 为什么 Agent 需要『记忆』
+
+先说一个常被忽略的事实：**LLM 本身是无状态的**。每一次 `chat.completions.create` 调用，模型拿到的只有你这次传进去的 `messages`，它不记得十秒前的对话，也不认识你。
+
+『记忆』不是模型自带的，而是**你的程序在每次调用之间，帮它把需要的东西塞回 prompt**。所以记忆本质上是一个**工程问题**：
+
+- 短期记忆 = 把历史 `messages` 保留并继续传；
+- 长期记忆 = 把信息存到模型之外的存储，用时再取。
+
+<Callout type="note" title="关键认知">
+  模型没有『大脑里的记忆』，只有『这次输入里的内容』。所谓 Agent 有记忆，
+  全是你的代码在『调用之间搬运上下文』。理解这一点，后面所有设计都是顺理成章的。
+  记忆 ≠ 模型能力，记忆 = 状态管理。
+</Callout>
+
+## 2. 短期记忆：上下文窗口
+
+最简单的记忆就是**对话历史本身**。把每一轮的 `user` / `assistant` 消息追加进 `messages` 数组，下次调用原样带上，模型就『记得』了。
+
+```ts
+// short-term-memory.ts —— 维护一段滚动的对话上下文（最简骨架）
+import OpenAI from 'openai';
+import 'dotenv/config';
+
+const client = new OpenAI();
+
+// 历史消息累积在这里，每次调用都带上 → 这就是『短期记忆』
+const history: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
+
+async function chat(userInput: string) {
+  history.push({ role: 'user', content: userInput });
+
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: history, // 关键：把整段历史一起发过去
+  });
+  const reply = res.choices[0].message;
+  history.push(reply); // 把模型回复也存起来，下一轮才连贯
+
+  console.log('助手：', reply.content);
+}
+
+await chat('我叫小明，在做 Agent 项目。');
+await chat('我刚说我在做什么？'); // 模型能答上来，因为历史被带上了
+```
+
+但无脑堆历史有三个现实问题：
+
+| 问题 | 表现 |
+|------|------|
+| 窗口上限 | 模型有最大 token 限制，历史太长会直接报错（token 超长） |
+| 成本线性涨 | 每轮都把全部历史发给模型，费用随对话长度线性上升 |
+| 噪声累积 | 越久的消息对当下问题越无关，反而干扰模型判断 |
+
+### 2.1 三种常用策略
+
+- **滑动窗口（Sliding Window）**：只保留最近 N 条消息，最老的截断丢弃。最简单，但会忘记早期约定。
+- **摘要压缩（Summarization）**：当历史过长时，让模型把前面内容压缩成一段摘要，再带着摘要继续聊。保住长期约定，牺牲细节。
+- **重要信息提取（Extract & Store）**：把『用户偏好 / 关键事实』用一次调用抽取成结构化字段，存进长期记忆。适合『用户叫什么』『喜欢简洁回答』这类持久信息。
+
+<Callout type="tip" title="组合使用最稳">
+  实战里通常三者叠加：近期消息走滑动窗口保连贯，早期约定靠摘要保语义，
+  用户画像走长期记忆保个性。不要只押一种——单策略在长对话里必然露馅。
+</Callout>
+
+```ts
+// 滑动窗口 + 摘要 的组合骨架
+async function compactHistory(
+  history: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+  maxTokens = 3000
+) {
+  // 估算 token（粗算：中文约 1.5 字/token，这里用 length/2 近似）
+  const roughTokens = history.reduce((n, m) => n + (m.content?.toString().length ?? 0) / 2, 0);
+  if (roughTokens <= maxTokens) return history; // 未超阈值，原样返回
+
+  // 超阈值：把前 80% 交给模型压成摘要，保留最近 20% 原文
+  const cut = Math.floor(history.length * 0.8);
+  const oldPart = history.slice(0, cut);
+  const recentPart = history.slice(cut);
+
+  const summaryRes = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: '把以下对话压缩成一段简洁摘要，保留关键事实与用户偏好。' },
+      { role: 'user', content: JSON.stringify(oldPart) },
+    ],
+  });
+  const summary = summaryRes.choices[0].message.content ?? '';
+  // 用一条 system 消息承载摘要，后续对话带着它，等价于『记起了前面的事』
+  return [
+    { role: 'system', content: `历史摘要：${summary}` },
+    ...recentPart,
+  ] as OpenAI.Chat.Completions.ChatCompletionMessageParam[];
+}
+```
+
+## 3. 长期记忆：外部存储概览
+
+短期记忆随会话结束而消失（或截断）。**长期记忆**是把信息写到模型之外的存储里，跨会话、跨用户地持久化与检索。三类最典型：
+
+| 形态 | 适合数据 | 检索方式 | 典型用途 |
+|------|----------|----------|----------|
+| 键值记忆（KV） | 结构化字段 | 精确 key | 用户偏好、配置、会话状态 |
+| 向量记忆（Vector） | 非结构化文本 | 语义相似度 | 历史对话、知识片段、长文档记忆 |
+| 摘要记忆（Summary） | 压缩后的语义 | 全文带入 / 按需召回 | 早期约定、会话主题、用户画像 |
+
+<Callout type="note" title="三者不是互斥">
+  一个成熟的 Agent 往往三者并用：键值存『确定性事实』，向量存『可被语义搜到的知识』，
+  摘要存『跨轮次的语义约简』。检索时先查用户偏好（键值），再召回知识片段（向量），
+  拼一起注入 prompt。分层记忆才是生产常态。
+</Callout>
+
+### 3.1 键值记忆（Key-Value Memory）
+
+适合**结构化、精确匹配**的信息：用户偏好、配置、会话级状态。存 JSON 文件、Redis、数据库皆可。
+
+```ts
+// kv-memory.ts —— 把用户偏好存进 Redis 风格的结构化存储（示意）
+import OpenAI from 'openai';
+import 'dotenv/config';
+import { z } from 'zod';
+
+const client = new OpenAI();
+
+// 用 Zod 定义偏好结构，作为存入前的单一事实来源与校验关
+const PrefSchema = z.object({
+  name: z.string().min(1, '名字不能为空'),
+  tone: z.enum(['简洁', '详细']),
+});
+
+// 真实场景换成 Redis / 数据库；这里用内存 Map 演示结构
+const userPrefs = new Map<string, z.infer<typeof PrefSchema>>();
+
+function savePref(userId: string, raw: unknown) {
+  const parsed = PrefSchema.safeParse(raw); // 校验，挡住脏数据
+  if (!parsed.success) {
+    throw new Error(`偏好非法：${parsed.error.message}`);
+  }
+  userPrefs.set(userId, parsed.data);
+}
+
+function loadPref(userId: string) {
+  return userPrefs.get(userId); // 精确按 key 取，O(1)
+}
+
+// 用法：用户首次对话时存，之后每次注入 system prompt
+savePref('u_001', { name: '小明', tone: '简洁' });
+const pref = loadPref('u_001');
+console.log(`系统提示将包含：用户名叫${pref?.name}，偏好${pref?.tone}回答。`);
+```
+
+### 3.2 向量记忆（Vector Memory）
+
+适合**非结构化、语义检索**的信息：文档片段、历史对话、知识库。把文本变成 embedding 向量存起来，用时按『意思相近』检索，而不是精确匹配关键词。这是记忆系统里『语义召回』的基石（注意：本篇把它当作记忆形态讲，完整的 RAG 检索流水线请见 RAG 分类）。
+
+```ts
+// vector-memory.ts —— 向量记忆的存/取骨架（纯 TS 余弦相似度，无第三方库）
+import OpenAI from 'openai';
+import 'dotenv/config';
+
+const client = new OpenAI();
+
+type Mem = { text: string; vec: number[]; userId: string };
+
+// 按 userId 分桶，避免不同用户记忆串号（隐私隔离红线）
+const memoryStore: Mem[] = [];
+
+// 写入：文本 → embedding → 存
+async function remember(userId: string, text: string) {
+  const emb = await client.embeddings.create({
+    model: 'text-embedding-3-small',
+    input: text,
+  });
+  memoryStore.push({ userId, text, vec: emb.data[0].embedding });
+}
+
+// 余弦相似度（纯 TS，无第三方库）
+function cosine(a: number[], b: number[]): number {
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(na) * Math.sqrt(nb)); // 越接近 1 越相似
+}
+
+// 读取：只检索『当前用户』的语义相关记忆
+async function recall(userId: string, query: string, k = 3): Promise<string[]> {
+  const q = await client.embeddings.create({
+    model: 'text-embedding-3-small',
+    input: query,
+  });
+  const qv = q.data[0].embedding;
+  return memoryStore
+    .filter((m) => m.userId === userId) // 关键：先按 userId 隔离
+    .map((m) => ({ text: m.text, score: cosine(qv, m.vec) }))
+    .sort((x, y) => y.score - x.score)
+    .slice(0, k)
+    .map((m) => m.text);
+}
+```
+
+<Callout type="warn" title="生产别用内存数组当向量库">
+  上面的 `memoryStore` 是数组线性扫描，文档一多就慢且无法持久化。
+  生产请换 **pgvector**（Postgres 扩展）或 **Chroma** / **Qdrant** 等专用向量库，
+  它们支持亿级向量的近似检索（ANN）与磁盘持久化，且原生支持按 `userId` 元数据过滤。
+</Callout>
+
+### 3.3 摘要记忆（Summary Memory）
+
+当一段长对话或长文档需要被『长期记住语义』但不需要逐字召回时，存摘要比存原文更划算：体积小、噪声低、注入成本低。摘要记忆常用于两类场景：
+
+- **会话级摘要**：每隔若干轮把对话压成主题摘要，跨长会话保持『它之前在聊什么』；
+- **用户画像摘要**：把多次交互中抽取的事实聚合成『用户画像』，比零散 KV 字段更连贯。
+
+```ts
+// summary-memory.ts —— 用模型维护一份『用户画像摘要』
+async function updateUserProfileSummary(
+  prevSummary: string,
+  newFacts: string[]
+): Promise<string> {
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      {
+        role: 'system',
+        content: '你维护一份用户画像摘要。把新事实合并进旧摘要，去重、修正冲突，输出最新摘要。',
+      },
+      {
+        role: 'user',
+        content: `旧摘要：\n${prevSummary}\n\n新事实：\n${newFacts.join('\n')}`,
+      },
+    ],
+  });
+  return res.choices[0].message.content ?? prevSummary;
+}
+```
+
+## 4. 读写策略：记忆系统最容易被忽略的一环
+
+很多教程只讲『怎么存、怎么取』，但生产里真正决定记忆好不好用的，是**何时写、何时读、何时淘汰**。下面是一套可落地的策略。
+
+### 4.1 写入策略（Write）
+
+- **写穿（Write-Through）**：每次产生重要事实（用户改了偏好、确认了决定）立即写长期记忆。优点：不丢；缺点：写太频繁。
+- **延迟写 / 周期性写（Write-Back）**：在对话结束或每 N 轮才抽取并落盘。优点：省调用；缺点：会话中途崩溃会丢。
+- **触发式写**：用一次轻量模型调用判断『这句话是否含值得记住的事实』，只把命中句抽取入库，避免把闲聊也写进去。
+
+```ts
+// 触发式写入：先让小模型判『是否值得记』，再抽取
+async function maybeRemember(userId: string, utterance: string) {
+  const judge = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: '判断这句话是否包含值得长期记住的用户事实。只回 yes 或 no。' },
+      { role: 'user', content: utterance },
+    ],
+  });
+  if (judge.choices[0].message.content?.trim().toLowerCase() !== 'yes') return;
+  // 值得记 → 抽取成一句话事实并写入向量记忆
+  const fact = await extractFact(utterance); // 复用 3.3 思路
+  await remember(userId, fact);
+}
+```
+
+<Callout type="tip" title="写入前先去重">
+  向量记忆最容易『同一件事存了一百遍』。写入前先对候选事实做一次相似度检索，
+  若已存在高分记忆则更新而非新增。否则记忆库会被闲聊淹没，检索信噪比骤降。
+</Callout>
+
+### 4.2 读取策略（Read）
+
+- **总是注入（Always-on）**：键值偏好、用户画像摘要每次都进 system prompt（体积小、收益高）；
+- **按需召回（On-demand）**：向量记忆按当前问题语义检索 top-k 注入，问题无关时不打扰模型；
+- **分层注入**：先注入『确定事实』（KV/摘要），再注入『语义片段』（向量），让模型先有骨架再补血肉。
+
+### 4.3 淘汰与更新（Eviction）
+
+记忆不是写了就永远对。三类失效必须处理：
+
+| 失效类型 | 表现 | 对策 |
+|----------|------|------|
+| 陈旧（Stale） | 用户改了偏好、事实变化 | KV 加 TTL；向量记忆定期重建或标记过期 |
+| 冲突（Conflict） | 新旧记忆矛盾 | 写入时检测冲突，以最新为准、保留版本 |
+| 膨胀（Bloated） | 记忆库过大、检索变慢变噪 | 摘要合并、低分记忆归档、容量上限 LRU |
+
+<Callout type="danger" title="陈旧记忆会误导">
+  长期记忆不是写了就永远对。用户改了偏好、文档更新了，旧记忆会『盖掉』真相。
+  给键值记忆加过期时间，给向量库加重建/增量更新机制。没有淘汰策略的记忆系统，
+  三个月后就是一潭浑水。
+</Callout>
+
+## 5. 三类记忆组合架构
+
+一个实战可用的记忆模块，典型组装如下：
+
+```
+请求进来
+  ├─ 注入 KV 偏好 / 用户画像摘要（总是注入，体积小）
+  ├─ 注入近期 messages（滑动窗口，保连贯）
+  ├─ 若历史过长 → 用摘要记忆替换早期轮次
+  ├─ 若问题涉及知识/往事 → 向量记忆语义召回 top-k 注入
+  └─ 模型作答
+        │
+        └─ 事后：触发式抽取新事实 → 写 KV / 向量 / 摘要（带去重与 TTL）
+```
+
+<Callout type="note" title="记忆是状态机，不是存储">
+  把记忆当成『带读写淘汰策略的状态管理』来设计，而不是『一个数据库』。
+  写、读、淘汰三者缺一，记忆系统迟早出事。这也是 Agent 与『带数据库的普通程序』
+  在状态处理上的本质区别。
+</Callout>
+
+## 6. 对比速查表
+
+| 对比项 | 短期记忆 | 长期记忆 |
+|--------|----------|----------|
+| 存储介质 | 当前请求的 messages 数组 | 外部存储（KV / 向量库 / 摘要） |
+| 生命周期 | 会话内，可截断 | 跨会话持久 |
+| 检索方式 | 全量带入 / 滑动窗口 | 按需精确或语义检索 |
+| 典型问题 | 窗口超限、成本涨、噪声 | 陈旧、隐私、检索质量 |
+
+| 对比项 | 键值记忆 | 向量记忆 | 摘要记忆 |
+|--------|----------|----------|----------|
+| 适合数据 | 结构化字段 | 非结构化文本 | 压缩后的语义 |
+| 检索 | 精确 key | 语义相似度 | 全文/按需 |
+| 成本 | 极低 | 需 embedding + 检索 | 需一次压缩调用 |
+| 代表场景 | 用户偏好、配置 | 知识库、长文档 | 会话主题、画像 |
+
+## 7. 记忆管理踩坑
+
+<Callout type="danger" title="上下文泄露隐私">
+  历史消息和检索到的片段都会原样进 prompt。不要把含密钥、PII 的内容
+  无差别地塞进上下文；多用户场景下务必按 `userId` 隔离记忆，别串号。
+  向量记忆的 `filter(userId === ...)` 不是可选项，是合规红线。
+</Callout>
+
+<Callout type="warn" title="成本随历史线性涨">
+  短期记忆每轮都重发全部历史，长期记忆每轮都额外跑一次 embedding + 检索。
+  两者都会让 token 用量随对话增长，上线前评估截断策略与检索频率。
+</Callout>
+
+<Callout type="warn" title="陈旧记忆会误导">
+  长期记忆不是写了就永远对。用户改了偏好、文档更新了，旧记忆会『盖掉』真相。
+  给键值记忆加过期时间，给向量库加重建/增量更新机制。
+</Callout>
+
+<Callout type="danger" title="bad retrieval 比没有检索更糟">
+  检索到无关甚至矛盾的片段并注入 prompt，模型会一本正经地答错（幻觉被坐实）。
+  务必：切块粒度合理、检索阈值过滤低分结果、必要时让用户确认来源。
+</Callout>
+
+<Callout type="warn" title="写入无去重，记忆库爆炸">
+  不做去重的向量记忆，会在几天内被重复闲聊填满，检索信噪比断崖下跌。
+  写入前务必先相似度查重，命中则更新、未命中才新增。
+</Callout>
+
+## 小结
+
+- LLM 无状态，『记忆』全是你的代码在调用之间搬运上下文——记忆 = 状态管理。
+- 短期记忆 = 保留并续传 `messages`；用滑动窗口 / 摘要 / 信息提取应对窗口与成本。
+- 长期记忆分三类：键值（精确、结构化）、向量（语义、非结构化）、摘要（压缩语义），按需组合。
+- 读写策略是记忆系统的灵魂：触发式写入 + 去重、分层读取、TTL/冲突/膨胀三件套淘汰。
+- 工程红线：隐私隔离（`userId` 过滤）、成本可控、记忆可更新、检索质量兜底、写入去重。
+
+<Callout type="note" title="下一步">
+  记忆让单个 Agent 能『记住事』。但当任务复杂到需要多个 Agent 分工——
+  比如一个检索、一个写作、一个审核——该怎么组织？这就是 **M5 多 Agent 协作** 的主题。
+</Callout>
+
+## 延伸阅读 / 参考
+
+- OpenAI Embeddings 文档（向量记忆的 embedding 维度、归一化，以官方为准）
+- pgvector / Qdrant / Chroma 官方文档：生产级向量存储与按元数据过滤
+- MemGPT / Generative Agents 论文：长期记忆与『记忆流』的较早系统化探索
+- *Reflexion* 论文：把『反思摘要』作为记忆回填，提升后续决策质量
+- 12-Factor App 的『Config 与 State』原则：把记忆当作有生命周期的状态来管理

@@ -1,0 +1,182 @@
+---
+title: pandas / numpy 数据处理实战
+description: 用 pandas 的 Series/DataFrame 与 numpy 向量化做高效数据清洗，覆盖向量化思维、缺失值处理，并说明它如何接入 LLM 数据管线。
+category: Python
+order: 5
+difficulty: 进阶
+duration: 25 分钟
+tags: [pandas, numpy, 数据处理, 向量化, 缺失值]
+date: 2026-07-29
+---
+
+# pandas / numpy 数据处理实战
+
+做 AI / LLM 工程，绕不开数据：语料清洗、评测集构建、RAG 文档规整、批量生成结果分析……这些活儿如果写 `for` 循环逐行处理，既慢又难维护。**pandas + numpy** 把数据当成「列」来整体操作（向量化），一行代码替代上百行循环。
+
+这篇面向已经会基础 Python 的开发者，聚焦三件事：**核心数据结构**、**向量化思维（和循环的本质区别）**、**缺失值处理**，最后讲它在 LLM 数据管线里的位置。
+
+## 1. 两个核心结构：Series 与 DataFrame
+
+- `Series`：带索引的一维数组（可理解为「一列」）。
+- `DataFrame`：多列 Series 拼成的二维表（可理解为「一张表」），是 pandas 的主力。
+
+```python
+import pandas as pd
+import numpy as np
+
+# DataFrame 可由字典构造，键是列名，值是每列数据
+df = pd.DataFrame({
+    "text":   ["你好", "world", None, "RAG 很有用"],
+    "tokens": [ 3,     1,    np.nan, 5 ],   # numpy 的 NaN 表示缺失
+    "score":  [ 0.9,   0.2,  None,   0.7 ],
+})
+
+print(df.dtypes)     # 每列的类型；混合了字符串/浮点
+print(df.shape)      # (4, 3) —— 4 行 3 列
+print(df["text"])    # 取出 text 这一列，是个 Series
+```
+
+<Callout type="note" title="为什么用 NaN 而不是 None">
+  pandas 里数值列的缺失用 `np.nan`（float）表示，字符串列的缺失才用 `None`/`pd.NA`。
+  统一缺失语义对后面 `isna()` / `dropna()` 的判断很关键，别混用导致漏判。
+</Callout>
+
+## 2. 向量化：别写 for 循环
+
+向量化的核心是：**对整个列一次性运算，而不是逐元素循环**。pandas/numpy 在底层用 C 实现，速度通常是 Python 循环的数十到数百倍，代码也更短。
+
+```python
+# ❌ 反例：逐行循环，慢且啰嗦
+scores = []
+for v in df["score"]:
+    scores.append(0.0 if v is None else v * 10)
+df["score_x10"] = scores
+
+# ✅ 正解：向量化，一行搞定，底层 C 加速
+df["score_x10"] = df["score"].fillna(0) * 10
+
+# 条件赋值用 np.where（向量化的 if/else）
+df["level"] = np.where(df["score"] > 0.5, "高", "低")
+```
+
+向量化不止快，更重要的是**可读、可组合**：把每一步当「对整列做变换」去思考，管线就能像管道一样串起来。
+
+<Callout type="tip" title="向量化思维转换">
+  遇到「对每一行做 X」的冲动，先问：能不能写成对整列的表达式？
+  绝大多数过滤、映射、聚合都能向量化。实在不行才用 `.apply()`（它本质还是逐行，
+  只是写起来像向量化，性能提升有限）。
+</Callout>
+
+## 3. 缺失值处理：数据分析的半壁江山
+
+真实数据几乎没有「完整」的。处理缺失值有四板斧：
+
+```python
+# 1) 检测：哪些格子是缺失的
+print(df.isna())          # 逐格布尔
+print(df["score"].isna().sum())  # 该列缺失计数
+
+# 2) 删除：丢掉含缺失的行（axis=0）或列（axis=1）
+df_drop = df.dropna(subset=["text"])   # 只在 text 缺失时才删
+
+# 3) 填充：用固定值 / 统计量 / 前向填充
+df["score"] = df["score"].fillna(0)          # 填 0
+df["tokens"] = df["tokens"].fillna(df["tokens"].mean())  # 填均值
+df = df.ffill()                               # 用上一个有效值向下填充
+
+# 4) 标记：新增一列记录是否曾缺失，把「缺失」本身当信息
+df["score_was_missing"] = df["score"].isna()
+```
+
+选哪种取决于业务含义：用户年龄缺失可以填均值，但「是否填写年龄」这个布尔特征可能本身就很有预测价值。**删除是最省事也最危险的**，样本少时删一行可能偏掉整个分布。
+
+<Callout type="warn" title="inplace 的坑">
+  老代码常见 `df.dropna(inplace=True)`，它原地修改并返回 `None`，容易和链式调用
+  冲突且难调试。新版 pandas 官方建议**避免 inplace**，改用赋值式 `df = df.dropna()`，
+  函数式、可链式、可复现。
+</Callout>
+
+## 4. 聚合与分组：从明细到统计
+
+```python
+# 按 level 分组，看每组的行数与平均分
+grouped = df.groupby("level").agg(
+    cnt=("score", "size"),
+    avg_score=("score", "mean"),
+)
+print(grouped)
+```
+
+这是做 LLM 评测分析最常见的操作：按模型版本、按题型分组，算通过率/平均分。
+
+## 5. 与 LLM 数据管线的关系
+
+pandas 在 AI 工程里通常不是「训练模型」的工具，而是**模型上下游的数据搬运工**：
+
+| 阶段 | pandas 的角色 |
+|------|---------------|
+| 语料构建 | 读 CSV/JSON/Parquet，去重、过滤低质样本、打标签 |
+| RAG 文档预处理 | 规整多源文档为统一 `id / content / meta` 表，切块前后做统计 |
+| 评测集管理 | 维护黄金集、按难度/类别切分、统计覆盖度 |
+| 批量结果分析 | 跑完一批 LLM 调用后，算通过率、成本、延迟分布 |
+
+```python
+# 典型：把一批 LLM 调用结果汇总成表再统计
+results = pd.DataFrame([
+    {"case": "qa_1",  "ok": True,  "cost": 0.012, "latency": 1.3},
+    {"case": "qa_2",  "ok": False, "cost": 0.009, "latency": 0.9},
+    {"case": "sum_1", "ok": True,  "cost": 0.021, "latency": 2.1},
+])
+print("通过率：", results["ok"].mean())      # 0.666...
+print("平均成本：", results["cost"].mean())   # 向量化聚合
+```
+
+<Callout type="note" title="大数据别硬刚 pandas">
+  数据量上亿行时，pandas 单机内存扛不住。此时考虑 `polars`（更快、更省内存）、
+  `dask`（分布式 pandas API）或直接上 Spark。pandas 适合「能装进内存的中等规模」，
+  这正是绝大多数 LLM 评测/语料场景的体量。
+</Callout>
+
+## 6. 运行方式
+
+```bash
+pip install pandas numpy
+python your_script.py
+```
+
+最小可运行骨架（缺失值 + 向量化 + 聚合）：
+
+```python
+import pandas as pd
+import numpy as np
+
+df = pd.DataFrame({
+    "text":   ["你好", "world", None, "RAG 很有用"],
+    "score":  [0.9, 0.2, None, 0.7],
+})
+
+# 缺失填充 + 向量化派生列
+df["score"] = df["score"].fillna(0)
+df["level"] = np.where(df["score"] > 0.5, "高", "低")
+
+# 聚合看分布
+print(df.groupby("level").size())
+print(df)
+```
+
+## 小结
+
+- `Series` 是一列、`DataFrame` 是一张表，是 pandas 的两大核心。
+- **向量化优先**：对整个列一次性运算，别写 `for` 循环；`.apply()` 只是伪向量化。
+- 缺失值四板斧：检测 `isna`、删除 `dropna`、填充 `fillna`/`ffill`、标记成特征。
+- 分组聚合 `groupby().agg()` 是做 LLM 评测/语料统计的主力。
+- pandas 在 AI 工程里是「数据搬运工」而非「训练器」：语料清洗、RAG 预处理、评测分析。
+- 中大规模用 pandas；超大规模换 polars/dask/Spark。新版 pandas 避免 `inplace=`。
+
+## 延伸阅读 / 参考
+
+- pandas 官方文档（10 分钟入门）：https://pandas.pydata.org/docs/getting_started/intro_tutorials/01_table_oriented.html
+- numpy 广播（向量化底层机制）：https://numpy.org/doc/stable/user/basics.broadcasting.html
+- pandas 缺失值处理指南：https://pandas.pydata.org/docs/user_guide/missing_data.html
+- polars（pandas 的高性能替代）：https://pola.rs/
+- Real Python《pandas 数据处理》：https://realpython.com/pandas-dataframe/

@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>AutoGen 实战：多 Agent 对话与代码执行 · AgentLab</title>
+  <meta name="description" content="从对话即编排的视角拆解 AutoGen 的 AssistantAgent/UserProxyAgent/GroupChat，讲清代码执行、会话终止与定制 Agent，对比其他框架并给出伪代码骨架与踩坑，标注 API 易变。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="AutoGen 实战：多 Agent 对话与代码执行 · AgentLab"/>
+  <meta property="og:description" content="从对话即编排的视角拆解 AutoGen 的 AssistantAgent/UserProxyAgent/GroupChat，讲清代码执行、会话终止与定制 Agent，对比其他框架并给出伪代码骨架与踩坑，标注 API 易变。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#frameworks">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🏗️</span>
+        <span class="art-moduleName">框架</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">36 分钟</span>
+      </div>
+      <h1 class="art-title">AutoGen 实战：多 Agent 对话与代码执行</h1>
+      <p class="art-desc">从对话即编排的视角拆解 AutoGen 的 AssistantAgent/UserProxyAgent/GroupChat，讲清代码执行、会话终止与定制 Agent，对比其他框架并给出伪代码骨架与踩坑，标注 API 易变。</p>
+      <div class="art-tags"><span class="art-tag">#AutoGen</span><span class="art-tag">#多Agent</span><span class="art-tag">#会话编排</span><span class="art-tag">#代码执行</span><span class="art-tag">#GroupChat</span></div>
+    </div>
+    <div class="prose"><h1>AutoGen 实战：多 Agent 对话与代码执行</h1>
+<p>如果说 LlamaIndex 的出发点是『数据』、LangGraph 的出发点是『状态图』，那 <strong>AutoGen</strong> 的原点是『<strong>对话</strong>』——它把多 Agent 协作建模成一场<strong>可执行的群聊</strong>：每个 Agent 是一个会说话的角色，Agent 之间通过消息互相推动，直到任务完成。</p>
+<p>它最出圈的能力是<strong>让 Agent 写代码、跑代码、看结果、自己改</strong>。这一篇讲透它的角色模型、会话机制、代码执行的威力与风险、GroupChat 多人群聊，以及最容易踩的坑。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">框架类文章的阅读约定</span></div><div class="co-body"><p>  本文代码是<strong>思路骨架 + 注释</strong>，非粘贴即用的生产代码。AutoGen 经历过
+  <code>autogen</code> (0.2 及更早) 到 <code>ag2</code> / <code>autogen-agentchat</code> (0.4+) 的重大重构，
+  import 路径、Agent 类名、会话 API 变化极大。凡涉及真实接口都标注了版本区间，
+  真正落地请以官方文档为准，API 易变。</p>
+</div></div><h2 id="1-autogen-的定位-对话即编排">1. AutoGen 的定位：对话即编排</h2>
+<p>AutoGen 的核心信念：<strong>复杂任务可以由多个『会对话的 Agent』协作完成</strong>，而你不需要手写复杂的控制流——你只要定义好『有哪些角色、他们怎么对话』，剩下的推进交给对话本身。</p>
+<p>典型角色：</p>
+<ul>
+<li><strong>AssistantAgent</strong>：由 LLM 驱动，负责思考、出方案、写代码；</li>
+<li><strong>UserProxyAgent</strong>：代表『用户/执行环境』，可以代替人发指令，也能<strong>真正执行代码</strong>并把输出回传；</li>
+<li><strong>GroupChat / 多个 Specialist</strong>：多人群聊时，不同专家 Agent 各司其职。</li>
+</ul>
+<p>它和『手写 for 循环调工具』（见 m1 工具调用）的最大区别：<strong>谁来决定的下一步，是由 Agents 在对话中协商出来的</strong>，而不是你写死的 if/else。</p>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">选它的第一性原理</span></div><div class="co-body"><p>  问自己：任务的难点是『多个角色反复磋商、互相补台』（比如一个写代码、一个审查、
+  一个跑测试），还是『固定步骤的流水线』？前者——AutoGen 天然契合；后者用
+  LangGraph 状态图反而更清晰可控。AutoGen 擅长『涌现式协作』，不擅长『强约束流程』。</p>
+</div></div><h2 id="2-核心概念-两类-agent-一场对话">2. 核心概念：两类 Agent + 一场对话</h2>
+<table>
+<thead>
+<tr>
+<th>概念</th>
+<th>角色</th>
+<th>关键能力</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>AssistantAgent</code></td>
+<td>LLM 大脑</td>
+<td>推理、生成回复、写代码（不直接执行）</td>
+</tr>
+<tr>
+<td><code>UserProxyAgent</code></td>
+<td>用户/执行端</td>
+<td>转发人类输入、<strong>执行代码</strong>、回传结果；可设 <code>human_input_mode</code></td>
+</tr>
+<tr>
+<td><code>GroupChat</code></td>
+<td>群聊管理器</td>
+<td>决定『下一条消息由谁说』（按发言顺序或 LLM 选）</td>
+</tr>
+<tr>
+<td><code>GroupChatManager</code></td>
+<td>群聊主持</td>
+<td>驱动 GroupChat 轮转，直到 <code>max_round</code> 或终止条件</td>
+</tr>
+<tr>
+<td><code>ConversableAgent</code></td>
+<td>二者的基类</td>
+<td>所有 Agent 都能收发消息，这是『对话即编排』的基础</td>
+</tr>
+</tbody></table>
+<p>要点：<strong>所有 Agent 都继承自 <code>ConversableAgent</code>，都能对话</strong>。这让『加一个新角色』变得极轻——你只是往群里多放一个会说话的 Agent。</p>
+<h2 id="3-原理-一场对话如何推进任务">3. 原理：一场对话如何推进任务</h2>
+<p>AutoGen 的执行模型可以浓缩成下面这条回路：</p>
+<pre><code>初始化若干 Agent（Assistant + UserProxy + 可选专家）
+   ↓  UserProxy 发出第一条用户请求
+Assistant 回复（可能是文字，或一段待执行代码）
+   ↓  UserProxy 看到代码块 → 在本地/沙箱执行
+执行结果（stdout / 报错）作为新消息回传给群
+   ↓  Assistant 读取结果，决定：修正代码 / 继续 / 给出最终答案
+循环，直到满足终止条件（max_round 用尽 / 某 Agent 说 TERMINATE）
+</code></pre><p>注意这里的张力：<strong>Assistant 只『说』代码，UserProxy 才『跑』代码</strong>。这跟 m1 里『模型建议、代码执行』的协议是同一个本质，只是 AutoGen 把它封装成了 Agent 之间的对话。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">终止条件是生命线</span></div><div class="co-body"><p>  对话没有天然终点。AutoGen 靠 <code>max_round</code>（最大轮数）和『某条消息含终止词』来刹车。
+  不设上限，Agent 可能陷入『写代码→报错→改代码→再报错』的死循环，烧钱无止尽。
+  这是用 AutoGen 的第一红线。</p>
+</div></div><h2 id="4-可运行骨架-双人对话-代码执行">4. 可运行骨架：双人对话 + 代码执行</h2>
+<p>下面用 Python 风格给出最小骨架，标注版本区间，重点在注释讲清『为什么这么配』。</p>
+<pre><code class="language-python"># autogen_code_exec_skeleton.py —— 双人对话 + 代码执行骨架（示意，API 易变）
+# 约定：AutoGen 0.2.x 用 `from autogen import ...`；0.4+ 改为 `autogen_agentchat`
+# 落地请以你安装版本的官方文档为准。
+
+# ① 配置 LLM（通过 config_list 告诉 AutoGen 用哪个模型/密钥）
+#    human_input_mode="NEVER" 表示 UserProxy 不等人，自动执行
+config = {"model": "gpt-4o", "api_key": "..."}  # 实际从环境变量读，勿硬编码
+
+# ② Assistant：LLM 大脑，负责思考与写代码
+assistant = AssistantAgent(
+    name="assistant",
+    llm_config={"config_list": [config]},
+    system_message="你是用 Python 解决数据问题的助手，写可运行代码。",
+)
+
+# ③ UserProxy：代表执行环境，关键在 code_execution_config
+user_proxy = UserProxyAgent(
+    name="user_proxy",
+    human_input_mode="NEVER",            # 不等人，全自动
+    code_execution_config={
+        "work_dir": "coding",            # 代码落盘目录
+        "use_docker": False,             # 见下方 Callout：生产务必上沙箱
+    },
+)
+
+# ④ 发起对话：用户请求 → 群内自动流转
+user_proxy.initiate_chat(
+    assistant,
+    message="用 pandas 读 data/sales.csv，算出各区域销售额总和。",
+)
+# ↑ Assistant 写代码 → UserProxy 执行 → 结果回传 → Assistant 继续，直到完成或达上限
+</code></pre><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">代码执行=任意命令执行</span></div><div class="co-body">  <code>code_execution_config</code> 开启后，LLM 生成的代码会在你的机器/容器里**真实运行**。
+<p>  这意味着『让 Agent 跑代码』≈『让 LLM 执行任意 shell/python』。模型可能被提示注入
+  诱导去删文件、读密钥、连外网。生产环境必须：用 Docker 沙箱、最小化依赖与权限、
+  限定工作目录、禁止联网/敏感路径。绝不在宿主机裸跑。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">use_docker 不是可选项</span></div><div class="co-body"><p>  上面 <code>use_docker: False</code> 只为演示。生产请设为 True 或自带沙箱（见工具沙箱主题）。
+  即便用 Docker，也要限制资源（CPU/内存/时长）与挂载，否则一段死循环代码就能拖垮主机。</p>
+</div></div><h2 id="5-groupchat-多人群聊协作">5. GroupChat：多人群聊协作</h2>
+<p>双人对话只能『一个想、一个跑』。真实复杂任务往往需要多个专家轮番上阵——比如『架构师出方案 → 程序员写码 → 测试员跑用例 → 审查员挑刺』。这就是 <code>GroupChat</code>。</p>
+<pre><code class="language-python"># autogen_groupchat_skeleton.py —— 多 Agent 群聊骨架（示意）
+from autogen import GroupChat, GroupChatManager
+
+# ① 定义多个专家 Agent（各自 system_message 决定性格与职责）
+architect = AssistantAgent(name="architect", llm_config=cfg,
+                           system_message="你只负责拆解任务、给方案，不写实现。")
+coder    = AssistantAgent(name="coder",    llm_config=cfg,
+                           system_message="你只写 Python 实现代码。")
+reviewer = AssistantAgent(name="reviewer", llm_config=cfg,
+                           system_message="你审查代码，指出 bug 与风险。")
+
+# ② GroupChat 管理『谁发言』：可顺序轮转，也可让 LLM 动态选下一个说话者
+group = GroupChat(
+    agents=[user_proxy, architect, coder, reviewer],
+    messages=[],
+    max_round=12,                  # 关键：群聊总轮数上限，防失控
+    # speaker_selection_method="auto"  # 让 LLM 决定下一位发言者（更灵活）
+)
+
+# ③ Manager 驱动群聊，user_proxy 作为执行端参与
+manager = GroupChatManager(group=group, llm_config=cfg)
+user_proxy.initiate_chat(manager, message="实现一个线程安全的 LRU 缓存。")
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">发言策略决定灵活度</span></div><div class="co-body">  <code>speaker_selection_method</code> 是 GroupChat 的灵魂：<code>round_robin</code>（顺序轮）简单可控但死板；
+  <code>auto</code>（LLM 选下一位）更聪明但需要好的 system_message 引导，且更贵。
+<p>  任务固定流程多→用 round_robin；任务开放、需要临场分工→用 auto。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">群聊更贵也更难停</span></div><div class="co-body"><p>  每多一个 Agent、每多一轮，都是额外 LLM 调用。GroupChat 的 token 与延迟是
+  <code>Agent数 × 轮数</code> 级别增长。务必设 <code>max_round</code>，并在 system_message 里明确『何时该说
+  TERMINATE』，否则群聊会聊到上限才罢手，浪费且结果未必更好。</p>
+</div></div><h2 id="6-定制-agent-不止聊天-还能接工具">6. 定制 Agent：不止聊天，还能接工具</h2>
+<code>ConversableAgent</code> 可以挂『函数工具』，让某个 Agent 除了说话还能调外部 API（而不只是执行代码）。这是把 AutoGen 从『代码执行器』升级成『通用多 Agent 系统』的关键。<pre><code class="language-python"># autogen_tool_skeleton.py —— 给 Agent 挂工具（示意）
+def get_weather(city: str) -&gt; str:
+    # 真实场景调天气 API；这里返回占位
+    return f"{city}：晴，26°C"
+
+# 把函数注册成 Agent 可调用的工具（参数/描述由框架抽取或显式给出）
+assistant.register_function(
+    function_map={"get_weather": get_weather}
+)
+# ↑ 之后 Assistant 在对话中可『决定调用 get_weather』，UserProxy 执行后回传结果
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">工具 vs 代码执行</span></div><div class="co-body"><p>  AutoGen 提供两种『让 Agent 动手』的方式：注册函数工具（受控、安全）、直接执行代码
+  （灵活、危险）。能用明确函数的，优先用工具而不是让模型自由写代码——
+  前者边界清晰、易审计，后者能力无上限但风险同量级。安全与能力在此直接权衡。</p>
+</div></div><h2 id="7-对比-autogen-vs-其他方案">7. 对比：AutoGen vs 其他方案</h2>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>核心隐喻</th>
+<th>擅长</th>
+<th>不擅长</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>AutoGen</td>
+<td>多 Agent 群聊</td>
+<td>多角色协作、代码自动执行、涌现式推进</td>
+<td>强约束流程、精细状态控制</td>
+</tr>
+<tr>
+<td>LangGraph</td>
+<td>状态图</td>
+<td>分支/循环/人在回路、可控可复现</td>
+<td>对纯多角色商讨偏重</td>
+</tr>
+<tr>
+<td>LlamaIndex</td>
+<td>数据框架</td>
+<td>检索/RAG 专精</td>
+<td>多 Agent 编排弱</td>
+</tr>
+<tr>
+<td>CrewAI</td>
+<td>角色剧组</td>
+<td>角色+流程的人性化编排</td>
+<td>代码执行深度不及 AutoGen</td>
+</tr>
+<tr>
+<td>原生 SDK</td>
+<td>裸循环</td>
+<td>完全可控、零抽象</td>
+<td>多 Agent 协作全手写</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">代码执行场景几乎绕不开 AutoGen</span></div><div class="co-body"><p>  如果你的需求本质是『让 LLM 自己写程序解决问题、看报错自己修』（数据分析、自动化脚本、
+  原型验证），AutoGen 的 UserProxy + 代码执行是同类里最顺手的。但要注意沙箱与成本。</p>
+</div></div><h2 id="8-踩坑与最佳实践">8. 踩坑与最佳实践</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">裸跑代码执行=开门揖盗</span></div><div class="co-body"><p>  见第 4 节。LLM 生成的代码在你的环境真实执行，提示注入可诱导它做破坏性操作。
+  生产三件套：Docker 沙箱、最小权限、资源与网络限制。没有沙箱就不要开代码执行。</p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">没有 max_round 会失控</span></div><div class="co-body"><p>  对话没有天然终点。GroupChat 与双人对话都必须设 <code>max_round</code> 或明确终止词。
+  否则『写码→报错→改码』的死循环会一直烧 token 到额度耗尽。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">system_message 决定协作质量</span></div><div class="co-body"><p>  AutoGen 里每个 Agent 的 <code>system_message</code> 就是它的『性格与职责契约』。写得含糊，
+  群聊就会『两个 Agent 抢着写码』或『没人拍板』。给每个角色清晰边界：
+  『你只做 X，不做 Y，完成后说 TERMINATE』。群聊的质量 ≈ system_message 的质量。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">上下文在轮转中膨胀</span></div><div class="co-body"><p>  每轮对话都带着历史消息。GroupChat 轮数一多，prompt 迅速变长、成本飙升、早期指令被稀释。
+  考虑定期摘要历史、限制单轮消息长度、或把中间产物落盘而非全量塞回对话。</p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">版本迁移巨坑</span></div><div class="co-body"><p>  AutoGen 0.2 → 0.4 是断裂式重构（包名 <code>autogen</code> → <code>ag2</code>/<code>autogen-agentchat</code>，
+  Agent 类与会话 API 全改）。抄旧教程代码大概率跑不起来。落地前先锁定版本，
+  读对应版本文档，不要 <code>pip install autogen</code> 最新就期望旧示例能跑。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">可复现要先固化随机性</span></div><div class="co-body"><p>  多 Agent 协作对 prompt、模型、温度都很敏感。要做质量回归（见评估调优分类），
+  先固定模型版本与 temperature，把每轮对话落盘成 case，才能对比『改了什么让结果变好』。
+  否则你永远不知道是调优生效还是模型抽风。</p>
+</div></div><h2 id="9-人在回路-把决策权交还给人类">9. 人在回路：把决策权交还给人类</h2>
+<p>全自动群聊很爽，但有些节点必须人拍板：删库、发对外邮件、花真钱。AutoGen 通过 <code>UserProxyAgent</code> 的 <code>human_input_mode</code> 把人插进对话：</p>
+<ul>
+<li><code>ALWAYS</code>：每轮都问人（最安全、最慢）；</li>
+<li><code>TERMINATE</code>（默认常见值之一）：仅当 Agent 要终止时征求确认；</li>
+<li><code>NEVER</code>：全自动，无人参与（见第 4 节，配合沙箱）。</li>
+</ul>
+<pre><code class="language-python"># autogen_hitl_skeleton.py —— 人在回路骨架（示意）
+user_proxy = UserProxyAgent(
+    name="user_proxy",
+    human_input_mode="ALWAYS",   # 每轮暂停等人确认，适合高风险操作
+    code_execution_config={...},
+)
+# ↑ 当 Assistant 给出要执行的代码，系统先打印出来等人敲 y/n，再决定是否真跑
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">高风险动作别设 NEVER</span></div><div class="co-body"><p>  凡是带副作用（写库、发消息、花钱、删文件）的流程，绝不要用 <code>human_input_mode="NEVER"</code>
+  全自动跑。把『执行前确认』作为默认关卡，把 <code>NEVER</code> 只留给纯只读、可重放的分析任务。
+  人在回路不是体验负担，是生产系统的安全带。</p>
+</div></div><h2 id="10-与外部系统集成-把检索-api-当成工具">10. 与外部系统集成：把检索/API 当成工具</h2>
+<p>AutoGen 不该是孤岛。真实系统里，Agent 群聊往往要『先查知识库、再算、再调业务 API』。做法和第 6 节一致——把这些能力注册成工具或代码可调用函数，融入对话。</p>
+<pre><code class="language-python"># autogen_rag_tool_skeleton.py —— 把检索能力注入群聊（示意）
+def search_kb(question: str) -&gt; str:
+    # 内部调 LlamaIndex / 向量库的检索接口，返回相关片段文本
+    return retrieve_from_vectorstore(question)
+
+assistant.register_function(function_map={"search_kb": search_kb})
+# ↑ 群聊中 Assistant 可先调 search_kb 拿到事实，再基于事实写代码或作答
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">框架组合的常见形态</span></div><div class="co-body"><p>  实际架构里常见：LlamaIndex 负责检索、AutoGen 负责多 Agent 协作、两者通过『工具』
+  打通。不要执念『一个框架包办』。把每个框架用在它最强的那一环，才是工程上最稳的组合。</p>
+</div></div><h2 id="11-可观测性-把每一场对话落盘">11. 可观测性：把每一场对话落盘</h2>
+<p>群聊出错时，最难的是『还原当时发生了什么』。AutoGen 的对话本质是消息序列，天然可序列化——把它落盘，就是一份可回放的 trace。</p>
+<pre><code class="language-python"># autogen_trace_skeleton.py —— 落盘对话做回归（示意）
+import json
+
+# 每次群聊结束后，把 messages 序列化保存
+def save_transcript(chat_result, path):
+    with open(path, "w") as f:
+        json.dump(chat_result.chat_history, f, ensure_ascii=False, indent=2)
+    # ↑ 之后可重放、可对比不同模型/提示下的差异，是质量回归的素材
+
+# 进一步：把落盘内容接到 LangSmith / Phoenix / OTel，做跨轮延迟与 token 看板
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">没有 trace 的多 Agent 系统等于盲飞</span></div><div class="co-body"><p>  群聊路径不可完全预测，若不落盘，一次『答错了』你连『是哪个 Agent 在哪轮带偏的』都查不出。
+  把对话历史当一等公民存储，是后续做评估、做回归、做成本审计的前提（详见评估调优分类）。</p>
+</div></div><h2 id="12-成本与性能-群聊是-token-放大器">12. 成本与性能：群聊是 token 放大器</h2>
+<p>多 Agent 系统最容易被低估的就是开销。一次群聊的 token 消耗约等于：</p>
+<pre><code>单次群聊成本 ≈ Σ(每个 Agent 每轮看到的上下文长度) × 轮数 × 单价
+</code></pre><code>Agent 数</code> 和 <code>max_round</code> 是两个放大器。一个 4 Agent × 12 轮的群聊，prompt 里反复携带完整历史，成本可能是单次问答的几十倍。优化抓手：<ul>
+<li><strong>压轮数</strong>：在 system_message 明确『尽早 TERMINATE』，避免无效寒暄轮；</li>
+<li><strong>压上下文</strong>：定期摘要历史、把大产物落盘而非全量回传；</li>
+<li><strong>分层模型</strong>：让『选下一位发言者』这类轻决策用便宜小模型，重思考才用贵模型；</li>
+<li><strong>评估是否真要群聊</strong>：很多任务双人（想+跑）就够，硬上 GroupChat 纯属加价。</li>
+</ul>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">先算再上</span></div><div class="co-body"><p>  上线前用上面的公式估一笔：假设 1000 次/天的群聊，单次成本 × 轮数 × Agent 数，乘出来
+  可能吓你一跳。多 Agent 的『智能』是用钱买来的，务必先确认收益覆盖成本。</p>
+</div></div><h2 id="13-适用与不适用">13. 适用与不适用</h2>
+<p><strong>适用：</strong></p>
+<ul>
+<li>任务需要多个角色反复磋商、互相补台（写码+审查+测试）；</li>
+<li>核心是『让 LLM 自动写程序并自我修正』（数据分析、自动化、原型）；</li>
+<li>你接受一定程度的『涌现式、不可完全预测』的执行路径；</li>
+<li>有沙箱环境兜底代码执行的安全风险。</li>
+</ul>
+<p><strong>不适用：</strong></p>
+<ul>
+<li>流程强约束、需精确状态控制与人在回路审批（看 LangGraph）；</li>
+<li>核心是知识库检索问答（看 LlamaIndex）；</li>
+<li>对成本/延迟极度敏感、每轮都贵不起（群聊 token 消耗大）；</li>
+<li>团队要求执行路径完全可复现、可审计（对话式推进天然较难）。</li>
+</ul>
+<h2 id="小结">小结</h2>
+<ul>
+<li>AutoGen 把多 Agent 协作建模成『可执行的对话』：Assistant 想、UserProxy 跑、群聊协商推进。</li>
+<li>代码执行是招牌能力，也是最大风险——必须 Docker 沙箱 + 最小权限 + 资源限额。</li>
+<li>终止条件（max_round / TERMINATE 词）是生命线，不设上限会死循环烧钱。</li>
+<li>GroupChat 适合多专家协作，但更贵更难停；发言策略 round_robin/auto 按任务灵活度选。</li>
+<li>能用明确函数工具就别让模型自由写代码：边界清晰、易审计。</li>
+<li>红线：沙箱兜底、轮数上限、system_message 写清职责、上下文防膨胀、版本以官方文档为准。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  若你的难点是『强约束、可复现、人在回路的状态机编排』，看 <strong>framework-langgraph</strong>；
+  若任务重心是『检索知识库』，看 <strong>framework-llamaindex</strong>；要横向比对全框架版图，
+  回 <strong>m3-frameworks</strong> 选型篇。</p>
+</div></div><h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>AutoGen 官方文档（0.2 与 0.4+ 两代 API 差异巨大，以你锁定的版本为准）</li>
+<li>AutoGen <code>AssistantAgent</code> / <code>UserProxyAgent</code> / <code>GroupChat</code> 用法与 <code>code_execution_config</code></li>
+<li>代码执行沙箱实践（Docker 隔离、资源限额、网络限制，详见工具沙箱主题）</li>
+<li>LangGraph / CrewAI 官方文档（对比状态图编排与角色剧组式编排的取舍）</li>
+<li>论文 <em>AutoGen: Enabling Next-Gen LLM Applications via Multi-Agent Conversation</em></li>
+<li>评估调优分类：多 Agent 系统的可复现性与质量回归方法</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="framework-llamaindex.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">LlamaIndex 实战：数据框架视角的 RAG 与 Agent</span></a>
+    <a class="art-pagerLink art-pagerRight" href="framework-crewai.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">CrewAI 实战：角色扮演式多 Agent 编排</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

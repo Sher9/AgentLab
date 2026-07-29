@@ -1,0 +1,187 @@
+---
+title: CI/CD 基础
+description: 掌握 GitHub Actions 流水线、缓存、矩阵与制品，理解持续集成与持续交付的门禁逻辑，给出可运行工作流骨架与踩坑清单。
+category: 开发工具
+order: 6
+difficulty: 进阶
+duration: 23 分钟
+tags: [CI/CD, GitHub Actions, 流水线, 缓存, 矩阵]
+date: 2026-07-29
+---
+
+# CI/CD 基础
+
+CI（持续集成）让每次提交自动构建、测试；CD（持续交付/部署）把通过门禁的产物自动发布。本篇以 **GitHub Actions** 为主线，讲清流水线结构、缓存加速、矩阵并行、制品传递与质量门禁，并对比其他方案。
+
+<Callout type="note" title="为什么需要 CI">
+  人肉在本地跑测试、手动部署，既慢又易漏。CI 把『构建+测试+部署』固化成代码，
+  每次 push 自动执行，保证主干永远可发布、回归立即可见。
+</Callout>
+
+## 1. 流水线核心概念
+
+一次 CI 运行由若干**阶段（stage/job）**组成，每个 job 在一台干净Runner上跑：
+
+- **trigger（触发）**：`push` / `pull_request` / 定时 `schedule` / 手动 `workflow_dispatch`；
+- **job**：独立环境里的任务（build / test / deploy），默认并行；
+- **step**：job 内的顺序步骤，执行具体命令或复用 `action`；
+- **artifact（制品）**：job 间传递的文件（如构建产物）；
+- **cache（缓存）**：跨运行复用的目录（如依赖），提速而非传递。
+
+<Callout type="tip" title="cache 与 artifact 别混">
+  cache 用于『加速同一任务的重复运行』（不保证存在）；artifact 用于『job 间可靠传递产物』。
+  想让下一个 job 拿到构建结果，用 artifact，不是 cache。
+</Callout>
+
+## 2. 一个可运行的工作流骨架
+
+```yaml
+# .github/workflows/ci.yml
+name: CI
+on:
+  push:
+    branches: [main]          # 推到 main 触发
+  pull_request:               # 提 PR 也触发（门禁）
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4      # 拉代码
+      - uses: actions/setup-node@v4    # 装 Node
+        with:
+          node-version: 20
+      - run: npm ci                     # 装依赖（配合缓存）
+      - run: npm test                   # 跑测试，失败则流水线标红
+```
+
+## 3. 缓存：省掉重复安装
+
+`actions/cache` 按 key 命中依赖目录，避免每次 `npm ci` 从零下载。
+
+```yaml
+      - name: 缓存依赖
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm                  # 要缓存的目录
+          key: ${{ runner.os }}-npm-${{ hashFiles('package-lock.json') }}
+          restore-keys: |               # 锁文件变了也能命中旧缓存兜底
+            ${{ runner.os }}-npm-
+```
+
+<Callout type="warn" title="缓存 key 要绑定锁文件">
+  key 含 `package-lock.json` 哈希，依赖一变 key 就变、缓存失效。若 key 写死常量，
+  会一直命中旧依赖，跑出与实际不符的结果——隐蔽且难查。
+</Callout>
+
+## 4. 矩阵：一次跑多环境
+
+`matrix` 让同一 job 在多个版本/OS 组合上并行，省去复制粘贴。
+
+```yaml
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [18, 20]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci && npm test
+```
+
+<Callout type="tip" title="矩阵配 fail-fast">
+  默认一个组合失败就取消其余，省资源；若想看全矩阵结果，设 `fail-fast: false`。
+  也可用 `exclude` 剔除不支持的组合（如某 OS 不兼容某版本）。
+</Callout>
+
+## 5. 制品与门禁
+
+构建结果用 `upload-artifact` 产出，后续 job（如部署）再 `download-artifact` 取用。门禁即『某些 job 不通过则阻断后续』——用 `needs` 串依赖：
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+  deploy:
+    needs: build            # build 成功才跑 deploy，形成门禁
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: dist }
+      # - run: ./deploy.sh   # 实际部署命令
+```
+
+| 门禁类型 | 做法 |
+|----------|------|
+| 测试门禁 | `test` job 失败 → `needs: test` 的部署 job 不跑 |
+| 代码质量 | 在 job 内跑 lint/覆盖率阈值，未达标 `exit 1` |
+| 审批门禁 | 部署 job 加 `environment` 需人工 approve（GitHub Environments） |
+
+<Callout type="note" title="门禁要快且准">
+  门禁太慢没人等得起、太松形同虚设。把慢测试（如 e2e）与快单测分层，
+  快门禁卡 PR、慢门禁放 merge 后跑，兼顾速度与质量。
+</Callout>
+
+## 6. 方案对比
+
+| 工具 | 定位 | 优点 | 缺点 |
+|------|------|------|------|
+| GitHub Actions | 托管、与 GitHub 深度集成 | YAML 简单、生态 action 多、免费额度 | 绑定 GitHub、复杂自托管配置 |
+| GitLab CI | GitLab 内建 | 单仓库一体、child pipeline 强 | 需 GitLab 环境 |
+| Jenkins | 自托管老牌 | 插件极多、完全可控 | 维护重、配置繁琐 |
+| CircleCI / Drone | 托管/轻量 | 配置简洁、容器原生 | 生态/自由度不及前两者 |
+
+<Callout type="tip" title="选型看在哪托管">
+  代码在 GitHub 就先用 Actions，零额外基础设施；需要私有化/高度定制再考虑 Jenkins。
+  别为『看起来更专业』提前上重平台，把团队拖进运维泥潭。
+</Callout>
+
+## 7. 常见坑
+
+<Callout type="danger" title="密钥泄露到日志">
+  密码/Token 必须走 `secrets`，绝不在 YAML 里硬编码或 `echo` 出来。
+  即便用 secrets，命令报错可能把含密钥的命令行打印进日志——敏感值用
+  `echo "::add-mask::${{ secrets.TOKEN }}"` 遮蔽，或避免打印。
+</Callout>
+
+<Callout type="warn" title="缓存投毒">
+  缓存可能带入上次运行的陈旧文件（如部分构建产物），与当前代码不一致导致诡异失败。
+  key 务必含锁文件/源码特征；怀疑时手动清缓存重跑验证。
+</Callout>
+
+<Callout type="warn" title="PR 里跑危险命令">
+  `pull_request` 触发时，恶意 PR 可能借机执行 `script` 偷 secrets。对外部贡献者，
+  敏感 job 改由 `pull_request_target` + 限定分支，或要求先 review 再跑。
+</Callout>
+
+<Callout type="warn" title="矩阵爆炸">
+  维度一多（OS×版本×数据库）组合数指数增长，既烧额度又拖时长。
+  控制维度数量，用 `exclude` 砍掉无意义组合，必要时拆成多个 workflow。
+</Callout>
+
+## 小结
+
+- CI 把构建/测试固化成代码，CD 自动发布；核心是 job、step、触发、制品、缓存。
+- cache 加速、artifact 可靠传产物，二者用途不同别混用；key 要绑定锁文件。
+- 矩阵并行多环境，用 `fail-fast`/`exclude` 控成本；`needs` 串出测试→部署门禁。
+- 门禁分层：快单测卡 PR、慢 e2e 放 merge 后；选型随代码托管平台走。
+- 红线：密钥走 secrets 且遮蔽、防缓存投毒、防 PR 执行危险命令、控矩阵规模。
+
+## 延伸阅读 / 参考
+
+- GitHub Actions 官方文档（Workflow 语法、cache/upload-artifact）
+- GitLab CI 文档（若团队使用 GitLab）
+- 《Continuous Delivery》（Forsyth/Humble 经典著，门禁与流水线理论）
+- OWASP 关于 CI/CD 安全的指南（secrets 与 PR 触发风险）
+- actions/setup-node、actions/cache 等官方 action 的 README 与示例

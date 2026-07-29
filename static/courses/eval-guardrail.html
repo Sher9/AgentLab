@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>护栏与安全评估：输入/输出过滤、敏感词、合规与红队评估 · AgentLab</title>
+  <meta name="description" content="系统化讲解 Agent 的护栏（Guardrails）：输入层（提示注入/敏感词/PII）、输出层（毒性/合规/格式）、运行时护栏，以及用红队评估验证护栏是否真的拦得住，给出伪代码骨架、对比与踩坑。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="护栏与安全评估：输入/输出过滤、敏感词、合规与红队评估 · AgentLab"/>
+  <meta property="og:description" content="系统化讲解 Agent 的护栏（Guardrails）：输入层（提示注入/敏感词/PII）、输出层（毒性/合规/格式）、运行时护栏，以及用红队评估验证护栏是否真的拦得住，给出伪代码骨架、对比与踩坑。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#eval">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">📊</span>
+        <span class="art-moduleName">评估调优</span>
+        <span class="art-diff">高级</span>
+        <span class="art-dur">35 分钟</span>
+      </div>
+      <h1 class="art-title">护栏与安全评估：输入/输出过滤、敏感词、合规与红队评估</h1>
+      <p class="art-desc">系统化讲解 Agent 的护栏（Guardrails）：输入层（提示注入/敏感词/PII）、输出层（毒性/合规/格式）、运行时护栏，以及用红队评估验证护栏是否真的拦得住，给出伪代码骨架、对比与踩坑。</p>
+      <div class="art-tags"><span class="art-tag">#护栏</span><span class="art-tag">#Guardrails</span><span class="art-tag">#提示注入</span><span class="art-tag">#红队</span><span class="art-tag">#合规</span><span class="art-tag">#内容安全</span></div>
+    </div>
+    <div class="prose"><h1>护栏与安全评估：输入/输出过滤、敏感词、合规与红队评估</h1>
+<p>M6 在『可观测与评估』里把 Guardrails 作为守住底线的一环提了一句。这一篇把<strong>护栏本身</strong>讲透：在 Agent 的输入侧、输出侧、运行时分别该布什么防线，敏感词/合规怎么做，以及——最关键的——<strong>怎么用红队评估证明你的护栏真的拦得住</strong>，而不是『我以为它拦得住』。</p>
+<p>没有护栏的 Agent 直接面对用户（和恶意用户），轻则被提示注入带偏、重则泄露数据、输出违规内容、被拿去干坏事。护栏是上生产的硬门槛。</p>
+<h2 id="1-什么是护栏-为什么必要">1. 什么是护栏，为什么必要</h2>
+<p>护栏（Guardrail）= 在模型『自由发挥』之外，加的一层<strong>确定性或模型辅助的过滤与约束</strong>，确保输入输出满足安全/合规/业务红线。它和『评估指标』不同：评估是<strong>事后打分</strong>，护栏是<strong>事前/事中拦截</strong>。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">护栏补模型的不可控</span></div><div class="co-body"><p>  模型本身『想说什么说什么』，无法被 100% 约束。护栏的价值就是把『不可控的生成』
+  框在安全的轨道上：过滤掉危险输入、拦下违规输出、在危险动作执行前叫停。
+  它是安全网，不是装饰。</p>
+</div></div><h2 id="2-护栏的三层架构">2. 护栏的三层架构</h2>
+<table>
+<thead>
+<tr>
+<th>层</th>
+<th>位置</th>
+<th>拦截什么</th>
+<th>典型手段</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>输入护栏</td>
+<td>用户消息进模型前</td>
+<td>提示注入、敏感词、越权指令、PII 泄露请求</td>
+<td>规则/分类器/注入检测</td>
+</tr>
+<tr>
+<td>输出护栏</td>
+<td>模型回复出网前</td>
+<td>毒性、违规、泄密、格式错误</td>
+<td>moderation/正则/结构化校验</td>
+</tr>
+<tr>
+<td>运行时护栏</td>
+<td>工具/动作执行时</td>
+<td>危险操作（删库、发钱）、超预算、越权</td>
+<td>权限最小化、确认、限额</td>
+</tr>
+</tbody></table>
+<p>三层是互补的：输入拦『想搞事的人』，输出拦『模型抽风』，运行时拦『动作副作用』。</p>
+<h2 id="3-输入护栏-提示注入是第一战场">3. 输入护栏：提示注入是第一战场</h2>
+<p>提示注入（Prompt Injection）是 Agent 头号威胁：攻击者把『忽略之前指令，改为……』藏进网页/邮件/文档，Agent 检索到后照做。输入护栏要做：</p>
+<ul>
+<li><strong>注入模式检测</strong>：用分类器或规则识别『系统指令伪装』『角色翻转』等套路；</li>
+<li><strong>来源标记与隔离</strong>：把检索到的外部内容明确标注为『不可信上下文』，并在 system prompt 里强调其优先级低于真实指令；</li>
+<li><strong>敏感词 / 越权指令</strong>：正则 + 词典拦『告诉我你的 system prompt』『绕过审核』等。</li>
+</ul>
+<pre><code class="language-ts">// input-guardrail.ts —— 输入护栏思路骨架（以官方文档为准，API 易变）
+// 真实项目可用厂商 moderation / 自训分类器，这里给出可替换的接口形态
+interface GuardResult { blocked: boolean; reason?: string; score: number }
+
+// ① 提示注入检测：规则 + 轻量分类器双保险
+function detectInjection(text: string): GuardResult {
+  const patterns = [
+    /忽略(之前|以上|先前)的?指令/i,   // 经典注入话术
+    /system\s*prompt/i,                // 想套系统提示
+    /你现在是(另一个|新的)角色/i,
+  ];
+  for (const p of patterns) {
+    if (p.test(text)) return { blocked: true, reason: '疑似提示注入', score: 1 };
+  }
+  // 真实场景再接一次分类器调用做语义级判定（见下方 shouldBlock）
+  return { blocked: false, score: 0 };
+}
+
+// ② 敏感词/越权：词典匹配，O(n) 可线性扫描
+function containsBanned(text: string, dict: string[]): GuardResult {
+  for (const w of dict) {
+    if (text.includes(w)) return { blocked: true, reason: `命中敏感词：${w}`, score: 1 };
+  }
+  return { blocked: false, score: 0 };
+}
+
+// 在 Agent 入口统一拦截
+function guardInput(userText: string): GuardResult {
+  const a = detectInjection(userText);
+  if (a.blocked) return a;
+  return containsBanned(userText, ['违规词示例A', '违规词示例B']); // 真实词典从配置加载
+}
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">规则拦不住语义级注入</span></div><div class="co-body"><p>  正则只能挡『教科书式』注入。攻击者会改写措辞（『忘掉你刚才学的，改做 X』），
+  规则必然漏。语义级注入要靠<strong>分类器/强模型判定</strong>，且输入护栏要和输出护栏、运行时护栏叠加，
+  单点必被绕过。护栏是纵深防御，不是一道门。</p>
+</div></div><h2 id="4-输出护栏-模型抽风也得兜住">4. 输出护栏：模型抽风也得兜住</h2>
+<p>即使输入干净，模型也可能输出违规、泄密或格式错。输出护栏在回复出网前再过一道：</p>
+<ul>
+<li><strong>毒性 / 违规检测</strong>：用 moderation 分类器（见 4.1）或自训模型；</li>
+<li><strong>泄密检测</strong>：扫描输出是否含密钥、PII、内部知识库原文；</li>
+<li><strong>格式/业务约束</strong>：用 Zod 校验结构（见 eval-metrics 第 3.3 节）。</li>
+</ul>
+<pre><code class="language-ts">// output-guardrail.ts —— 输出护栏思路骨架
+function guardOutput(text: string): GuardResult {
+  // ① 泄密扫描：正则抓密钥/卡号等高危模式（示意，真实用更全的字典+NER）
+  if (/\b(?:sk|pk)-[A-Za-z0-9]{20,}\b/.test(text)) {
+    return { blocked: true, reason: '输出疑似含密钥', score: 1 };
+  }
+  // ② 格式约束：要求 JSON 时，非 JSON 直接拦下重写
+  if (text.trim().startsWith('{')) {
+    try { JSON.parse(text); } catch { return { blocked: true, reason: '格式非法', score: 1 }; }
+  }
+  return { blocked: false, score: 0 };
+}
+</code></pre><h3 id="4-1-用-moderation-做毒性护栏-openai-node-sdk">4.1 用 moderation 做毒性护栏（OpenAI Node SDK）</h3>
+<p> toxicity/违规这类靠规则很难覆盖全，用厂商提供的 moderation 端点最省事——它是官方 API，可直接调用：</p>
+<pre><code class="language-ts">// moderation-guard.ts —— 用 OpenAI moderation 拦违规输出（官方 API）
+import OpenAI from 'openai';
+import 'dotenv/config';
+const client = new OpenAI();
+
+async function guardWithModeration(text: string): Promise&lt;GuardResult&gt; {
+  const res = await client.moderations.create({ input: text }); // 官方审核端点
+  const r = res.results[0];
+  if (r.flagged) {
+    // 命中类别（仇恨/暴力/自杀/性/违规等）可在 r.categories 里细看
+    return { blocked: true, reason: 'moderation 命中违规类别', score: 1 };
+  }
+  return { blocked: false, score: 0 };
+}
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">moderation 是输入端也可用</span></div><div class="co-body">  <code>moderations.create</code> 对用户输入同样有效——在用户消息进模型前先审一遍，
+<p>  能拦掉大部分明显违规请求，和输入护栏的规则层形成双保险。</p>
+</div></div><h2 id="5-运行时护栏-动作执行前的最后一道闸">5. 运行时护栏：动作执行前的最后一道闸</h2>
+<p>输入/输出护栏管『语言』，运行时护栏管『动作』。Agent 一旦能调工具（发邮件、改库、转账），就必须有：</p>
+<ul>
+<li><strong>权限最小化</strong>：每个工具只给必需权限，禁止 Agent 拿到删库/管理员密钥；</li>
+<li><strong>危险动作确认（HITL）</strong>：退款、发送、删除等不可逆操作，落地前人工/二次确认（见 product-hitl）；</li>
+<li><strong>预算/频次限额</strong>：单会话工具调用次数、金额上限，防失控烧钱或被利用。</li>
+</ul>
+<pre><code class="language-ts">// runtime-guard.ts —— 运行时护栏思路骨架
+const RISKY_TOOLS = new Set(['refund', 'send_email', 'delete_record']);
+const QUOTA = { maxToolCalls: 10, maxAmount: 1000 };
+
+function guardAction(tool: string, args: any, used: { calls: number; amount: number }): GuardResult {
+  if (used.calls &gt;= QUOTA.maxToolCalls) {
+    return { blocked: true, reason: '超过单会话工具调用上限', score: 1 };
+  }
+  if (RISKY_TOOLS.has(tool)) {
+    // 不可逆动作：必须显式确认，否则拦截（交由 human-in-the-loop）
+    if (!args.confirmed) return { blocked: true, reason: `危险动作 ${tool} 需确认`, score: 1 };
+    if ((args.amount ?? 0) &gt; QUOTA.maxAmount) {
+      return { blocked: true, reason: '超出金额限额', score: 1 };
+    }
+  }
+  return { blocked: false, score: 0 };
+}
+</code></pre><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">别把高危密钥交给 Agent</span></div><div class="co-body"><p>  运行时护栏的前提是『Agent 根本没有高危权限』。若 Agent 的运行身份持有删除全库、
+  无限转账的凭证，护栏再严也只是建议。权限最小化是根，护栏是网，二者都不可少。</p>
+</div></div><h2 id="6-合规与敏感词工程化">6. 合规与敏感词工程化</h2>
+<p>敏感词和合规不是『塞个数组就完事』，生产里要处理三件事：</p>
+<ul>
+<li><strong>动态词库与分级</strong>：词库从配置/DB 加载、可热更新；词分等级（硬违规立即拦、软词仅标记），避免一刀切误伤。</li>
+<li><strong>多语种与变体</strong>：违规词有谐音、拆字、中英混排、Unicode 全角等绕过。规则层用归一化（全角转半角、去零宽字符、注音映射）后再匹配；语义级交给分类器。</li>
+<li><strong>PII 检测</strong>：身份证、手机号、邮箱、银行卡要用专门正则 + NER，拦截输出里的个人隐私泄露。</li>
+</ul>
+<pre><code class="language-ts">// compliance.ts —— 敏感词归一化 + 分级思路骨架
+function normalize(text: string): string {
+  return text
+    .replace(/[！-～]/g, (c) =&gt; String.fromCharCode(c.charCodeAt(0) - 0xfee0)) // 全角→半角
+    .replace(/[​-‍]/g, '')                              // 去零宽字符（看不见的绕过）
+    .toLowerCase()
+    .replace(/\s+/g, '');                                 // 去空格，防『违 规』拆字
+}
+
+// 分级词库：硬词拦截，软词标记
+const HARD = ['违规词示例A'];
+const SOFT = ['争议词示例B'];
+
+function scanCompliance(text: string): GuardResult {
+  const t = normalize(text);
+  for (const w of HARD) if (normalize(w) &amp;&amp; t.includes(normalize(w))) {
+    return { blocked: true, reason: `命中硬违规词：${w}`, score: 1 };
+  }
+  for (const w of SOFT) if (t.includes(normalize(w))) {
+    return { blocked: false, reason: `命中软词，建议标记复核：${w}`, score: 0.5 };
+  }
+  return { blocked: false, score: 0 };
+}
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">归一化是规则层的命门</span></div><div class="co-body"><p>  攻击者最爱的绕过就是『全角、插零宽字符、拆空格』。规则匹配前<strong>必须先归一化</strong>，
+  否则你的词库形同虚设。但归一化也拦不住语义改写，重度场景仍需分类器兜底。</p>
+</div></div><h2 id="7-端到端示例-三层护栏串联">7. 端到端示例：三层护栏串联</h2>
+<p>把输入、输出、运行时三层接进 Agent 主循环，一个请求会依次过这些闸：</p>
+<pre><code class="language-ts">// guardrail-pipeline.ts —— 三层护栏串联思路（以官方文档为准，API 易变）
+async function guardedAgentRun(userText: string) {
+  // ① 输入护栏：注入/敏感词/moderation，任一拦下直接拒绝
+  const inRes = guardInput(userText);
+  if (inRes.blocked) return refuse(inRes.reason);
+
+  // ② 跑 Agent（内部每步工具调用再走运行时护栏 guardAction）
+  const draft = await agentGenerate(userText);
+
+  // ③ 输出护栏：moderation + 泄密 + 格式
+  const mod = await guardWithModeration(draft);
+  if (mod.blocked) return refuse(mod.reason);
+  const outRes = guardOutput(draft);
+  if (outRes.blocked) return refuse(outRes.reason);
+
+  return draft; // 三层都过，才放行
+}
+
+function refuse(reason: string): string {
+  // 拒绝时只回原因类别，不回原文（防敏感内容进日志）
+  return `请求被护栏拦截（${reason}）。`;
+}
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">拒绝也要友好且安全</span></div><div class="co-body"><p>  拦截后用统一、不含原始敏感内容的提示回复用户，既不泄露原因细节给攻击者，
+  也保留正常用户的申诉入口。拒绝是产品行为，不是只抛 400。</p>
+</div></div><h2 id="8-护栏的评估闭环">8. 护栏的评估闭环</h2>
+<p>护栏不是『写完就完』，它自己也要被评估、进回归。把红队拦截率变成固定指标：</p>
+<ul>
+<li>红队集纳入版本化评测集（见 eval-dataset），每次改护栏都重跑，拦截率跌就挡下合并；</li>
+<li>同时监控<strong>误拦率</strong>（用一批正常样本测，越低越好），和拦截率一起看跷跷板；</li>
+<li>拦截率、误拦率、漏网样本，全部进 Dashboard（见 eval-trace 第 8 节）做趋势告警。</li>
+</ul>
+<pre><code class="language-ts">// guardrail-eval-loop.ts —— 护栏指标纳入回归（思路）
+async function guardrailRegression() {
+  const attackRecall = (await redTeam(attackSet, guardInput)).recall;  // 拦攻击的能力
+  const falseBlock = (await redTeam(normalSet, guardInput)).blocked;    // 误伤正常用户
+  if (attackRecall &lt; 0.95) throw new Error('护栏拦截率不达标，禁止合并');
+  if (falseBlock / normalSet.length &gt; 0.02) throw new Error('误拦率过高，需调阈值');
+}
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">拦截率和误拦率要一起盯</span></div><div class="co-body"><p>  把拦截率调到 100% 很容易——把所有请求都拦了就行。所以必须同时卡住误拦率上限，
+  二者是跷跷板的两端。单看一个指标会被自己骗。</p>
+</div></div><h2 id="9-安全评估-红队-red-teaming">9. 安全评估：红队（Red Teaming）</h2>
+<p>护栏写完最危险的误区是『我觉得能拦住』。<strong>红队评估</strong>就是用对抗样本主动攻击自己的护栏，量化『拦截率』。流程：</p>
+<ol>
+<li>准备一批攻击样本：提示注入变体、敏感词伪装、越权请求、违规诱导；</li>
+<li>跑过『带护栏的 Agent』，记录每个样本是否被拦；</li>
+<li>算<strong>拦截率（Recall@attack）</strong>：拦下的攻击数 / 总攻击数；</li>
+<li>漏网的攻击样本 → 补规则/分类器 → 再测，循环直到达标。</li>
+</ol>
+<pre><code class="language-ts">// redteam.ts —— 红队评估思路骨架：量化护栏拦截率
+async function redTeam(
+  attacks: string[],                       // 攻击样本集
+  runGuarded: (input: string) =&gt; Promise&lt;GuardResult&gt; // 被测的输入护栏
+) {
+  let blocked = 0;
+  const leaks: string[] = [];
+  for (const a of attacks) {
+    const r = await runGuarded(a);
+    if (r.blocked) blocked++;
+    else leaks.push(a); // 漏网的要补防
+  }
+  const recall = blocked / attacks.length; // 拦截率，越低越危险
+  return { recall, leaks };
+}
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">红队要持续、要变体化</span></div><div class="co-body"><p>  攻击者不会用你训练时的那句话。红队样本要覆盖<strong>措辞变体、编码绕过（base64/Unicode）、
+  多语种、上下文拼接</strong>等。一次红队通过 ≠ 永远安全，应把红队集纳入回归（见 eval-dataset），
+  每次改护栏都重跑。</p>
+</div></div><h2 id="10-自研-vs-框架对比">10. 自研 vs 框架对比</h2>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>适用</th>
+<th>优点</th>
+<th>缺点</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>自研规则 + 分类器</td>
+<td>需求明确、要完全可控</td>
+<td>透明、零厂商绑定、延迟低</td>
+<td>语义级能力弱、要自己维护</td>
+</tr>
+<tr>
+<td>厂商 moderation API</td>
+<td>通用毒性/违规</td>
+<td>开箱即用、持续更新</td>
+<td>类别有限、数据出域需评估</td>
+</tr>
+<tr>
+<td>Guardrails/NeMo 等框架</td>
+<td>要结构化输出约束+校验</td>
+<td>内置多类护栏、可组合</td>
+<td>学习成本、版本/API 易变</td>
+</tr>
+<tr>
+<td>在 Agent 循环内用模型自检</td>
+<td>语义级复杂策略</td>
+<td>灵活、可描述复杂规则</td>
+<td>额外延迟与成本、非确定</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">纵深防御，别押单一层</span></div><div class="co-body"><p>  实战推荐：规则（快、拦明显）+ 厂商/分类器（拦语义级）+ 运行时限额（兜底动作）。
+  任何一层都可能被绕过，叠加才有可接受的拦截率。评估这个『可接受的拦截率』靠红队。</p>
+</div></div><h2 id="11-常见坑">11. 常见坑</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">护栏被注入『反向指令』绕过</span></div><div class="co-body"><p>  攻击者可能在文档里写『上面的审核规则作废』。若你的护栏提示本身也是文本且可被检索内容影响，
+  会被反制。对策：护栏逻辑放在<strong>代码层</strong>（规则/分类器/限额），不在模型提示里靠『请审核』实现。
+  模型提示是可被注入改写的，代码不可。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">过度拦截伤体验</span></div><div class="co-body"><p>  护栏太严会把正常用户也拦了（如把医学咨询当违规）。要监控『误拦率』，
+  和拦截率一起看，用真实用户样本校准阈值。安全与可用是跷跷板，得调。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">只测正向，不测红队</span></div><div class="co-body"><p>  上线前只验证了『正常请求通过』，从没用攻击样本打过自己的护栏——
+  这是最典型的虚假安全感。护栏上线必须有红队拦截率作为准入门槛。</p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">敏感内容进日志/Trace 二次泄露</span></div><div class="co-body"><p>  护栏拦截时若把原始违规输入/输出原样写进日志或 Trace（见 eval-trace），
+  等于把敏感数据复制到另一个可观测后端。拦截记录要存『命中类别+哈希』，不存原文。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">把护栏当银弹</span></div><div class="co-body"><p>  护栏降低风险，不消除风险。高危场景（医疗/金融建议、自动执行）仍需 human-in-the-loop
+  与清晰的责任边界。别让护栏给人『系统绝对安全』的错觉。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>护栏是事前/事中拦截（评估是事后打分），分输入/输出/运行时三层，纵深防御缺一不可。</li>
+<li>输入护栏主攻提示注入与敏感词；语义级注入规则拦不住，要靠分类器，且外部内容必须标记为不可信。</li>
+<li>输出护栏用 moderation/正则/格式校验兜住模型抽风与泄密；moderation 输入端也能用。</li>
+<li>运行时护栏管动作：权限最小化、危险动作确认、预算限额——根在权限，网在护栏。</li>
+<li>红队评估量化拦截率，样本要变体化、纳入回归；只测正向不测红队是虚假安全。</li>
+<li>红线：护栏逻辑放代码层（防注入反制）、监控误拦率、拦截记录脱敏、高危场景仍要 HITL。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  护栏守住了单条请求，但要证明『整个系统质量在变好』，需要把评估做成回归——
+  见 eval-dataset（评测集与回归）。想看清每次攻击/失败的完整路径，回到 eval-trace 做链路追踪。</p>
+</div></div><h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>OpenAI Moderation API 文档（毒性/违规类别与调用，以官方为准）</li>
+<li>OWASP Top 10 for LLM Applications（LLM01 提示注入等风险清单）</li>
+<li>论文 <em>Not what you&#39;ve signed up for: Compromising Real-World LLM-Integrated Applications</em>（提示注入实战）</li>
+<li>NVIDIA NeMo Guardrails / Guardrails AI 文档（结构化输出与多层护栏框架，API 易变）</li>
+<li>NIST AI Risk Management Framework（AI 风险与红队治理框架）</li>
+<li>微软 <em>TensorFlow/PyTorch 红队实践指南</em> 相关安全评估方法论</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="eval-prompt-opt.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">Prompt 调优：系统化迭代而非灵感式瞎改</span></a>
+    <a class="art-pagerLink art-pagerRight" href="eval-abtest.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">线上实验：用 A/B 与灰度验证真实收益</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

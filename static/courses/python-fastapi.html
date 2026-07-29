@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>FastAPI 实战：路由、依赖注入、校验、异步与 OpenAPI · AgentLab</title>
+  <meta name="description" content="用 FastAPI 搭建类型安全、自带文档的异步 API，深入路由、Pydantic 校验、依赖注入、异步视图、中间件、OpenAPI 与安全。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="FastAPI 实战：路由、依赖注入、校验、异步与 OpenAPI · AgentLab"/>
+  <meta property="og:description" content="用 FastAPI 搭建类型安全、自带文档的异步 API，深入路由、Pydantic 校验、依赖注入、异步视图、中间件、OpenAPI 与安全。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#python">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🐍</span>
+        <span class="art-moduleName">Python</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">45 分钟</span>
+      </div>
+      <h1 class="art-title">FastAPI 实战：路由、依赖注入、校验、异步与 OpenAPI</h1>
+      <p class="art-desc">用 FastAPI 搭建类型安全、自带文档的异步 API，深入路由、Pydantic 校验、依赖注入、异步视图、中间件、OpenAPI 与安全。</p>
+      <div class="art-tags"><span class="art-tag">#FastAPI</span><span class="art-tag">#Web</span><span class="art-tag">#异步</span><span class="art-tag">#Pydantic</span><span class="art-tag">#依赖注入</span></div>
+    </div>
+    <div class="prose"><h1>FastAPI 实战：路由、依赖注入、校验、异步与 OpenAPI</h1>
+<p>FastAPI 是当下 Python Web 框架里「现代感」最强的一个：基于类型注解做<strong>自动校验与文档生成</strong>，原生支持 <code>async/await</code>，性能靠 Starlette + Pydantic 撑着，足以和 Node/Go 一较高下。这一篇带你从零搭一个能跑的异步 API，并深入路由、请求体、依赖注入、异步并发、中间件、OpenAPI 与安全这几个核心零件。</p>
+<h2 id="1-为什么选-fastapi">1. 为什么选 FastAPI</h2>
+<p>对比常见选择，你会明白它为什么火：</p>
+<table>
+<thead>
+<tr>
+<th>框架</th>
+<th>类型校验</th>
+<th>异步</th>
+<th>自动文档</th>
+<th>性能</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Flask</td>
+<td>需自己接</td>
+<td>弱</td>
+<td>需插件</td>
+<td>中</td>
+</tr>
+<tr>
+<td>Django</td>
+<td>表单/DRF</td>
+<td>部分</td>
+<td>需插件</td>
+<td>中</td>
+</tr>
+<tr>
+<td>FastAPI</td>
+<td>Pydantic 内置</td>
+<td>一等公民</td>
+<td>开箱即有</td>
+<td>高</td>
+</tr>
+</tbody></table>
+<p>核心卖点就三条：<strong>写注解即写文档兼校验</strong>、<strong>异步并发开箱即用</strong>、<strong>开发体验好（编辑器补全强）</strong>。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">它到底是什么</span></div><div class="co-body"><p>  FastAPI 是 Starlette（ASGI Web 骨架）之上的一层封装：路由/请求解析/依赖注入/文档生成由它做，
+  底层并发模型是 ASGI。理解这一点，后面「异步为什么快」就有了落脚点。</p>
+</div></div><h2 id="2-最小应用">2. 最小应用</h2>
+<p>一个 FastAPI 应用就是个 <code>FastAPI()</code> 实例，往上面挂路由即可。</p>
+<pre><code class="language-python"># main.py
+from fastapi import FastAPI
+
+app = FastAPI()   # 应用实例，uvicorn 加载的就是它（main:app）
+
+@app.get("/")            # 装饰器声明 HTTP 方法与路径
+async def root():
+    return {"msg": "hello world"}
+</code></pre><p>启动：<code>uvicorn main:app --reload</code>。访问 <code>http://127.0.0.1:8000/</code> 看到 JSON；访问 <code>/docs</code> 看到自动生成的交互式 Swagger UI。</p>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">app:app 是什么</span></div><div class="co-body">  <code>uvicorn main:app</code> 里前一个 <code>main</code> 是模块文件名（main.py），后一个 <code>app</code> 是该模块里
+<p>  那个 <code>FastAPI</code> 实例的变量名。写成 <code>uvicorn mymodule:myapp</code> 也行，要对应上。</p>
+</div></div><h2 id="3-路径参数与查询参数">3. 路径参数与查询参数</h2>
+<p>路径参数写在 <code>{}</code> 里，查询参数直接当函数参数，二者都由类型注解自动解析与校验。</p>
+<pre><code class="language-python">from typing import Optional
+
+@app.get("/items/{item_id}")
+async def read_item(item_id: int, q: Optional[str] = None, limit: int = 10):
+    # item_id 是路径参数，FastAPI 自动把字符串转成 int，转失败返回 422
+    # q / limit 是查询参数：?q=xxx&amp;limit=5
+    return {"item_id": item_id, "q": q, "limit": limit}
+</code></pre><p>类型注解在这里是<strong>活的</strong>：传 <code>item_id=abc</code> 这类无法转 int 的值，框架直接返回 422 并告诉你哪错——不用你手写校验逻辑。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">路径 vs 查询参数怎么选</span></div><div class="co-body"><p>  路径参数用于「定位资源」（如 /users/123 的 123）；查询参数用于「过滤/分页」
+  （如 ?page=2&amp;size=20）。这是 REST 风格的基本约定。注意路径参数必填，查询参数可给默认值。</p>
+</div></div><h2 id="4-pydantic-校验深入">4. Pydantic 校验深入</h2>
+<p>请求体用 Pydantic 模型描述，FastAPI 负责解析 JSON、校验字段、把 Python 对象交给你。这是在 Python 里写 API 最舒服的地方。</p>
+<pre><code class="language-python">from pydantic import BaseModel, Field, field_validator
+
+class Item(BaseModel):
+    name: str = Field(..., min_length=1)   # ... 表示必填；带校验规则
+    price: float = Field(..., gt=0)         # 价格必须大于 0
+    tags: list[str] = []                    # 可选，默认空列表
+
+    @field_validator("name")
+    def name_not_blank(cls, v: str) -&gt; str:
+        # 跨字段/复杂规则用校验器，而非单纯 Field 约束
+        if v.strip() != v:
+            raise ValueError("name 不应带首尾空格")
+        return v
+</code></pre><h3 id="4-1-嵌套模型与泛型">4.1 嵌套模型与泛型</h3>
+<pre><code class="language-python">from typing import List
+from pydantic import BaseModel
+
+class Address(BaseModel):
+    city: str
+    street: str
+
+class User(BaseModel):
+    name: str
+    addresses: List[Address]   # 嵌套模型，FastAPI 递归校验
+
+# 用 TypeAdapter / 泛型可进一步抽象，详见 Pydantic 文档（以官方文档为准，API 易变）
+</code></pre><h3 id="4-2-响应模型">4.2 响应模型</h3>
+<p>用 <code>response_model</code> 约束返回结构，既能自动过滤掉不该外泄的字段（如密码），又能生成准确的响应文档。</p>
+<pre><code class="language-python">class ItemOut(BaseModel):
+    name: str
+    price: float
+
+@app.post("/items/", response_model=ItemOut)
+async def create_item(item: Item):
+    # 哪怕内部对象还有别的字段，返回时也只保留 ItemOut 声明的
+    return {"name": item.name, "price": item.price, "secret": "不出现"}
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">校验失败默认 422</span></div><div class="co-body"><p>  Pydantic 校验失败会返回 422 Unprocessable Entity，并给出结构化错误（哪字段、为什么）。
+  前端要据此做友好提示；不要吞掉错误返回 200 带 error 字段——那会破坏 HTTP 语义与 OpenAPI 契约。</p>
+</div></div><h2 id="5-依赖注入-depends-深入">5. 依赖注入 <code>Depends</code> 深入</h2>
+<p>依赖注入（DI）把「可复用的前置逻辑」抽出来：鉴权、取数据库会话、读公共配置等。写法是用 <code>Depends</code> 把一个可调用对象声明成依赖。</p>
+<pre><code class="language-python">from fastapi import Depends, HTTPException
+
+def get_current_user(token: str = ""):
+    if token != "secret":
+        raise HTTPException(status_code=401, detail="未授权")
+    return {"user": "alice"}
+
+@app.get("/me")
+async def me(user: dict = Depends(get_current_user)):
+    # FastAPI 先调用 get_current_user，把结果注入到 user 参数
+    return user
+</code></pre><h3 id="5-1-yield-依赖-请求级生命周期">5.1 yield 依赖：请求级生命周期</h3>
+<p>用 <code>yield</code> 的依赖适合管理「建—用—拆」的资源（如 DB 会话），请求结束自动走 <code>finally</code> 清理：</p>
+<pre><code class="language-python">def get_db():
+    db = SessionLocal()
+    try:
+        yield db        # 请求内注入 db；请求完成后执行下面的关闭
+    finally:
+        db.close()
+</code></pre><h3 id="5-2-子依赖与缓存">5.2 子依赖与缓存</h3>
+<p>依赖还能再 <code>Depends</code> 别的依赖，形成链；同一请求内对同一无参依赖默认只执行一次（<code>use_cache</code>）：</p>
+<pre><code class="language-python">def get_token(authorization: str = Header(None)) -&gt; str:
+    if not authorization:
+        raise HTTPException(401)
+    return authorization
+
+def get_user(token: str = Depends(get_token)):   # 嵌套子依赖
+    return decode(token)
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">依赖让测试变简单</span></div><div class="co-body"><p>  测试时直接把 mock 依赖传进去即可，不用走真实鉴权/数据库：
+  <code>app.dependency_overrides[get_db] = lambda: FakeSession()</code>。
+  这是 FastAPI 测试友好的核心原因之一。</p>
+</div></div><h2 id="6-为什么-async-def-视图能并发">6. 为什么 <code>async def</code> 视图能并发</h2>
+<p>这是 FastAPI 性能的关键。单进程里多个请求同时打到异步视图时：某个请求 <code>await</code> 挂起等 IO，事件循环<strong>立刻切去处理下一个请求</strong>，而不是干等。</p>
+<pre><code class="language-python">import asyncio
+
+@app.get("/slow")
+async def slow():
+    await asyncio.sleep(1)   # 模拟一次 IO 等待（查库、调外部 API）
+    return {"ok": True}
+</code></pre><p>反例是同步写法：</p>
+<pre><code class="language-python">import time
+
+@app.get("/slow-sync")
+def slow_sync():
+    time.sleep(1)   # 这是真阻塞！整个线程被占住，别的请求只能排队
+    return {"ok": True}
+</code></pre><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">同步阻塞拖垮事件循环</span></div><div class="co-body"><p>  在 async 应用里写了同步阻塞调用（如 <code>time.sleep</code>、未异步化的 <code>requests.get</code>、
+  重 CPU 计算），会<strong>卡住整个事件循环</strong>——所有并发请求一起被拖慢，FastAPI 的并发优势荡然无存。
+  规则：IO 等待一律用异步库（如 <code>httpx.AsyncClient</code>）；CPU 重活丢给
+  <code>BackgroundTasks</code> 或 <code>asyncio.to_thread</code> / <code>ProcessPoolExecutor</code>。千万别拿 <code>time.sleep</code> 当 <code>await asyncio.sleep</code> 用。</p>
+</div></div><h3 id="6-1-后台任务">6.1 后台任务</h3>
+<p>不需要立即返回给客户端的活（发邮件、写日志），用 <code>BackgroundTasks</code>：</p>
+<pre><code class="language-python">from fastapi import BackgroundTasks
+
+def send_email(to: str): ...
+
+@app.post("/notify")
+async def notify(background: BackgroundTasks, to: str):
+    background.add_task(send_email, to)   # 响应返回后才在后台执行
+    return {"queued": True}
+</code></pre><h2 id="7-中间件-cors-与异常处理器">7. 中间件、CORS 与异常处理器</h2>
+<p>中间件在每个请求进入路由前、响应返回前统一插一脚，适合做日志、计时、跨域等横切逻辑。</p>
+<pre><code class="language-python">from fastapi import Request
+import time
+
+@app.middleware("http")
+async def add_timing(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)   # 把请求交给后续处理（含路由）
+    response.headers["X-Process-Time"] = str(time.perf_counter() - start)
+    return response
+</code></pre><p>跨域（CORS）是前端调接口时绕不开的，FastAPI 内置 <code>CORSMiddleware</code>：</p>
+<pre><code class="language-python">from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],  # 允许的前端源，生产别写 *
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">生产别开 allow_origins=['*']</span></div><div class="co-body"><p>  开发图省事常写 <code>*</code> 允许所有源，生产环境这等于对 CSRF 类攻击敞开大门。
+  只用明确的白名单源，并配合 <code>allow_credentials</code> 的注意事项（带凭据时不能写 *）。</p>
+</div></div><h3 id="7-1-统一异常处理">7.1 统一异常处理</h3>
+<p>用 <code>@app.exception_handler</code> 或 <code>@app.exception_handler(HTTPException)</code> 把异常转成一致的响应结构：</p>
+<pre><code class="language-python">from fastapi import HTTPException
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(HTTPException)
+async def http_error(request, exc: HTTPException):
+    return JSONResponse(status_code=exc.status_code, content={"error": exc.detail})
+</code></pre><h2 id="8-openapi-与文档">8. OpenAPI 与文档</h2>
+<p>FastAPI 自动生成 OpenAPI 规范，并据此提供两套交互文档：</p>
+<ul>
+<li><code>/docs</code>：Swagger UI（默认）</li>
+<li><code>/redoc</code>：ReDoc</li>
+<li><code>/openapi.json</code>：机器可读的规范，可喂给代码生成器（前端 client、Postman）</li>
+</ul>
+<p>你还能用 <code>FastAPI(title=..., version=..., description=...)</code> 丰富元信息，用 <code>tags</code> 给路由分组、用 <code>summary</code>/<code>response_description</code> 让文档更可读。</p>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">文档即契约</span></div><div class="co-body"><p>  因为文档直接由类型注解 + Pydantic 模型生成，它永远和代码一致——不会出现「文档说 A、代码做 B」。
+  把文档当成前后端协作的契约来维护，能省大量沟通成本。</p>
+</div></div><h2 id="9-安全-api-key-与-oauth2">9. 安全：API Key 与 OAuth2</h2>
+<p>FastAPI 的 <code>fastapi.security</code> 提供开箱即用的安全方案。</p>
+<pre><code class="language-python">from fastapi.security import APIKeyHeader
+from fastapi import Security, HTTPException
+
+api_key_header = APIKeyHeader(name="X-API-Key")
+
+async def require_key(key: str = Security(api_key_header)):
+    if key != "secret":
+        raise HTTPException(status_code=403, detail="无效密钥")
+    return key
+
+@app.get("/protected", dependencies=[Depends(require_key)])
+async def protected():
+    return {"ok": True}
+</code></pre><p>OAuth2 密码流/Bearer 令牌同理，框架提供 <code>OAuth2PasswordBearer</code> 等 helper（以官方文档为准，API 易变）。</p>
+<h2 id="10-测试-testclient-与-httpx">10. 测试：TestClient 与 httpx</h2>
+<p>写接口测试可用 <code>fastapi.testclient.TestClient</code>（基于 httpx），直接同步调用，不必起真实服务：</p>
+<pre><code class="language-python">from fastapi.testclient import TestClient
+from main import app
+
+def test_root():
+    c = TestClient(app)
+    assert c.get("/").json()["msg"] == "hello"
+
+def test_create_item():
+    c = TestClient(app)
+    r = c.post("/items/", json={"name": "键盘", "price": 99})
+    assert r.status_code == 200
+    assert r.json()["name"] == "键盘"
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">依赖覆盖便于测试</span></div><div class="co-body"><p>  测试 DB/鉴权时覆盖依赖：<code>app.dependency_overrides[get_db] = lambda: FakeDB()</code>，
+  测完 <code>app.dependency_overrides.clear()</code>。比起 mock 整个请求栈，这更符合 FastAPI 设计。</p>
+</div></div><h2 id="11-单文件可运行骨架">11. 单文件可运行骨架</h2>
+<p>把下面整段存成 <code>main.py</code>，装上依赖即可跑通所有零件：</p>
+<pre><code class="language-python"># main.py —— FastAPI 可运行骨架（路由/请求体/依赖/中间件/CORS/安全 全包含）
+from fastapi import FastAPI, Depends, HTTPException, Request, Security
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
+from pydantic import BaseModel, Field
+import time
+
+app = FastAPI(title="AgentLab Demo API")
+
+# ---- CORS：允许本地前端源 ----
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ---- 请求体模型 ----
+class Item(BaseModel):
+    name: str = Field(..., min_length=1)
+    price: float = Field(..., gt=0)
+
+# ---- 依赖：假鉴权 ----
+def get_current_user(token: str = ""):
+    if token != "secret":
+        raise HTTPException(status_code=401, detail="未授权")
+    return {"user": "alice"}
+
+# ---- 安全：API Key ----
+api_key_header = APIKeyHeader(name="X-API-Key")
+
+async def require_key(key: str = Security(api_key_header)):
+    if key != "secret":
+        raise HTTPException(status_code=403, detail="无效密钥")
+    return key
+
+# ---- 中间件：加处理耗时头 ----
+@app.middleware("http")
+async def add_timing(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    response.headers["X-Process-Time"] = f"{time.perf_counter() - start:.4f}"
+    return response
+
+# ---- 路由 ----
+@app.get("/")
+async def root():
+    return {"msg": "hello"}
+
+@app.get("/items/{item_id}")
+async def read_item(item_id: int, q: str = None):
+    return {"item_id": item_id, "q": q}
+
+@app.post("/items/", dependencies=[Depends(require_key)])
+async def create_item(item: Item, user: dict = Depends(get_current_user)):
+    return {"created_by": user["user"], "name": item.name}
+
+# 运行：uvicorn main:app --reload  → 打开 http://127.0.0.1:8000/docs
+</code></pre><h2 id="12-运行说明">12. 运行说明</h2>
+<pre><code class="language-bash">pip install fastapi uvicorn
+uvicorn main:app --reload
+# 接口根：  http://127.0.0.1:8000/
+# 交互文档：http://127.0.0.1:8000/docs
+</code></pre><pre><code class="language-bash">curl -X POST "http://127.0.0.1:8000/items/" \
+  -H "X-API-Key: secret" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"键盘","price":99}'
+</code></pre><h2 id="13-适用与不适用">13. 适用与不适用</h2>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>是否适合 FastAPI</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>JSON API / 微服务后端</td>
+<td>非常适合</td>
+</tr>
+<tr>
+<td>需要高并发 IO（网关、聚合层）</td>
+<td>非常适合</td>
+</tr>
+<tr>
+<td>重 CPU 计算服务</td>
+<td>不太适合（需下沉到 worker/其他语言）</td>
+</tr>
+<tr>
+<td>传统服务端渲染页面</td>
+<td>不如 Django/SSR 框架</td>
+</tr>
+<tr>
+<td>极简脚本</td>
+<td>略重，Flask 更轻</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">别把 FastAPI 当全能框架</span></div><div class="co-body"><p>  FastAPI 不内置 ORM、模板引擎、Admin。数据库用 SQLAlchemy/Tortoise，模板用 Jinja，
+  或直接做纯 API 配合前端框架。它的定位是「高性能 API 层」，不是全家桶。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>FastAPI 把类型注解同时用作「校验」和「文档」，写一份注解两处受益；底层是 Starlette(ASGI)。</li>
+<li>路径/查询参数靠注解自动解析校验；请求体用 Pydantic 模型，校验逻辑与业务解耦，<code>field_validator</code> 处理复杂规则。</li>
+<li><code>response_model</code> 控制对外字段、防数据泄漏；<code>Depends</code> 做依赖注入（含 yield 生命周期与子依赖缓存），抽离鉴权/DB 等横切逻辑且便于测试。</li>
+<li>异步并发的命门在「别阻塞事件循环」：IO 用异步库，同步阻塞会拖垮全部请求；重活走 <code>BackgroundTasks</code>/<code>to_thread</code>。</li>
+<li>中间件做统一前置/后置处理，CORS 用内置 <code>CORSMiddleware</code> 且生产要限定源白名单；异常处理器统一响应结构。</li>
+<li><code>/docs</code> 自带交互文档，且文档即契约；安全用 <code>fastapi.security</code> 的 API Key/OAuth2 helper。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  服务能跑了，但怎么让它「可维护、可交付」？虚拟环境、依赖锁定、测试、Lint、打包
+  这些工程化动作，见 Python 工程化那篇。</p>
+</div></div><h2 id="延伸阅读">延伸阅读</h2>
+<ul>
+<li><a href="https://fastapi.tiangolo.com/">FastAPI 官方文档</a> — 路由/依赖/安全权威参考</li>
+<li><a href="https://docs.pydantic.dev/">Pydantic 文档</a> — 校验与模型（以官方文档为准，API 易变）</li>
+<li><a href="https://www.starlette.io/">Starlette 文档</a> — ASGI 底层机制</li>
+<li><a href="https://www.uvicorn.org/">uvicorn 文档</a> — ASGI 服务器与部署参数</li>
+<li><a href="https://developer.mozilla.org/zh-CN/docs/Web/HTTP/CORS">MDN: CORS</a> — 跨域原理</li>
+<li><a href="https://spec.openapis.org/oas/latest.html">OpenAPI 规范</a> — API 文档契约标准</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="python-core.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">Python 核心与现代语法</span></a>
+    <a class="art-pagerLink art-pagerRight" href="python-engineering.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">Python 工程化：测试、Lint、打包、日志与配置</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

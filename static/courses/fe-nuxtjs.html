@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Nuxt3 全栈框架实战 · AgentLab</title>
+  <meta name="description" content="理解 Nuxt3 的文件路由、服务端能力、状态管理与模块生态，写出可运行的全栈骨架，并掌握常见坑。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="Nuxt3 全栈框架实战 · AgentLab"/>
+  <meta property="og:description" content="理解 Nuxt3 的文件路由、服务端能力、状态管理与模块生态，写出可运行的全栈骨架，并掌握常见坑。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#frontend">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🎨</span>
+        <span class="art-moduleName">前端工程</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">25 分钟</span>
+      </div>
+      <h1 class="art-title">Nuxt3 全栈框架实战</h1>
+      <p class="art-desc">理解 Nuxt3 的文件路由、服务端能力、状态管理与模块生态，写出可运行的全栈骨架，并掌握常见坑。</p>
+      <div class="art-tags"><span class="art-tag">#Nuxt3</span><span class="art-tag">#Vue</span><span class="art-tag">#全栈</span><span class="art-tag">#SSR</span></div>
+    </div>
+    <div class="prose"><h1>Nuxt3 全栈框架实战</h1>
+<p>如果你已经写过 Vue3 单页应用（SPA），会遇到两个现实问题：一是对 SEO 不友好（首屏是空 <code>div</code>，搜索引擎抓不到内容），二是搞服务端接口得单独起一个 Node 服务。Nuxt3 把这两件事收进了同一个工程——它基于 Vue3，但额外提供了<strong>文件路由、SSR/SSG、内置服务端（Nitro）</strong>，让前端工程师用一套代码同时产出页面和后端 API。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">适用边界</span></div><div class="co-body"><p>  Nuxt3 适合「需要 SSR/SEO 的内容站、带轻量后端的中后台、想用 Vue 但懒得拼 SSR 脚手架」的场景。
+  纯内部工具、对首屏无要求的 SPA，用 Vite + Vue 就够了，上 Nuxt 反而多一层心智负担。</p>
+</div></div><h2 id="1-为什么是-nuxt3-而不是手写-ssr">1. 为什么是 Nuxt3 而不是手写 SSR</h2>
+<p>手写 Vue SSR 要自己接 <code>createSSRApp</code>、<code>renderToString</code>、客户端 hydration、路由匹配……样板代码多且易错。Nuxt3 用<strong>约定优于配置</strong>把这些收口：</p>
+<ul>
+<li>页面按 <code>pages/</code> 目录结构自动生成路由；</li>
+<li>服务端接口按 <code>server/</code> 目录自动挂载；</li>
+<li>构建产物由 Nitro 引擎统一打包，可部署到 Node、Serverless、边缘（Edge）等多种目标。</li>
+</ul>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">Nitro 是核心引擎</span></div><div class="co-body"><p>  Nuxt3 的 server 能力来自 <strong>Nitro</strong>。它把 <code>server/</code> 下的文件编译成高度优化的 serverless 函数，
+  一份代码能跑在 Node、Deno、Cloudflare Workers、Vercel 等环境。理解 Nitro 才能玩转 Nuxt 的部署。</p>
+</div></div><h2 id="2-文件路由-目录即路由">2. 文件路由：目录即路由</h2>
+<p>在 <code>pages/</code> 下放 <code>.vue</code> 文件，Nuxt 自动生成 <code>vue-router</code> 配置，无需手写路由表。</p>
+<pre><code>├─ pages/
+│  ├─ index.vue          →  /
+│  ├─ about.vue          →  /about
+│  └─ users/
+│     ├─ index.vue       →  /users
+│     └─ [id].vue        →  /users/:id  动态参数
+</code></pre><pre><code class="language-vue">&lt;!-- pages/users/[id].vue —— 动态路由 + 数据获取 --&gt;
+&lt;script setup lang="ts"&gt;
+// useRoute 拿到路由参数；Nuxt 自动注入，无需 import 路由实例
+const route = useRoute();
+const userId = computed(() =&gt; route.params.id);
+
+// useFetch 是 Nuxt 的 SSR 友好请求封装：
+// 服务端渲染时就在服务端把数据拉好，直接进 HTML，避免客户端再发一次请求
+const { data: user, error } = await useFetch(`/api/users/${userId.value}`);
+&lt;/script&gt;
+
+&lt;template&gt;
+  &lt;main v-if="user"&gt;
+    &lt;h1&gt;{{ user.name }}&lt;/h1&gt;
+    &lt;p&gt;ID：{{ userId }}&lt;/p&gt;
+  &lt;/main&gt;
+  &lt;p v-else-if="error"&gt;加载失败&lt;/p&gt;
+&lt;/template&gt;
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">动态参数永远是字符串</span></div><div class="co-body">  <code>route.params.id</code> 是字符串类型。需要数字时务必 <code>Number()</code> 转换或校验，
+<p>  直接拿去做数组下标 / 数据库 id 容易出隐蔽 bug。</p>
+</div></div><h2 id="3-服务端能力-server-目录">3. 服务端能力：server 目录</h2>
+<code>server/api/</code> 下的文件自动成为 HTTP 接口；<code>server/routes/</code> 可匹配更复杂的路径（含通配）。<pre><code class="language-ts">// server/api/users/[id].ts —— 一个 SSR 期间被 pages 调用的接口
+// 用 defineEventHandler 声明处理函数；event 里能拿请求信息
+export default defineEventHandler(async (event) =&gt; {
+  const id = getRouterParam(event, 'id'); // 取动态段
+  if (!id) {
+    throw createError({ statusCode: 400, statusMessage: '缺少 id' });
+  }
+
+  // 真实场景这里查数据库；这里用假数据演示返回结构
+  const user = { id, name: `用户${id}` };
+
+  // 返回对象会被自动序列化为 JSON
+  return { ok: true, data: user };
+});
+</code></pre><pre><code class="language-ts">// server/routes/health.get.ts —— 健康检查（文件名后缀 .get 限定方法）
+export default defineEventHandler(() =&gt; ({ status: 'up' }));
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">服务端代码不进浏览器包</span></div><div class="co-body">  <code>server/</code> 下的代码只在 Node/边缘运行时执行，不会被打进客户端 bundle，
+<p>  因此这里可以安全地写密钥、直连数据库等逻辑。</p>
+</div></div><h2 id="4-状态管理-usestate-与-pinia">4. 状态管理：useState 与 Pinia</h2>
+<p>Nuxt 内置 <code>useState</code>，是一个<strong>跨组件、且 SSR 安全</strong>的响应式状态（本质是带服务端初始化的 <code>ref</code>）。</p>
+<pre><code class="language-ts">// composables/useCounter.ts —— 组合式函数，自动成为全局可用的 useCounter()
+export const useCounter = () =&gt; {
+  // 第一个参数是全局 key；同 key 的 useState 在组件间共享同一份状态
+  return useState('counter', () =&gt; 0);
+};
+</code></pre><pre><code class="language-vue">&lt;!-- 任意组件调用，状态共享 --&gt;
+&lt;script setup lang="ts"&gt;
+const count = useCounter();
+&lt;/script&gt;
+&lt;template&gt;
+  &lt;button @click="count++"&gt;点了 {{ count }} 次&lt;/button&gt;
+&lt;/template&gt;
+</code></pre><p>复杂场景（多模块、持久化、devtools）仍可用 <strong>Pinia</strong>，Nuxt 官方提供了 <code>@pinia/nuxt</code> 模块自动接入，用法与纯 Vue 项目一致。</p>
+<h2 id="5-模块生态-modules">5. 模块生态：modules</h2>
+<p>Nuxt 的扩展靠「模块」在构建期注入插件、自动导入、配置。常见如 <code>@nuxtjs/tailwindcss</code>、<code>@pinia/nuxt</code>、<code>@nuxtjs/axios</code>。</p>
+<pre><code class="language-ts">// nuxt.config.ts —— 通过 modules 数组启用生态模块
+export default defineNuxtConfig({
+  modules: [
+    '@nuxtjs/tailwindcss', // 自动接尾风样式
+    '@pinia/nuxt',         // 接入 Pinia 状态库
+  ],
+  devtools: { enabled: true },
+});
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">优先用官方/社区模块</span></div><div class="co-body"><p>  重复造轮子前先查 Nuxt 模块市场。模块通常已处理好 SSR 兼容、自动导入等坑，
+  比自己手搓插件稳得多。版本敏感 API 以官方文档为准。</p>
+</div></div><h2 id="6-方案对比">6. 方案对比</h2>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>Nuxt3</th>
+<th>Next.js</th>
+<th>Vite + Vue SPA</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>语言生态</td>
+<td>Vue</td>
+<td>React</td>
+<td>Vue</td>
+</tr>
+<tr>
+<td>SSR/SSG</td>
+<td>✅ 内置</td>
+<td>✅ 内置</td>
+<td>❌ 需手搓</td>
+</tr>
+<tr>
+<td>服务端 API</td>
+<td>✅ Nitro</td>
+<td>✅ Route Handlers</td>
+<td>❌ 另起服务</td>
+</tr>
+<tr>
+<td>路由方式</td>
+<td>文件约定</td>
+<td>文件约定</td>
+<td>手写配置</td>
+</tr>
+<tr>
+<td>部署目标</td>
+<td>Node/Serverless/边缘</td>
+<td>Node/Serverless</td>
+<td>静态托管</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">Nuxt 还是 Next</span></div><div class="co-body"><p>  选 Nuxt 还是 Next 基本取决于团队押 Vue 还是 React，两者能力对等。
+  只有纯前端、不需要 SSR，才考虑裸 Vite SPA。</p>
+</div></div><h2 id="7-常见坑">7. 常见坑</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">客户端才干的事别写在顶层</span></div><div class="co-body"><p>  访问 <code>window</code>、<code>document</code>、<code>localStorage</code> 的代码不能写在 <code>setup</code> 顶层或 <code>server/</code>，
+  否则 SSR 阶段（Node 无 DOM）直接崩。需用 <code>onMounted</code> 包裹，或用 <code>import.meta.client</code> 判断。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">自动导入别乱用</span></div><div class="co-body"><p>  Nuxt 会自动导入 <code>ref</code>、<code>useFetch</code> 等，但<strong>跨文件声明的组合式函数、常量要放在 <code>composables/</code> 才自动导入</strong>，
+  否则容易出现「本地能跑、构建找不到」的情况。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">hydration 不匹配</span></div><div class="co-body"><p>  服务端渲染的 HTML 与客户端首屏 DOM 不一致会报 hydration 错。
+  典型诱因：用了 <code>Date.now()</code>、<code>Math.random()</code> 等随渲染变化的値。状态初始化要保持确定性。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>Nuxt3 = Vue3 + 文件路由 + Nitro 服务端，一套工程同时出页面和 API。</li>
+<li>路由靠 <code>pages/</code> 目录约定；接口靠 <code>server/api</code> 与 <code>server/routes</code>；共享状态用 <code>useState</code> 或 Pinia。</li>
+<li>扩展靠模块（<code>modules</code> 数组），部署由 Nitro 统一编译到多种目标。</li>
+<li>红线：浏览器 API 不可在 SSR 顶层调用、自动导入要放对目录、避免 hydration 不一致。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  同属全栈框架思路，React 阵营看 <strong>fe-nextjs（App Router）</strong>；
+  若要做桌面端，可继续 <strong>fe-electron</strong>；做跨端小程序则看 <strong>fe-uniapp</strong>。</p>
+</div></div><h2 id="延伸阅读">延伸阅读</h2>
+<ul>
+<li>Nuxt 官方文档：<a href="https://nuxt.com/docs">https://nuxt.com/docs</a> （路由、server、部署以官方为准）</li>
+<li>Nitro 引擎文档：<a href="https://nitro.build">https://nitro.build</a></li>
+<li>Pinia 状态管理：<a href="https://pinia.vuejs.org">https://pinia.vuejs.org</a></li>
+<li>Nuxt 模块市场：<a href="https://nuxt.com/modules">https://nuxt.com/modules</a></li>
+<li>Vue3 组合式 API（前置基础）：<a href="https://vuejs.org/guide/extras/composition-api-faq.html">https://vuejs.org/guide/extras/composition-api-faq.html</a></li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="fe-nextjs.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">Next.js App Router</span></a>
+    <a class="art-pagerLink art-pagerRight" href="fe-electron.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">Electron 桌面应用开发</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,193 @@
+---
+title: 基于 OpenAPI 封装工具：把 REST API 变成 Agent 可调用的工具
+description: 讲清如何用 OpenAPI/Swagger 规范把任意 REST 接口自动转成结构化工具（供 Agent 函数调用），覆盖生成策略、鉴权注入、限流与缓存，并给出可运行骨架、方案对比与踩坑。
+category: 工具开发
+order: 4
+difficulty: 进阶
+duration: 22 分钟
+tags: [OpenAPI, 工具封装, 鉴权, 限流, 函数调用]
+date: 2026-07-29
+---
+
+# 基于 OpenAPI 封装工具：把 REST API 变成 Agent 可调用的工具
+
+Agent 的函数调用需要一份结构化『工具清单』（名字、描述、参数 schema）。现实里大量能力已经以 **REST API** 形态存在，且多数附带 **OpenAPI（Swagger）规范**。与其手写工具定义，不如**从 OpenAPI 反向生成**——既省人工，又和真实接口保持同步。本篇讲清这条链路：生成工具、注入鉴权、做限流兜底。
+
+## 1. 原理：OpenAPI 即工具契约
+
+OpenAPI 文档本质是一份机器可读的『接口说明书』：每个 `path` + `operation` 对应一个 API 端点，带有 `summary`、参数（`parameters`/`requestBody`）、响应结构。把它映射成工具只需三步：
+
+```
+OpenAPI 文档
+  → 遍历 paths/{path}/{method}，每个 operation 变成一个 tool
+  → operationId/summary 作为工具名与描述
+  → parameters + requestBody 的 JSON Schema 作为工具参数 schema
+  → 运行期：Agent 选中某工具 → 按 schema 填参 → 拼成 HTTP 请求发出去
+```
+
+关键点：工具的『参数 schema』直接复用 OpenAPI 里现成的 JSON Schema，**单一事实来源**——接口改了文档，工具自动跟着改，不用手动同步两份。
+
+<Callout type="note" title="生成的是『调用胶水』不是魔法">
+  生成的工具只是把『模型填的参』翻译成『HTTP 请求』再返回响应文本。
+  真正的业务逻辑仍在远端服务。你的代码只负责『协议翻译 + 鉴权 + 限流』三层。
+</Callout>
+
+## 2. 从 OpenAPI 生成工具
+
+两条路：**代码生成**（编译期产出 TS 客户端 + 推导工具 schema）与**运行时解析**（直接读 spec 动态构造请求）。实战推荐后者更灵活，配合 `openapi-fetch` 做类型安全的请求。
+
+```ts
+// openapi-tools.ts —— 运行时把 OpenAPI 端点变成可调用工具（骨架）
+import createClient from 'openapi-fetch';
+import type { paths } from './gen/schema'; // 由 openapi-typescript 生成，以官方为准
+
+// ① 建一个类型安全的 HTTP 客户端（自动按 paths 推导参数与响应）
+const client = createClient<paths>({ baseUrl: 'https://api.example.com' });
+
+// ② 把某个端点声明成 Agent 工具（名字+描述+schema 由你/代码生成决定）
+export const weatherTool = {
+  name: 'get_weather',
+  description: '查询城市天气，调用 GET /weather', // 来自 OpenAPI 的 summary
+  parameters: {
+    type: 'object',
+    properties: {
+      city: { type: 'string', description: '城市名' },
+    },
+    required: ['city'],
+  } as const,
+  // ③ 真正的『执行』：把参数翻译成 HTTP 调用
+  async execute(args: { city: string }) {
+    const { data, error } = await client.GET('/weather', { params: { query: args } });
+    if (error) throw new Error(JSON.stringify(error));
+    return JSON.stringify(data); // 回传给模型的是字符串
+  },
+};
+```
+
+<Callout type="tip" title="手写映射也行，但别手抄 schema">
+  若不想引入代码生成，至少用 `openapi-typescript` 把 spec 转成 TS 类型，
+  参数 schema 从类型里抽，避免人工手抄 JSON Schema 导致与接口漂移。
+</Callout>
+
+## 3. 鉴权注入
+
+API 几乎都要鉴权。把凭证集中管理，在请求层统一注入，而不是散落在每个工具里：
+
+```ts
+// auth.ts —— 在客户端层统一挂鉴权，工具侧无感知
+const client = createClient<paths>({
+  baseUrl: 'https://api.example.com',
+  headers: () => {
+    // 从环境变量/密钥管理取，绝不硬编码进仓库
+    const token = process.env.API_TOKEN!;
+    return { Authorization: `Bearer ${token}` };
+  },
+});
+
+// 多套凭证（如用户级 OAuth）时，按调用上下文切 header
+function withUserToken(userToken: string) {
+  return createClient<paths>({ baseUrl: 'https://api.example.com',
+    headers: { Authorization: `Bearer ${userToken}` } });
+}
+```
+
+<Callout type="danger" title="凭证绝不能进工具描述">
+  工具描述、参数 schema 会被原样塞进模型 prompt。绝对不要把 API Key、Token 写进
+  `description` 或任何回传给模型的内容。鉴权只在『服务端请求层』完成，模型只见结果。
+</Callout>
+
+## 4. 限流：保护上游不被打爆
+
+Agent 可能在循环里连续调工具，瞬时把上游 API 打满触发 429。在工具执行层加**令牌桶**限流与退避：
+
+```ts
+// rate-limit.ts —— 简单令牌桶（骨架，生产可换 limiter 类库）
+class TokenBucket {
+  private tokens: number;
+  constructor(private cap: number, private refillPerSec: number) {
+    this.tokens = cap;
+  }
+  async take(): Promise<void> {
+    while (this.tokens <= 0) {
+      await new Promise((r) => setTimeout(r, 1000 / this.refillPerSec)); // 等补充
+    }
+    this.tokens--; // 取走一个令牌
+  }
+}
+
+const bucket = new TokenBucket(10, 2); // 容量 10，每秒补 2
+
+async function rateLimitedExecute(fn: () => Promise<string>): Promise<string> {
+  await bucket.take(); // 限流闸门
+  try {
+    return await fn();
+  } catch (e: any) {
+    if (e?.status === 429) {
+      await new Promise((r) => setTimeout(r, 1000)); // 遇限流退避
+      return rateLimitedExecute(fn); // 重试一次（真实场景加最大重试）
+    }
+    throw e;
+  }
+}
+```
+
+<Callout type="warn" title="限流要按 upstream 配额来">
+  令牌桶的容量/补充速率必须对齐上游 API 的配额文档，而不是拍脑袋。
+  多个工具共享同一上游时，限流应放在『客户端单例』层，避免各工具各限各的、整体仍超配。
+</Callout>
+
+## 5. 对比：手写 vs 代码生成 vs API 网关
+
+| 方案 | 同步成本 | 类型安全 | 适用 |
+|------|----------|----------|------|
+| 手写工具定义 | 高，易漂移 | 无 | 仅一两个接口、一次性 |
+| 运行时解析 OpenAPI | 低，随文档变 | 中（动态） | 接口多、常变动、要快速接入 |
+| 代码生成（openapi-typescript） | 中，需重跑生成 | 高（编译期） | 长期维护、要强类型 |
+| API 网关统一封装 | 低，网关侧做 | 取决于网关 | 多 Agent 共用、要集中鉴权/限流 |
+
+<Callout type="tip" title="生成 + 网关是黄金组合">
+  用代码生成拿到类型安全的客户端，再在网关/客户端单例层统一做鉴权与限流，
+  工具侧只关心『业务语义』。这样 Agent 的工具清单既准又稳。
+</Callout>
+
+## 6. 常见坑
+
+<Callout type="warn" title="spec 和线上不一致">
+  很多团队的 OpenAPI 文档是『美术作品』——和真实接口对不上。生成工具前先
+  对几个核心端点做实测，确认 `summary`、参数、响应真实可用，否则工具会『看起来对、跑就错』。
+</Callout>
+
+<Callout type="danger" title="把大响应全塞回模型">
+  列表接口可能返回上万行。把整个响应当 tool 结果回填，既烧 token 又可能超上下文。
+  执行层应做截断/摘要（如只留前 N 条 + 总数），必要时让模型再翻页。
+</Callout>
+
+<Callout type="warn" title="忽略错误响应结构">
+  OpenAPI 的 `error` 响应常常 schema 不全。拿到非 2xx 时把错误结构规范化后再回填，
+  让模型知道『是参数错还是配额错』，而不是吞成一个模糊的失败。
+</Callout>
+
+<Callout type="tip" title="给工具描述加『何时用』">
+  同 m1 经验：工具描述回答『WHEN』。生成时把 OpenAPI 的 `summary`/`description`
+  补齐成『用户会怎么问』的措辞，提升模型直选命中率。
+</Callout>
+
+## 小结
+
+- OpenAPI 是现成的工具契约：遍历端点即可生成『名字 + 描述 + 参数 schema』，与接口单一事实来源。
+- 执行层只做三件事：协议翻译、鉴权注入、限流兜底；业务仍在远端。
+- 鉴权只在服务端请求层做，凭证绝不进 prompt；限流按上游配额设，放客户端单例层共享。
+- 红线：spec 先实测、响应要截断、错误要规范化、凭证不泄露。
+
+<Callout type="note" title="下一步">
+  工具封装好、能被 Agent 调用后，下一个问题是：怎么把这些工具『安全地放进沙箱执行』，
+  防止任意代码/命令越权——见 **tool-sandbox（工具沙箱与安全执行）**。
+</Callout>
+
+## 延伸阅读 / 参考
+
+- OpenAPI Specification 官方文档（paths/operation/parameters 语义，以官方为准）
+- `openapi-typescript` 与 `openapi-fetch` 文档（类型安全客户端，API 易变请核对版本）
+- 各上游 API 的配额/限流文档（令牌桶参数以此为据）
+- 模型函数调用工具定义规范（参数 schema 与回填格式，见 m1-tool-calling）
+- 12-Factor App 的『Config 与 Credentials』原则：密钥外置、绝不进代码

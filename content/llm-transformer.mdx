@@ -1,0 +1,361 @@
+---
+title: Transformer 原理：注意力、位置编码与 KV Cache
+description: 拆解自注意力数学、多头机制、绝对/相对位置编码、Decoder-only 架构与 KV Cache 的关系，给出可运行的自注意力计算骨架，并讲清这些原理如何决定推理延迟与显存，面向有经验的开发者。
+category: LLM大模型
+order: 2
+difficulty: 高级
+duration: 40 分钟
+tags: [Transformer, 注意力机制, 位置编码, Decoder-only, KV Cache]
+date: 2026-07-29
+---
+
+# Transformer 原理：注意力、位置编码与 KV Cache
+
+你用 LLM 时，所有『为什么它这么慢/这么吃显存/这么贵』的疑问，答案都藏在 Transformer 的结构里。这篇不堆公式推导，而是**把原理翻译成工程直觉**：注意力怎么算、位置怎么编码、为什么现代大模型几乎都是 Decoder-only、KV Cache 凭什么让自回归生成变快——以及它们如何直接决定你线上的延迟与显存账单。
+
+## 1. 为什么是 Transformer 而不是 RNN
+
+RNN 是『逐 token 串行、隐状态传递』，两个问题：无法并行训练、长程依赖会衰减。Transformer 用**自注意力（Self-Attention）**一次性让序列里每个位置『看到』所有位置，天然可并行，且任意两 token 之间路径长度为 1。
+
+代价：注意力对长度为 n 的序列，计算与显存复杂度都是 **O(n²)**——这正是长上下文贵、KV Cache 必须存在的根本原因。记住这个 O(n²)，后面所有工程决策都源于它。
+
+<Callout type="note" title="O(n²) 是万恶之源也是机会所在">
+  注意力复杂度 O(n²) 意味着：上下文翻倍，注意力的计算量和显存（含 KV Cache）约翻四倍。
+  所有『长上下文优化』（分块、稀疏注意力、KV Cache 量化、窗口注意力）本质上都在和这个平方较劲。
+</Callout>
+
+## 2. 自注意力机制：一步步算
+
+自注意力的输入是一组 token 向量。每个位置产出三个向量：
+
+- **Q（Query）**：『我在找什么』；
+- **K（Key）**：『我能提供什么』；
+- **V（Value）**：『我实际携带的信息』。
+
+计算分四步：
+
+1. 每个 Q 与所有 K 做点积，得到『匹配分数』；
+2. 除以 √d_k 缩放（防止点积过大导致 softmax 梯度消失）；
+3. 对分数做 softmax，得到『注意力权重』（非负、和为 1）；
+4. 用权重对 V 加权求和，得到该位置的新表示。
+
+矩阵形式：`Attention(Q,K,V) = softmax(QKᵀ / √d_k) V`。
+
+<Callout type="tip" title="缩放 √d_k 不是玄学">
+  点积的方差随维度 d_k 增长；不缩放，softmax 会进入梯度极小的饱和区，训练不动。
+  除以 √d_k 把方差拉回 1，是工程上『能让模型训起来』的关键一步，务必保留。
+</Callout>
+
+## 3. 可运行骨架：自注意力（纯 NumPy）
+
+下面用 NumPy 写一个单头自注意力，逐行对应上面的四步，方便你建立数值直觉：
+
+```py
+# attention.py —— 单头自注意力的最小可运行实现（教学用）
+import numpy as np
+
+def softmax(x: np.ndarray) -> np.ndarray:
+    # 减最大值防溢出：exp 大数会溢出 inf，减去每行最大值不改变结果
+    x = x - np.max(x, axis=-1, keepdims=True)
+    e = np.exp(x)
+    return e / np.sum(e, axis=-1, keepdims=True)
+
+def self_attention(X: np.ndarray, Wq, Wk, Wv) -> np.ndarray:
+    # X: (n, d_model)  n 个 token，每个 d_model 维
+    Q = X @ Wq          # (n, d_k)
+    K = X @ Wk          # (n, d_k)
+    V = X @ Wv          # (n, d_v)
+
+    # 步骤 2+3：分数 → 缩放 → softmax（权重）
+    scores = Q @ K.T / np.sqrt(Q.shape[-1])   # (n, n) 每个位置对其他位置的注意力
+    weights = softmax(scores)                 # 每行和为 1
+
+    # 步骤 4：对 V 加权求和，得到新表示
+    return weights @ V                        # (n, d_v)
+
+# 演示：3 个 token，维度 4
+np.random.seed(0)
+n, d = 3, 4
+X = np.random.randn(n, d)
+Wq = np.random.randn(d, d); Wk = np.random.randn(d, d); Wv = np.random.randn(d, d)
+out = self_attention(X, Wq, Wk, Wv)
+print('输出形状:', out.shape)          # (3, 4)
+print('注意力是双向的: 每个 token 都看到了全部 3 个 token')
+```
+
+运行：`pip install numpy` 后 `python attention.py`。注意这里每个位置都『看到了全部位置』——这是**双向**注意力，适合理解（如 BERT 的 Encoder）。但生成式模型不能这么干，见第 5 节。
+
+<Callout type="warn" title="教学实现别上生产">
+  上面的 O(n²) 纯 NumPy 实现只为建立直觉，没做因果掩码、没批处理、没 GPU。
+  真实推理请用框架（PyTorch/TF）或推理引擎（vLLM），并开启 KV Cache，否则线上慢到不可用。
+</Callout>
+
+## 4. 多头注意力与位置编码
+
+### 4.1 多头（Multi-Head）
+
+单头只能关注一种『关系模式』。多头把 Q/K/V 拆成 h 组，各自在不同子空间算注意力，再把结果拼回——让模型同时关注『语法依赖』『指代』『语义相似』等不同维度。公式：`MultiHead = Concat(head₁…head_h) Wᴼ`，其中 `head_i = Attention(XWq_i, XWk_i, XVv_i)`。
+
+工程含义：头的维度 `d_k = d_model / h`。头数越多，并行表达能力越强，但计算和显存线性增加。
+
+### 4.2 位置编码：没有它，序列是无序词袋
+
+注意力本身**对位置不敏感**——把输入打乱，输出只是对应重排，模型不知道词序。必须显式注入位置信息。
+
+| 编码方式 | 思路 | 优点 | 局限 |
+|----------|------|------|------|
+| 绝对位置（正弦/学习式） | 给第 i 个位置一个固定/可学的向量，加到 token 嵌入上 | 简单 | 难外推到训练时未见过的更长序列 |
+| 相对位置（如 T5/Transformer-XL） | 在注意力分数里直接建模『i 与 j 的相对距离』 | 更贴注意力本质 | 实现复杂 |
+| RoPE（旋转位置编码） | 把位置信息『旋转』进 Q/K 的维度，让内积天然含相对位置 | 外推性好、成主流 | 需特殊处理长上下文扩展 |
+
+<Callout type="tip" title="为什么 RoPE 成现代标配">
+  RoPE 把位置编码变成『对 Q、K 向量做旋转』，使得 Q_i 与 K_j 的内积只取决于相对距离 (j−i)。
+  这让模型天然具备外推性，且和 KV Cache 兼容（K 一旦算出，旋转就固定了）。GPT/LLaMA/Qwen 等
+  Decoder-only 模型普遍采用，理解它有助于你读懂长上下文扩展技术（如 NTK-aware 缩放）。
+</Callout>
+
+## 5. Decoder-only：生成式模型的统一选择
+
+现代大模型（GPT、LLaMA、Qwen、Claude、Gemini 的文本部分）几乎都是 **Decoder-only**：
+
+- **Encoder-only**（如 BERT）：双向注意力，擅长『理解/分类/检索』，不擅长生成。
+- **Encoder-Decoder**（如 T5、初代 BART）：编码端双向、解码端因果，适合『序列到序列』（翻译、摘要）。
+- **Decoder-only**：只有因果（Causal）注意力——**每个位置只能看到自己和之前的位置**，看不到未来。
+
+因果注意力靠**下三角掩码（causal mask）**实现：把 `QKᵀ` 矩阵里『未来位置』的分数设为 −∞，softmax 后权重为 0。
+
+<Callout type="note" title="因果掩码是生成的前提">
+  生成时必须『看不到未来』，否则就是作弊（用答案生成答案）。因果掩码让第 t 个 token 的表示
+  只依赖 1..t，这正好是自回归生成 `P(x_t | x_{<t})` 的数学形式。所有 Decoder-only 模型的
+  prompt 处理与逐 token 生成，都建立在这张下三角掩码上。
+</Callout>
+
+## 6. KV Cache：让自回归生成变快的命门
+
+不加缓存时，生成第 t 个 token 要把 1..t 全部 token 重新算一遍注意力——复杂度 O(t²) 每步，总生成 O(n³)。**KV Cache** 的做法：把历史 token 已经算好的 K、V 缓存下来，每生成一个新 token 只算『新 token 的 Q』与『缓存的 K/V』做注意力，历史不再重算。
+
+```
+第 1 步：输入 [x1]，算 K1 V1，缓存；用 Q1 对 KV 缓存注意力 → 预测 x2
+第 2 步：输入 [x1, x2]，但 K1 V1 直接取缓存，只算 x2 的 Q2 K2 V2
+         KV 缓存变为 [K1,K2],[V1,V2]；Q2 对它们注意力 → 预测 x3
+... 每步只算『一个新 token』的 QKV，历史 O(1) 复用
+```
+
+代价：KV Cache 占用**显存**，且随上下文长度 n 和批大小 b 线性增长。显存 ≈ `2 × b × n × h_layers × d_head × bytes`。这正是『长上下文费显存』的来源，也是 KV Cache 量化、分页（PagedAttention）、窗口缓存等优化的发力点。
+
+<Callout type="danger" title="KV Cache 是显存大头">
+  很多人以为模型权重最占显存，其实长上下文 + 大批量下，KV Cache 常超过权重。
+  估算部署显存时务必把 KV Cache 算进去，否则并发一上来就 OOM。vLLM 的 PagedAttention
+  正是为缓解『KV 碎片与峰值』而生。
+</Callout>
+
+## 7. 原理如何决定推理表现
+
+把上面的点连成工程直觉：
+
+| 原理 | 决定的工程现象 |
+|------|----------------|
+| O(n²) 注意力 | 上下文越长越慢越贵；长上下文优化都在此发力 |
+| 因果掩码 | 必须逐 token 自回归生成，首 token 延迟（TTFT）受 prefill 长度影响 |
+| KV Cache | 生成快但吃显存；批量/长窗口受显存约束 |
+| RoPE | 决定长上下文外推能力；扩展窗口常配合 NTK 缩放 |
+| Decoder-only | 统一了『理解+生成』，但分类任务需额外头或 prompt 技巧 |
+
+<Callout type="tip" title="prefill 与 decode 两段论">
+  一次生成分两段：prefill（把整段 prompt 算成 KV Cache，决定 TTFT）和 decode（逐 token 生成，
+  决定生成速度 TPS）。优化要分开看：长 prompt 卡 prefill，长生成卡 decode 的 KV 显存与带宽。
+</Callout>
+
+## 8. 完整 Decoder-only 层结构
+
+单个 Transformer 块（block）把前面几节拼起来。一个现代 Decoder-only 层通常包含：
+
+1. **Token+位置嵌入**：词表查表得到向量，叠加位置编码（RoPE 直接旋进 Q/K）；
+2. **因果多头自注意力**（带 KV Cache）；
+3. **残差连接**：`x = x + Attention(norm(x))`，防止深层梯度消失；
+4. **RMSNorm / LayerNorm**：在子层前后做归一化，稳定训练；
+5. **前馈网络（FFN）**：对每个位置独立做的两层 MLP（常是『升维→激活→降维』，如 SwiGLU）；
+6. 再次残差：`x = x + FFN(norm(x))`。
+
+整个模型 = 嵌入 + N 个这样的块堆叠 + 最后的 **lm_head**（把隐藏向量投影回词表，输出下一个 token 的概率）。
+
+```py
+# transformer_block.py —— 一个 Decoder-only 块的极简可运行示意（教学，非生产）
+import numpy as np
+
+def rms_norm(x: np.ndarray, g: np.ndarray, eps=1e-6) -> np.ndarray:
+    # RMSNorm：除以均方根，再乘可学习缩放 g；比 LayerNorm 少一次均值计算，训练更快
+    rms = np.sqrt(np.mean(x**2, axis=-1, keepdims=True) + eps)
+    return x / rms * g
+
+def ffn(x: np.ndarray, w1, w2) -> np.ndarray:
+    # 升维→激活→降维；真实常用 SwiGLU，这里用 ReLU 简化示意
+    return (np.maximum(0, x @ w1)) @ w2
+
+def decoder_block(X, Wq, Wk, Wv, Wo, g1, g2, ff1, ff2, causal_mask):
+    # 子层 1：因果多头注意力 + 残差
+    normed = rms_norm(X, g1)
+    attn = self_attention_masked(normed, Wq, Wk, Wv, Wo, causal_mask)  # 见第 6 节因果掩码
+    X = X + attn                       # 残差连接：保留原始信息流
+    # 子层 2：FFN + 残差
+    normed2 = rms_norm(X, g2)
+    X = X + ffn(normed2, ff1, ff2)
+    return X
+
+# 注：self_attention_masked 是『第 3 节 self_attention』加一步因果掩码（未来位置设 -inf）
+# 真实训练请用框架（PyTorch）+ 混合精度 + 分布式；此示意只为看清数据流与残差。
+```
+
+<Callout type="note" title="残差连接是深模型能训起来的关键">
+  没有残差，几十层网络的梯度在反向传播时要么消失要么爆炸。残差让信息有『高速直通路』，
+  层深才能堆到几十上百层——今天的大模型动辄数十层，全靠它。看结构时优先确认『残差在哪加』。
+</Callout>
+
+## 9. 训练目标：下一 token 预测
+
+预训练目标极简却强大：**给定前文，预测下一个 token**，即最大化 `P(x_t | x_{<t})`。所有参数（嵌入、注意力、FFN、lm_head）都靠这个 cross-entropy 损失端到端学出来。
+
+- **自监督**：训练数据不需要人工标注，『把文本自己当标签』，所以能吃海量语料；
+- **涌现能力**：参数/数据/算力到一定规模后，复杂能力（推理、few-shot）『突然出现』；
+- **与推理的关系**：你线上每次调用，模型就是在做『这个条件概率下的采样』，温度/top-p 控制随机性。
+
+<Callout type="tip" title="理解目标帮你调采样参数">
+  知道模型在输出『概率分布』，就明白：temperature 高=更随机发散、低=更确定保守；
+  top_p 截断长尾噪声。生成代码用低温、头脑风暴用高温——这些旋钮的数学意义都源于此目标。
+</Callout>
+
+## 10. 现代注意力变体：MQA 与 GQA
+
+标准多头注意力给每个头独立的 K/V，KV Cache 随头数线性涨显存。两个变体专为降显存：
+
+- **MQA（Multi-Query）**：所有头**共享同一份 K/V**，KV Cache 直接除以头数，显存骤降，但表达力略损；
+- **GQA（Grouped-Query）**：折中——把头分成若干组，每组共享一份 K/V。显存降了，质量几乎不掉。
+
+GQA 已成为 Llama 2/3、Qwen、GLM 等的主流选择，是『长上下文 + 大并发』能落地的重要一环。
+
+```py
+# 思路示意：GQA 把头分组，组内共享 K/V（以官方实现为准，API 易变）
+# 假设 32 个头分成 8 组 → 只需算 8 份 K/V，KV Cache 缩为 1/4
+# 伪代码骨架：
+#   group = head_id // (num_heads / num_kv_groups)
+#   K_shared = K_groups[group]; V_shared = V_groups[group]
+#   score = Q[head_id] @ K_shared.T / sqrt(d)
+```
+
+<Callout type="warn" title="MQA/GQA 影响跨模型显存估算">
+  同样参数量，用了 GQA 的模型比标准 MHA 在同等并发下省数倍 KV 显存。
+  对比部署成本时，别只看参数量，要看它用 MHA 还是 GQA——这直接决定你能扛多少并发。
+</Callout>
+
+## 11. FlashAttention 与 Scaling Law 思路
+
+- **FlashAttention**：不把巨大的 `n×n` 注意力矩阵全量存进显存，而是『分块计算 + 在线 softmax』，把显存从 O(n²) 降到接近 O(n)，同时因显存带宽更优而更快。它是现代推理引擎（vLLM、TensorRT-LLM）的提速底座。理解它你就能读懂『为什么同样模型在不同引擎上速度差几倍』。
+- **Scaling Law（规模定律）**：在『算力和数据充足』前提下，模型损失随参数量/数据量/算力呈幂律下降。它解释了『为什么堆大模型有效』，也提示『小模型靠堆数据有上限』。但 Scaling Law 是『平均趋势』，不保证单任务最优——这又回到第 5 篇的『横评才是终审』。
+
+<Callout type="tip" title="关注推理引擎而非只关注模型">
+  同一个权重，在原生 PyTorch、vLLM、TensorRT-LLM、llama.cpp 上吞吐可差数倍，
+  核心就在 FlashAttention、PagedAttention、量化等优化。选型时把『模型+引擎』当作整体评估。
+</Callout>
+
+## 12. 对比：三类架构选型
+
+| 架构 | 代表 | 擅长 | 不擅长 |
+|------|------|------|--------|
+| Encoder-only | BERT | 分类、检索、NER | 长文本生成 |
+| Encoder-Decoder | T5/BART | 翻译、摘要（seq2seq） | 开放式对话（不如 Decoder-only 通用） |
+| Decoder-only | GPT/LLaMA/Qwen | 通用生成、对话、Agent | 纯分类效率略低（但靠 prompt 可补） |
+
+<Callout type="note" title="为什么 Decoder-only 赢下了时代">
+  它用同一套自回归目标统一了『续写、对话、工具调用、甚至分类』，规模化（scaling law）收益最高，
+  且和 KV Cache、RLHF 后训练链条天然契合。所以今天的基座几乎清一色 Decoder-only。
+</Callout>
+
+## 13. 常见原理误区与踩坑
+
+<Callout type="warn" title="以为注意力是免费的">
+  注意力 O(n²) 在长上下文下极其昂贵。盲目塞长文档进 prompt 会同时拉高延迟、显存、成本。
+  长文档优先走 RAG（检索片段）而非整篇塞进去——用『检索降 n』换『注意力降 n²』。
+</Callout>
+
+<Callout type="warn" title="长上下文窗口不等于能用好">
+  模型标称 128k 窗口，但『有效上下文』往往短于标称（中间丢失/ Lost in the Middle）。
+  关键信息放首尾、用结构化分隔、必要时做分块摘要，比单纯依赖大窗口更稳。
+</Callout>
+
+<Callout type="danger" title="忽视 KV Cache 显存导致 OOM">
+  部署时只按模型权重估显存，忽略 KV Cache，并发稍高就 OOM 崩服。务必按
+  `峰值并发 × 平均长度` 估算 KV 显存，或用 PagedAttention/量化缓压。
+</Callout>
+
+<Callout type="tip" title="理解原理帮你读报错">
+  看到『prompt 超长被截断』知道是上下文上限；看到『生成越往后越慢』知道 KV 在涨；
+  看到『长文后半段答非所问』想到 Lost in the Middle。原理是排障的地图。
+</Callout>
+
+## 14. 长上下文扩展：RoPE 缩放思路
+
+标称上下文窗口常靠『位置编码外推』临时撑大。RoPE 模型要在比训练时更长的序列上工作，需对旋转频率做调整，常见两类：
+
+- **位置插值（PI）/ NTK-aware 缩放**：把训练位置区间『压缩』到新窗口内（或平滑调整底数），让长序列的位置仍能映射到模型学过的旋转区间，避免位置越界导致注意力错乱。
+- **动态/ YaRN 类**：按长度动态选择缩放策略，兼顾长短期表现。
+
+理解这一点，你就能读懂厂商『支持 128k/200k 上下文』背后的代价——外推越长，越容易在超长区间出现质量衰减（Lost in the Middle），且 KV Cache 显存随之平方上涨。所以『窗口大』不等于『随便塞』。
+
+<Callout type="warn" title="窗口扩展有质量代价">
+  外推到远超训练长度的窗口，注意力在远端位置易失准。生产上：关键信息靠结构（首尾、分块、
+  检索）兜底，而不是迷信标称窗口。部署长上下文前，用你的真实长文任务实测有效利用率。
+</Callout>
+
+## 15. 工程速查表
+
+把原理映射到排障动作，存一份随身速查：
+
+| 现象 | 原理根因 | 应对 |
+|------|----------|------|
+| 长 prompt 首字慢 | prefill 算全部 KV，O(n²) | 精简 prompt / 分块 / 流式尽早吐字 |
+| 生成越往后越慢/显存涨 | KV Cache 随长度线性增长 | 限制最大生成长度 / KV 量化 / PagedAttention |
+| 长文后半答非所问 | Lost in the Middle + 窗口外推衰减 | 关键信息放首尾、RAG 检索、分段摘要 |
+| 并发一高就 OOM | KV Cache 显存未计入 | 按并发×长度估 KV 显存、GQA、量化 |
+| 换模型后效果大变 | 词表/位置编码/训练分布不同 | 重做 prompt 适配与横评，不照搬 |
+
+<Callout type="note" title="原理是排障地图">
+  你不需要背下每一篇论文，但要知道『慢/贵/错』背后对应哪块结构。
+  这张表就是把 Transformer 原理翻译成『线上出问题往哪看』的索引。
+</Callout>
+
+## 16. 术语速记
+
+- **Self-Attention**：自注意力，让每个位置看到全部位置，O(n²) 复杂度。
+- **Causal Mask**：因果掩码，下三角矩阵，强制『只看过去』，自回归生成的前提。
+- **RoPE**：旋转位置编码，把位置信息旋进 Q/K，外推性好、兼容 KV Cache。
+- **KV Cache**：缓存历史 K/V，把生成从 O(n³) 降到接近 O(n²)，但吃显存。
+- **GQA/MQA**：分组/多查询注意力，共享 K/V 以省 KV 显存，长上下文部署关键。
+- **RMSNorm/残差**：归一化与残差连接，让几十层网络能稳定训练。
+- **lm_head**：末尾投影层，把隐藏向量映射回词表，输出下一 token 概率。
+
+<Callout type="note" title="记住 O(n²) 与 KV Cache 两条主线">
+  整篇原理可压缩成两句话：注意力 O(n²) 决定了长上下文的慢与贵；
+  KV Cache 用缓存把生成变快却转移成显存瓶颈。抓住这两条，其余都是细节。
+</Callout>
+
+## 小结
+
+- Transformer 靠自注意力让任意两 token 路径长度为 1，代价是 O(n²) 复杂度。
+- 自注意力 = QKᵀ缩放softmax 后对 V 加权；多头在不同子空间并行捕捉关系。
+- 位置编码补全『词序』信息；RoPE 因外推性与 KV 兼容成为 Decoder-only 主流。
+- Decoder-only + 因果掩码 = 自回归生成；是当今基座的统一架构。
+- KV Cache 用『缓存历史 K/V』把生成从 O(n³) 降到接近 O(n²)，但显存随 n、批大小线性涨。
+- 红线：长上下文别无脑塞（用 RAG）、注意 Lost in the Middle、部署必算 KV 显存、教学代码不上生产。
+
+<Callout type="note" title="下一步">
+  懂了模型怎么『算』，下一个问题是它怎么『切输入』——token 数量直接决定上面所有成本。
+  见 **分词器**：BPE/WordPiece、token 计费与跨语言差异。
+</Callout>
+
+## 延伸阅读 / 参考
+
+- 论文 *Attention Is All You Need*（Transformer 原作，公式与架构源头）
+- 论文 *Root Mean Square Layer Normalization* / RoPE 原作（旋转位置编码）
+- vLLM 文档 PagedAttention（KV Cache 显存优化，以官方为准）
+- HuggingFace Transformers 文档：位置编码、因果掩码的实现细节
+- *Lost in the Middle* 论文：长上下文有效利用率的实证

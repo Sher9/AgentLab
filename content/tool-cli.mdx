@@ -1,0 +1,216 @@
+---
+title: CLI 工具开发：从参数解析到发布
+description: 面向有经验开发者，讲清 Node 命令行工具的原理与骨架——参数解析（commander）、彩色输出（chalk）、交互式输入（inquirer）、可运行骨架与发布到 npm 的要点，并对比各方案取舍与踩坑。
+category: 工具开发
+order: 2
+difficulty: 入门
+duration: 20 分钟
+tags: [CLI, commander, 交互式, 彩色输出, 发布]
+date: 2026-07-29
+---
+
+# CLI 工具开发：从参数解析到发布
+
+把一段脚本变成『别人愿意装』的命令行工具，中间差的不只是 `node x.js`。这一篇聚焦 Node 生态下 CLI 的四大支柱：**参数解析、彩色输出、交互式输入、发布**，并给出能直接跑的骨架。不堆口水，重在可落地的取舍。
+
+## 1. 为什么写 CLI 而非脚本
+
+脚本（`node script.js`）只解决『自己用』。一旦要分发给同事、进 CI、接进 Agent 工具箱，就需要：
+
+- **稳定的入口**：`mycli --port 8080` 而不是改源码里的常量；
+- **可发现性**：`--help` 自动生成，降低使用门槛；
+- **退出码约定**：`0` 成功 / 非 `0` 失败，让管道和 CI 能判断结果；
+- **可组合**：标准输入/输出（stdin/stdout）打通 `|` 管道。
+
+CLI 本质是把『隐式的脚本参数』变成『显式的契约』。
+
+<Callout type="note" title="CLI 是 Agent 的好工具">
+  把内部能力封装成 CLI，天然就能被 Agent 以『命令调用』方式复用：
+  参数即输入、退出码即状态、stdout 即结果。比临时拼脚本稳得多。
+  这也是很多 Agent 工具箱的底层形态。
+</Callout>
+
+## 2. 参数解析：commander 是正解
+
+裸用 `process.argv` 解析长选项/短选项/子命令非常痛苦。社区两强是 **commander** 与 **yargs**，下面以 commander 为主。
+
+```ts
+// cli.ts —— commander 最小可运行骨架
+import { Command } from 'commander';
+
+const program = new Command();
+
+program
+  .name('mycli')
+  .description('一个示例命令行工具')
+  .version('1.0.0'); // mycli -V 自动打印版本
+
+// 选项：长短标志 + 默认值 + 类型
+program
+  .option('-p, --port <number>', '监听端口', '3000')
+  .option('-v, --verbose', '是否打印详细日志'); // 布尔开关，无参数
+
+// 位置参数：必填的文件路径
+program
+  .argument('<file>', '要处理的文件路径')
+  .action((file: string, opts) => {
+    // opts.port 已是字符串/数字，commander 已做基础转换
+    console.log(`处理 ${file}，端口 ${opts.port}`);
+    if (opts.verbose) console.log('详细模式开启');
+  });
+
+program.parse(process.argv); // 关键：吃进命令行参数
+```
+
+运行 `npx tsx cli.ts report.json -p 8080 -v`，会打印出解析结果。注意 commander 已自动生成 `--help`，无需手写。
+
+<Callout type="tip" title="选项与位置参数分开看">
+  `-p/--port` 叫『选项』（可缺省、有默认），`report.json` 叫『位置参数』（常表示主操作对象）。
+  把『主对象』放位置参数、『开关/配置』放选项，是 CLI 的默认直觉，别反了。
+</Callout>
+
+## 3. 彩色与样式输出：chalk
+
+裸 `console.log` 在长输出里信息层级不清。用 **chalk** 做 ANSI 着色，让成功/警告/错误一眼可辨。
+
+```ts
+import chalk from 'chalk';
+
+console.log(chalk.green('✓ 部署成功'));
+console.log(chalk.yellow('⚠ 配置项缺失，使用默认值'));
+console.log(chalk.red('✗ 连接被拒绝'));
+// 组合：加粗 + 下划线
+console.log(chalk.bold.underline('重要提示'));
+
+// 注意：CI 环境常无颜色终端，按 TTY 判断
+const c = process.stdout.isTTY ? chalk : new Proxy(chalk, { get: (t, k) => (s: string) => s });
+```
+
+<Callout type="warn" title="CI 里别强行上色">
+  管道（非 TTY）里 ANSI 转义码会变成乱码。发布前用 `chalk.level` 或判断 `process.stdout.isTTY`
+  降级为无色输出，否则日志平台会一团糟。
+</Callout>
+
+## 4. 交互式输入：inquirer
+
+当参数太多、或需要确认危险操作时，用交互式 prompt 比一长串 flag 更友好。现代推荐 `@inquirer/prompts`（inquirer v9 拆分出的独立包）。
+
+```ts
+import { input, confirm, select } from '@inquirer/prompts';
+
+// 文本输入
+const name = await input({ message: '项目名称：' });
+// 单选
+const env = await select({
+  message: '部署环境：',
+  choices: [{ name: '测试', value: 'staging' }, { name: '生产', value: 'prod' }],
+});
+// 危险操作前确认
+const ok = await confirm({ message: `确认部署到 ${env}？此操作不可逆`, default: false });
+if (!ok) process.exit(1);
+```
+
+<Callout type="warn" title="交互式不能在 CI 跑">
+  prompt 会挂起等待 stdin，CI/管道里永远卡住。务必支持『全部参数通过 flag 传入』的非交互模式，
+  仅在检测到 TTY 时回退到交互。否则你的工具进不了自动化。
+</Callout>
+
+## 5. 可运行骨架：拼起来
+
+把上面三块合并成一个能发布的小工具，演示完整形态：
+
+```ts
+// mycli.ts —— 合并骨架（参数 + 彩色 + 交互兜底）
+import { Command } from 'commander';
+import chalk from 'chalk';
+import { confirm } from '@inquirer/prompts';
+
+const program = new Command();
+
+program
+  .name('mycli')
+  .version('1.0.0')
+  .argument('<target>')
+  .option('-f, --force', '跳过确认直接执行')
+  .action(async (target: string, opts) => {
+    const force = opts.force || !process.stdout.isTTY; // 非 TTY 默认跳过交互
+    if (!force) {
+      const ok = await confirm({ message: `确认操作 ${target}？`, default: false });
+      if (!ok) { console.log(chalk.gray('已取消')); process.exit(0); }
+    }
+    // 真实逻辑：部署 / 迁移 / 清理 ……
+    console.log(chalk.green(`✓ 已完成对 ${target} 的操作`));
+  });
+
+program.parseAsync(process.argv); // 用 parseAsync 支持 await action
+```
+
+## 6. 对比：commander vs yargs vs 原生
+
+| 方案 | 上手 | 子命令/嵌套 | 优缺点 |
+|------|------|-------------|--------|
+| `process.argv` 手搓 | 无依赖 | 全自己写 | 零依赖但繁琐、易错，仅适合一次性脚本 |
+| commander | 链式 API 直观 | 原生支持 `.command()` | 文档好、约定清晰；复杂校验需自己补 |
+| yargs | 配置式、内置类型强 | 支持 `.command()` | 类型推导友好；API 偏重、风格略旧 |
+| oclif / nest-commander | 框架级 | 类/装饰器组织 | 大型多命令工具友好；学习成本与体积高 |
+
+<Callout type="tip" title="小工具用 commander，大工具再上框架">
+  单命令或几个子命令，commander 足够且最轻。只有当命令多到需要『插件式注册』
+  时，才考虑 oclif 这类框架，否则框架的约定反而拖慢你。
+</Callout>
+
+## 7. 发布到 npm 的要点
+
+代码写完只是上半场，发布才是让别人能 `npx mycli` 的关键：
+
+- **bin 字段**：`package.json` 里 `"bin": { "mycli": "./dist/cli.js" }`，声明命令名与入口；
+- **shebang**：入口文件首行必须 `#!/usr/bin/env node`，否则系统不知道用 node 跑；
+- **ESM/CJS**：若用 ESM，`"type": "module"` 且构建产物保持一致；混用会在 `require` 时报错；
+- **version**：遵守语义化版本（semver），CLI 的 `-V` 输出应与 `package.json` 同步；
+- **构建**：用 `tsup`/`esbuild` 把 TS 打包成单文件 JS，避免发布源码依赖。
+
+```json
+{
+  "name": "mycli",
+  "bin": { "mycli": "./dist/cli.js" },
+  "files": ["dist"],
+  "type": "module"
+}
+```
+
+<Callout type="danger" title="忘了 shebang 直接 403">
+  漏掉 `#!/usr/bin/env node`，用户全局安装后执行会报『权限被拒绝 / 不是可执行文件』。
+  这是发布 CLI 最高频的翻车点，发布前本地 `npm pack` 自测一遍。
+</Callout>
+
+## 8. 常见坑
+
+<Callout type="warn" title="退出码永远别默认成功">
+  任何失败路径都要 `process.exit(1)`。CI 靠退出码判断成败，
+  默认 `0` 会让失败被当成成功，悄悄放过 bug。
+</Callout>
+
+<Callout type="warn" title="中文参数与编码">
+  跨平台时 Windows 的 `process.argv` 编码与 Unix 不同，带中文路径建议用 `node:path` 归一化，
+  别直接拼接字符串，否则路径在 Windows 上错位。
+</Callout>
+
+<Callout type="tip" title="长任务给进度反馈">
+  耗时命令务必实时 `stdout.write('.')` 或进度条（如 `cli-spinners`），否则用户以为卡死会 Ctrl-C。
+  同时支持 `--json` 输出原始数据，方便被其他脚本/Agent 消费。
+</Callout>
+
+## 小结
+
+- CLI 把『脚本参数』变成『显式契约』：稳定入口、可发现、退出码约定、可组合。
+- 参数解析用 commander，彩色输出用 chalk（注意 CI 降级），交互用 `@inquirer/prompts`（注意非 TTY 兜底）。
+- 发布三件套：bin 字段 + shebang + 构建单文件；小工具 commander、大工具再上框架。
+- 红线：失败必须非零退出码、交互式不能在 CI 挂起、Windows 中文路径归一化。
+
+## 延伸阅读 / 参考
+
+- commander 官方文档（子命令、自定义校验，以官方为准）
+- chalk 文档（level 与 TTY 判定，API 易变请核对版本）
+- @inquirer/prompts 文档（各类 prompt 组件用法）
+- npm CLI 发布指南（`bin` 与 `files` 字段语义）
+- tsup / esbuild 文档：把 TS 快速打包成可发布的单文件 CLI

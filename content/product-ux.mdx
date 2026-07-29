@@ -1,0 +1,350 @@
+---
+title: Agent 产品交互设计
+description: 从状态机而非气泡的角度，重构 Agent 产品的交互设计：对话式 UX 本质、预期管理、可控性、失败态设计，并给出端到端的状态机与前端骨架、对比与踩坑。
+category: 产品工程
+order: 1
+difficulty: 进阶
+duration: 35 分钟
+tags: [Agent UX, 对话式交互, 预期管理, 可控性, 失败态]
+date: 2026-07-29
+---
+
+# Agent 产品交互设计
+
+一个能跑通的 Agent demo 和一款能上线的 Agent 产品之间，横着一条巨大的沟：**交互设计**。模型能力决定下限，UX 决定上限——用户不会因为你用了更强的模型而容忍『转圈十分钟、中途无法打断、出错只丢一句抱歉』。
+
+这一篇不讲怎么调 prompt，只讲怎么把 Agent 当成一个**有状态、会出错、需要被信任**的产品来设计：对话式 UX 的底层逻辑、预期管理、可控性、失败态设计，并给出可落地的状态机与前端骨架。
+
+## 1. 为什么 Agent 产品 UX 是硬骨头
+
+传统软件的交互是**确定性的**：点按钮 → 立刻出结果，状态由你精确控制。Agent 的交互是**概率性的、长耗时的、可中断的**：
+
+- 一次回答可能要跑十几秒、调用多个工具、中途自我修正；
+- 结果可能错、可能跑偏、可能卡死；
+- 用户在这一过程里是『焦虑地等待』，而不是『被即时反馈』。
+
+<Callout type="note" title="先把预期摆正">
+  Agent 不是搜索引擎，也不是表单。它更像『一个不太靠谱但能干活的同事』：
+  你要做的是管理用户对它的『信任与耐心』，而不是假装它永远对、永远快。
+  UX 的核心目标是：让不确定性变得可感知、可控制、可挽回。
+</Callout>
+
+## 2. 对话式 UX 的底层：状态，而非气泡
+
+新手最容易犯的错，是把 Agent 界面当成『聊天泡泡列表』——用户一句、助手一句。但一个 Agent 回合（turn）内部有**多种状态**：思考中、调用工具 A、工具失败重试、生成回答中、已回答。把这些都压成一个『加载中』气泡，用户会失去所有掌控感。
+
+正确的抽象是：**每个回合是一个状态机，而不是一个气泡**。
+
+```ts
+// agent-turn-state.ts —— Agent 回合的状态机骨架（可运行逻辑，不含 UI）
+// 一个回合从 空闲 到 完成/失败，途中经历若干中间态，UI 据此渲染不同控件
+export type TurnState =
+  | { kind: 'idle' }                          // 还没开始
+  | { kind: 'thinking' }                      // 模型在推理（还没动作）
+  | { kind: 'tool_call'; name: string }       // 正在调某个工具，name 用于展示
+  | { kind: 'tool_result'; name: string; ok: boolean } // 工具出结果，ok 决定成功/失败色
+  | { kind: 'streaming'; text: string }       // 正在流式吐字
+  | { kind: 'done'; text: string }            // 完成
+  | { kind: 'failed'; reason: string; retryable: boolean }; // 失败，且标能否重试
+
+// 用 reducer 推进状态，UI 只订阅 state，不直接改它 —— 单一事实来源
+export function transition(s: TurnState, event: TurnEvent): TurnState {
+  switch (event.type) {
+    case 'start':
+      return { kind: 'thinking' };
+    case 'tool':
+      return { kind: 'tool_call', name: event.name };
+    case 'tool_done':
+      return { kind: 'tool_result', name: event.name, ok: event.ok };
+    case 'token':
+      // 把新吐的字累加进已展示文本
+      return s.kind === 'streaming'
+        ? { kind: 'streaming', text: s.text + event.chunk }
+        : { kind: 'streaming', text: event.chunk };
+    case 'finish':
+      return s.kind === 'streaming'
+        ? { kind: 'done', text: s.text }
+        : { kind: 'done', text: '' };
+    case 'error':
+      return { kind: 'failed', reason: event.reason, retryable: event.retryable };
+    default:
+      return s;
+  }
+}
+
+type TurnEvent =
+  | { type: 'start' }
+  | { type: 'tool'; name: string }
+  | { type: 'tool_done'; name: string; ok: boolean }
+  | { type: 'token'; chunk: string }
+  | { type: 'finish' }
+  | { type: 'error'; reason: string; retryable: boolean };
+```
+
+<Callout type="tip" title="把工具调用也显示出来">
+  把『正在查询订单』『已读取文档』这类中间态显式展示，用户会**更耐心**——
+  因为他在看进度，而不是面对一个死寂的转圈。透明即信任。这几乎零成本，
+  却是对抗『怎么还没好』焦虑最有效的手段。
+</Callout>
+
+## 3. 预期管理：把不确定性显性化
+
+用户在等待时最怕的是『不知道要等多久、不知道它到底在干嘛、不知道它能不能行』。预期管理就是提前把这些**不确定性翻译成可感知的信号**。
+
+三类关键信号：
+
+- **能力边界**：开宗明义告诉用户『我能做什么、不擅长什么』，比事后翻车再道歉强十倍。
+- **进度信号**：thinking / 工具调用 / 流式吐字，都是进度；连不上的长任务要给百分比或步骤条。
+- **不确定性标注**：当模型置信度低或答案依赖外部数据，明确标注『这是推测，请核实』，而非伪装成确定结论。
+
+```tsx
+// AgentMessage.tsx —— 前端骨架：根据 TurnState 渲染不同控件（注释讲为什么）
+function AgentMessage({ state }: { state: TurnState }) {
+  switch (state.kind) {
+    case 'thinking':
+      // 不要只放转圈：用文字告诉用户『它在推理』，降低失控感
+      return <Thinking label="正在理解你的请求…" />;
+    case 'tool_call':
+      // 把工具名透出来，用户知道进度到了哪一步
+      return <ToolBadge name={state.name} status="running" />;
+    case 'tool_result':
+      return <ToolBadge name={state.name} status={state.ok ? 'ok' : 'fail'} />;
+    case 'streaming':
+    case 'done':
+      return (
+        <Answer
+          text={state.text}
+          // 关键：模型给的『事实』若来自检索，应带来源引用，避免盲信
+          showCitation={true}
+        />
+      );
+    case 'failed':
+      return (
+        <ErrorBox
+          reason={state.reason}
+          // 可重试的错给按钮，不可重试的只说明，别给用户虚假希望
+          canRetry={state.retryable}
+        />
+      );
+    default:
+      return null;
+  }
+}
+```
+
+<Callout type="warn" title="别用假进度骗用户">
+  如果实际没有进度信息，就不要编一个『87%』的进度条。虚假进度一旦被识破，
+  信任直接归零，且比没有进度更糟。诚实的『处理中』远胜编造的精确。
+</Callout>
+
+## 4. 可控性：用户必须握着刹车
+
+Agent 跑起来后，用户应当始终保留**中止、纠偏、反悔**的能力。失控感是放弃产品的最大诱因。
+
+四个必备控制点：
+
+1. **停止（Stop）**：长任务必须能随时中断，且中断后状态可恢复或至少不留下半截副作用。
+2. **重新生成（Regenerate）**：对回答不满意，一键重跑，而不是重新打字。
+3. **编辑与续写（Edit & Continue）**：用户能改自己的上一条输入再发，纠正 Agent 的误解。
+4. **撤销（Undo）**：对有副作用的动作（发邮件、改库），提供回滚入口或二次确认。
+
+```ts
+// control-surface.ts —— 可控性的后端契约骨架
+// 核心思想：每个会话持有一个 可中断的句柄，前端点停止就调用 abort
+export class AgentSession {
+  private controller: AbortController | null = null;
+
+  async run(input: string, onEvent: (e: TurnEvent) => void) {
+    // 每次运行新建一个 AbortController，停止时 abort() 即可中断下游 fetch/流
+    this.controller = new AbortController();
+    try {
+      await this.loop(input, onEvent, this.controller.signal);
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        onEvent({ type: 'error', reason: '已手动停止', retryable: true });
+      } else {
+        onEvent({ type: 'error', reason: String(err), retryable: false });
+      }
+    }
+  }
+
+  // 前端『停止』按钮 → 调用这里
+  stop() {
+    this.controller?.abort();
+  }
+
+  private async loop(input: string, onEvent: (e: TurnEvent) => void, signal: AbortSignal) {
+    onEvent({ type: 'start' });
+    // 把 signal 一路透传给所有模型/工具调用，abort 时它们会抛 AbortError
+    // 具体实现见 product-stream 的流式中断，这里只定义契约
+    await this.step(input, onEvent, signal);
+  }
+
+  private async step(_input: string, _onEvent: (e: TurnEvent) => void, _signal: AbortSignal) {
+    // 实际编排逻辑（调用模型、工具、回填）放在 Agent 主循环里，本文件只管控制面
+  }
+}
+```
+
+<Callout type="tip" title="停止要能真正止血">
+  『停止』不能只是前端不渲染了，必须让后端**真的 abort** 下游的模型与工具调用，
+  否则你停了 UI，后端还在烧 token、甚至继续执行发邮件这种副作用。
+  AbortController 的 signal 要透传到每一次网络调用。
+</Callout>
+
+## 5. 失败态设计：错误也是体验的一部分
+
+Agent 一定会失败：模型超时、工具 500、参数校验不过、用户问了超能力范围的事。失败态设计决定用户是『理解并继续』还是『恼火离开』。
+
+三类失败态要分别处理：
+
+| 失败态 | 用户感受 | 正确做法 |
+|--------|----------|----------|
+| 可重试错误（超时/限流） | 无奈但可接受 | 给『重试』按钮，自动退避后重跑 |
+| 不可重试错误（上游挂了） | 失望 | 明确说明、提供替代路径，不装作能解决 |
+| 能力边界外（问了不会的） | 被敷衍 | 诚实说『这超出我能做的』，并尽量指条路 |
+
+<Callout type="danger" title="失败态最忌沉默">
+  最差体验是：页面卡住、没有错误、没有重试、没有解释。用户既不知道发生了什么，
+  也不知道该怎么办。每一次失败都必须给出『发生了什么 + 能做什么』二选一以上的出口。
+</Callout>
+
+## 6. 对比：玩具 Demo vs 生产级 Agent 产品
+
+| 维度 | 玩具 Demo | 生产级 Agent 产品 |
+|------|-----------|--------------------|
+| 进度反馈 | 一个转圈 | thinking / 工具调用 / 流式 多态反馈 |
+| 中断 | 不能停 | 随时 Stop，且后端真中断 |
+| 失败处理 | 抛异常 / 白屏 | 分级错误 + 重试 / 替代路径 |
+| 不确定性 | 假装确定 | 显式标注置信度与来源 |
+| 可控性 | 发完等结果 | 停止 / 重生成 / 编辑 / 撤销 |
+| 能力边界 | 来者不拒 | 开场声明 + 超界诚实拒绝 |
+
+<Callout type="note" title="UX 是隐性成本中心">
+  以上每一条单独看都『不难』，但叠加起来是实打实的工程量。
+  建议把『状态机 + 控制面 + 失败态』当作 MVP 的硬门槛，而不是上线后再补——
+  事后修补 UX 的代价远高于一开始就设计进去。
+</Callout>
+
+## 7. 可运行骨架：前后端契约串起来
+
+把前面三块拼成一个最小可跑的端到端契约。后端用 Node 原生 `http` 起一个 SSE 端点（流式细节见 product-stream），前端订阅事件驱动状态机。这里只演示**事件协议**，方便你替换成任意框架。
+
+```ts
+// server.ts —— 后端事件协议骨架（不依赖 OpenAI SDK，纯结构演示）
+import http from 'node:http';
+
+// Agent 回合产生的事件，统一成 JSON 行通过 SSE 推给前端
+// 前端拿到后喂给第 2 节的 transition() 推进 UI 状态
+function emit(res: http.ServerResponse, event: TurnEvent) {
+  res.write(`data: ${JSON.stringify(event)}\n\n`);
+}
+
+const server = http.createServer((req, res) => {
+  if (req.url !== '/agent/run') return res.end();
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+  });
+
+  // 伪编排：真实场景替换成你的 Agent 主循环
+  (async () => {
+    emit(res, { type: 'start' });
+    emit(res, { type: 'thinking' });
+    await new Promise((r) => setTimeout(r, 400));
+    emit(res, { type: 'tool', name: 'search_order' });
+    await new Promise((r) => setTimeout(r, 600));
+    emit(res, { type: 'tool_done', name: 'search_order', ok: true });
+    // 流式吐字
+    for (const ch of '已为你查到订单 1024，状态为已发货。') {
+      emit(res, { type: 'token', chunk: ch });
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    emit(res, { type: 'finish' });
+  })();
+});
+
+server.listen(3000, () => console.log('Agent SSE on :3000'));
+```
+
+```tsx
+// client.tsx —— 前端订阅骨架（伪代码，框架以官方为准）
+// 用 fetch + ReadableStream 读 SSE，把每条事件喂给 transition()
+async function subscribe(sessionId: string, onState: (s: TurnState) => void) {
+  const res = await fetch('/agent/run');
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let state: TurnState = { kind: 'idle' };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    // 按 SSE 的空行切分事件
+    const parts = buf.split('\n\n');
+    buf = parts.pop() ?? '';
+    for (const p of parts) {
+      const line = p.replace(/^data: /, '');
+      const event = JSON.parse(line) as TurnEvent;
+      state = transition(state, event); // 第 2 节的状态机
+      onState(state);                   // 触发 UI 重渲染
+    }
+  }
+}
+```
+
+<Callout type="warn" title="事件协议要向后兼容">
+  一旦前端依赖这套事件结构，后端改字段名就是破坏性变更。把 TurnEvent 当**契约**管理：
+  加字段用可选、删字段走版本。否则前端一夜之间全白屏。
+</Callout>
+
+## 8. 踩坑与最佳实践
+
+<Callout type="danger" title="把加载当默认态">
+  没有中间态、没有进度，用户会反复点『发送』，触发重复 Agent 回合、
+  重复副作用（重复发邮件）。必须靠状态机锁住『进行中不可再发』。
+</Callout>
+
+<Callout type="warn" title="流式没做取消，token 白烧">
+  前端停了 UI，后端没 abort，模型还在生成、工具还在跑。停止必须端到端贯通，
+  否则既是成本漏洞也是副作用风险（见第 4 节）。
+</Callout>
+
+<Callout type="warn" title="过度拟人化惹祸">
+  别让 Agent 用『我很抱歉』『我理解你的心情』伪装共情去掩盖错误。
+  用户要的是『问题解决了没』，不是情感表演。错误时直说原因比卖惨更得信任。
+</Callout>
+
+<Callout type="tip" title="先写空态与首屏引导">
+  新用户面对空白对话框会懵。给几个示例提问、说明能力边界，
+  既降低上手成本，也顺带完成了『预期管理』——一举两得。
+</Callout>
+
+<Callout type="note" title="可访问性别忽略">
+  流式吐字、状态变化要同时给视觉与无障碍信号（aria-live），
+  否则视障用户面对不断变化的区域会完全失去上下文。
+</Callout>
+
+## 小结
+
+- Agent 产品的 UX 本质是**状态管理 + 信任管理**，不是气泡列表。
+- 把每个回合建模成状态机（thinking / tool / streaming / done / failed），UI 订阅状态而非轮询。
+- 预期管理三件套：能力边界声明、进度信号、不确定性标注——诚实胜过精确伪装。
+- 可控性四要素：停止、重生成、编辑续写、撤销；停止必须端到端真正中断后端。
+- 失败态必须分级（可重试 / 不可重试 / 超能力），每次失败给出『发生了什么 + 能做什么』。
+- 红线：别用假进度、别把加载当默认态、别过度拟人、事件协议要向后兼容。
+
+<Callout type="note" title="下一步">
+  UX 解决了『看得见的体验』，但当用户要求 Agent『真的替我发这封邮件』时，
+  该怎么让人兜底确认、分工、建立信任？这就是 **product-hitl（人在回路）** 的主题。
+</Callout>
+
+## 延伸阅读 / 参考
+
+- Nielsen Norman Group：对话式界面与不确定性反馈的设计原则（以官方文章为准）
+- *Designing Human-Centered AI*（Google PAIR）：人机协作而非替代的设计方法论
+- MCP / Agent 协议社区：将工具调用事件标准化为前端可订阅流的实践
+- WCAG：流式内容与动态区域的 aria-live 无障碍规范
+- Anthropic / OpenAI 产品安全指南：能力边界声明与不确定性标注的最佳实践

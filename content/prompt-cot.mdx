@@ -1,0 +1,371 @@
+---
+title: 思维链 CoT：让模型把推理写出来
+description: 系统讲解思维链（Chain-of-Thought）的三种形态——Zero-shot / Few-shot / Auto-CoT，剖析其生效原理与适用边界，对比直接作答与更复杂推理范式，并给出可运行骨架、工程踩坑与评测口径。
+category: Prompt工程
+order: 3
+difficulty: 进阶
+duration: 28 分钟
+tags: [思维链, CoT, 推理, Zero-shot, 少样本]
+date: 2026-07-29
+---
+
+# 思维链 CoT：让模型把推理写出来
+
+很多开发者以为『大模型会算算术』是天然能力——直到发现 GPT 把 `23 * 17` 算成 `391`。真相是：**模型一次前向传播直接吐答案时，中间没有任何『草稿纸』**。思维链（Chain-of-Thought，CoT）就是给它一张草稿纸：让模型先输出一串中间推理步骤，再给最终答案。本篇讲清三种 CoT 形态、为什么有效、何时有效、以及工程上怎么落地。
+
+## 1. 什么是思维链
+
+CoT 是一种**提示策略**：不要求模型直接给答案，而是诱导它生成『一步步推理』的中间过程，最后基于这些步骤得出结论。
+
+```
+问题：小明有 5 个苹果，吃了 2 个，又买了 3 倍的量，现在有几个？
+直接作答（易错）：14 （模型跳步算错）
+CoT 作答：
+  初始 5 个 → 吃了 2 个剩 3 个 → 买了 3 倍即 3*3=9 个
+  → 总共 3+9 = 12 个。答案：12
+```
+
+<Callout type="note" title="CoT 不是训练方法">
+  CoT 是**推理期的提示技巧**，不动模型权重。它利用了大模型本身已具备的
+  『逐步推理』能力，只是通过 prompt 把这个能力『逼』出来。这也是为什么
+  小模型（如 7B 以下）CoT 收益有限——它们还没内化足够的推理先验。
+</Callout>
+
+## 2. 三种 CoT 形态
+
+### 2.1 Zero-shot CoT
+
+最省事：不加任何示例，只在问题后追加一句**触发短语**，让模型自动展开推理。
+
+```ts
+// zero-shot-cot.ts —— 一句魔法短语触发推理
+import OpenAI from 'openai';
+import 'dotenv/config';
+
+const client = new OpenAI();
+
+const question = '一个车队有 12 辆车，每车每天跑 80 公里，油耗 8L/100km，油价 7.5 元/L，30 天油费多少？';
+
+const res = await client.chat.completions.create({
+  model: 'gpt-4o-mini',
+  messages: [{
+    role: 'user',
+    // 关键：这句触发短语让模型先推理再回答，而不是直接猜
+    content: `${question}\n\n请一步步思考，最后用「答案：」给出最终结果。`,
+  }],
+});
+console.log(res.choices[0].message.content);
+```
+
+常用触发短语：
+
+| 短语 | 适用 |
+|------|------|
+| 「让我们一步步思考」(Let's think step by step) | 通用，最经典 |
+| 「请一步步思考，最后用『答案：』给出结果」 | 需要方便正则抽取答案 |
+| 「先列出解题步骤，再计算」 | 数学/逻辑题 |
+
+<Callout type="tip" title="用固定锚点抽取答案">
+  让模型以「答案：」或「所以：」开头输出结论，下游用正则
+  `/答案[:：]\s*(.+)/` 直接抽取，免去再跑一次结构化解析。Zero-shot CoT
+  的副产品（推理文本）还可用于调试——答错了你能看到它哪步歪了。
+</Callout>
+
+### 2.2 Few-shot CoT
+
+在 prompt 里给出**带推理过程的示例**，模型模仿示例的『推理风格 + 格式』。比 Zero-shot 更稳定，尤其对弱模型。
+
+```ts
+// few-shot-cot.ts —— 带推理链的少样本示例
+const examples = `
+问题：仓库有 100 件货，每天卖出 10 件，几天卖完？
+推理：总量 100，每天 10 件，100 / 10 = 10 天。
+答案：10 天
+
+问题：一本书 240 页，已读 90 页，剩下每天读 15 页，还需几天？
+推理：剩 240 - 90 = 150 页，150 / 15 = 10 天。
+答案：10 天
+`;
+
+const res = await client.chat.completions.create({
+  model: 'gpt-4o-mini',
+  messages: [{
+    role: 'user',
+    content: `${examples}\n问题：一笔 6000 元贷款，分 12 期，每期等额还本金，利息按月 0.5% 计算首月还款额？\n推理：`,
+  }],
+});
+```
+
+<Callout type="note" title="示例要真带推理">
+  Few-shot CoT 的示例**必须展示完整推理步骤**，不能只给『问题→答案』。
+  模型学的是『推理的格式与粒度』，若示例没有推理，它会退化成直接作答。
+  示例的推理质量直接决定输出质量——垃圾推理链教出垃圾推理。
+</Callout>
+
+### 2.3 Auto-CoT（自动构造示例）
+
+手动写 CoT 示例费时，且示例选不好反而带偏。Auto-CoT 的思路：**用模型自己生成推理示例**，再拼回 prompt。典型流程——
+
+1. 对一批问题做聚类，选代表性问题；
+2. 用 Zero-shot CoT 让模型自己写出这些问题的推理链；
+3. 过滤掉错误/低质链，把剩下的作为 Few-shot 示例。
+
+```ts
+// auto-cot.ts —— 自动生成并筛选 CoT 示例（骨架）
+async function buildAutoExamples(questions: string[]): Promise<string[]> {
+  const good: string[] = [];
+  for (const q of questions) {
+    const r = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: `${q}\n请一步步推理并给出答案。` }],
+    });
+    const text = r.choices[0].message.content ?? '';
+    // 仅保留『含推理标记且长度合理』的链，避免模型偷懒直接给答案
+    if (text.includes('推理') || text.includes('步骤') || text.includes('因为')) {
+      if (text.length > 30 && text.length < 800) good.push(text);
+    }
+  }
+  return good;
+}
+```
+
+<Callout type="warn" title="Auto-CoT 可能自我污染">
+  模型自己生成的推理链**可能本身就是错的**。若不加校验直接当示例，
+  会把错误模式固化进 prompt。务必加『答案可验证时才收录』的过滤
+  （如数学题能机械化验算），否则 Auto-CoT 比手写更危险。
+</Callout>
+
+## 3. 原理：为什么 CoT 有效
+
+CoT 的生效并非魔法，有三个可解释的机制：
+
+- **中间计算空间**：Transformer 一次生成的『连续思考 token』有限。直接作答时，复杂计算被迫在极短的隐藏状态里完成，易溢出出错；CoT 把计算**摊到更多 token**上，相当于给了更多『工作记忆』。
+- **分解子问题**：多步推理本质是组合多个简单操作。CoT 强制模型显式拆步，每步只解决一个简单子问题，错误不会在黑箱里累积。
+- **对齐训练信号**：现代模型在对齐阶段被大量『带推理过程』的数据训练过（如数学题解答），所以『看到『一步步思考』的指令就激活对应能力』已成先验。
+
+<Callout type="note" title="CoT 与模型规模的关系">
+  经典发现（Wei et al., 2022）：CoT 在**足够大的模型**上才显著生效，小模型用了
+  可能反而更差（编造看似合理实则错误的推理）。这叫『涌现』特性。
+  选型时先验证：你的目标模型 + 你的任务，CoT 是否真的提升准确率，别盲信。
+</Callout>
+
+## 4. 何时有效，何时无效
+
+### 4.1 有效场景
+
+| 场景 | 原因 |
+|------|------|
+| 多步算术 / 代数 | 需要中间计算，CoT 摊薄工作记忆 |
+| 逻辑 / 符号推理 | 需分解前提、逐步推导 |
+| 复杂决策（多约束取舍） | 显式列出约束避免遗漏 |
+| 代码生成（算法题） | 先规划再写，减少结构性错误 |
+
+### 4.2 无效甚至有害的场景
+
+| 场景 | 原因 |
+|------|------|
+| 事实性问答（『谁当了总统』） | 无需推理，CoT 只增加延迟与幻觉面 |
+| 纯生成（写诗、润色） | 推理链无意义，反而约束创意 |
+| 简单分类 | 直接作答更稳更快 |
+| 强时效性查询 | 推理救不了知识盲区 |
+
+<Callout type="tip" title="用路由决定要不要 CoT">
+  生产里别无脑套 CoT。用一个小分类器/规则判断任务类型：
+  推理类走 CoT（慢但准），事实/生成类走直接作答（快且省）。
+  这就是『提示路由』思想——把对的提示给对的问题。
+</Callout>
+
+## 5. 对比：CoT 与相邻范式
+
+| 范式 | 思路 | 成本 | 适用 |
+|------|------|------|------|
+| 直接作答 | 一步出答案 | 最低 | 简单任务 |
+| Zero-shot CoT | 触发短语，自展开 | 低（仅 prompt） | 通用、快上手 |
+| Few-shot CoT | 给推理示例 | 中（含示例 token） | 弱模型、需稳定格式 |
+| 自我一致性（CoT-SC） | 多条 CoT 投票 | 高（N 倍调用） | 高准确率要求（见 prompt-advanced） |
+| 思维树（ToT） | 分支搜索 | 很高 | 需探索多路径的难题 |
+
+<Callout type="warn" title="CoT 不是银弹">
+  CoT 提升的是『复杂推理的准确率』，代价是延迟与 token 成本翻倍起。
+  且 CoT 仍会**编造推理步骤**（hallucinated reasoning）——推理链看起来
+  头头是道，中间某步却是编的。关键决策不要只看最终答案，要审推理链。
+</Callout>
+
+## 6. 可运行骨架：CoT + 答案抽取
+
+把 Zero-shot CoT 工程化：触发推理、正则抽取答案、失败时回退。
+
+```ts
+// cot-pipeline.ts —— 生产可用的 CoT 骨架（含抽取与回退）
+import OpenAI from 'openai';
+import 'dotenv/config';
+
+const client = new OpenAI();
+
+// 抽取『答案：』之后的内容；抽不到说明模型没按格式来
+function extractAnswer(text: string): string | null {
+  const m = text.match(/答案[:：]\s*(.+)/);
+  return m ? m[1].trim() : null;
+}
+
+async function solveWithCoT(question: string): Promise<string> {
+  const prompt = `${question}\n\n请一步步推理，最后单独用一行「答案：」给出最终结果。`;
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    temperature: 0, // 推理类任务用低温，减少随机性导致的步骤漂移
+    messages: [{ role: 'user', content: prompt }],
+  });
+  const full = res.choices[0].message.content ?? '';
+  const ans = extractAnswer(full);
+  if (ans) return ans;
+
+  // 回退：没抽到锚点，直接把整段推理返回，由下游/人工处理
+  console.warn('未命中答案锚点，返回完整推理：', full);
+  return full;
+}
+
+solveWithCoT('300 元的商品打 8 折后再满 200 减 30，最终多少钱？').then(console.log);
+```
+
+<Callout type="tip" title="推理任务用低温">
+  CoT 这类需要确定性的任务，把 temperature 设 0 能显著减少同题不同链的
+  抖动，便于复现与评测。创意生成才用高温。这是被很多人忽略的简单开关。
+</Callout>
+
+## 7. CoT 与工具调用 / 检索的配合
+
+CoT 不是孤岛。生产里常把它和『工具调用』『检索增强』组合，弥补纯推理的两大短板：算不准、记不住。
+
+### 7.1 CoT + 工具：让模型先规划、再调工具
+
+当推理中需要精确计算（如汇率换算、日期差）或实时数据，用 CoT 让模型**先列出需要哪些数据/计算**，再由你的代码用工具补齐，而不是让模型自己硬算。
+
+```ts
+// cot-with-tools.ts —— 推理里标出待查项，工具补数据（思路骨架）
+const planRes = await client.chat.completions.create({
+  model: 'gpt-4o-mini',
+  messages: [{
+    role: 'user',
+    content: `问题：100 美元按今日汇率换成人民币，再买单价 ¥15 的东西能买几个？
+    请先列出你需要知道的外界数据（用 [NEED: xxx] 标出），再推理。`,
+  }],
+});
+// 解析 [NEED: 美元兑人民币今日汇率] → 调 exchange_rate 工具取数 → 回填再让模型算
+```
+
+<Callout type="tip" title="推理负责分解，工具负责事实">
+  让 CoT 承担『问题分解与逻辑串联』，把『精确数值/实时事实』交给工具与
+  检索。分工清晰后，既不丢推理的可解释性，又补齐了模型的知识盲区与计算误差。
+</Callout>
+
+### 7.2 CoT + 检索：把证据链写进推理
+
+做带引用的问答时，让模型在每步推理里**显式标注它引用了哪段检索结果**，可大幅降低无依据编造。
+
+```ts
+const prompt = `
+基于下面提供的资料回答问题，推理时每一步都标注出处 [doc1]/[doc2]。
+资料：
+[doc1] 公司 Q2 营收 12 亿，同比增长 8%。
+[doc2] 公司 Q2 净利润 2 亿，同比下滑 3%。
+
+问题：公司 Q2 营收和净利润的同比趋势是否一致？请逐步推理。
+`;
+```
+
+<Callout type="note" title="可追溯推理利于审计">
+  在金融、医疗、法务等强合规场景，『推理步骤 + 引用出处』比单纯答案重要得多。
+  它让结论可被人工逐条审计，也方便事后用 Ragas 类指标评估『推理是否真基于证据』。
+</Callout>
+
+## 8. 一个完整的多步业务推理范例
+
+下面用一个真实感较强的例子，展示 CoT 从『分解』到『抽取答案』的全链路，以及为什么它能救回直接作答会算错的题。
+
+```
+问题：会员原价 ¥199/月，年付打 7 折；现做活动，年付用户额外送 2 个月。
+小红年付一次，平摊到每个月的实际月费是多少？
+
+CoT 输出：
+  1. 年付原价 = 199 * 12 = 2388 元
+  2. 年付 7 折 = 2388 * 0.7 = 1671.6 元
+  3. 送 2 个月 → 实际可用 12 + 2 = 14 个月
+  4. 平摊月费 = 1671.6 / 14 ≈ 119.4 元
+  答案：约 119.4 元/月
+```
+
+直接作答的模型常把『送 2 个月』忽略，算成 `1671.6/12=139.3`，或用错折扣基数。CoT 把『14 个月』这个关键项逼出来，错误率显著下降。
+
+<Callout type="warn" title="范例也暴露了 CoT 的脆弱点">
+  若模型在步骤 3 误算成『可用 12 个月』（忘了送的 2 个月），后续推理再顺
+  也是错答案。CoT 提升的是『平均准确率』，不保证『每题都对』。高价值场景
+  仍要配合校验（如用代码复算关键步）或自我一致性投票。
+</Callout>
+
+## 9. 工程踩坑
+
+<Callout type="danger" title="把推理文本当事实喂下游">
+  CoT 的推理过程是**模型的自言自语**，不是可信事实。若你把整段推理
+  （含可能的错误中间结论）再塞给另一个 Agent 或写进知识库，错误会传播。
+  下游只消费『抽取出的答案』，推理过程仅用于人审与调试。
+</Callout>
+
+<Callout type="warn" title="答案锚点被模型忽略">
+  模型偶尔不写「答案：」而直接结尾，正则抽空。对策：①换更柔性的锚点
+  （最后一个数字/最后一句）；②用 JSON 模式把『reasoning』与『answer』
+  拆成两个字段强制结构化；③加回退逻辑而非直接崩。
+</Callout>
+
+<Callout type="warn" title="长链导致上下文爆炸">
+  CoT 输出往往 200～800 token，多轮追问会快速撑爆窗口、推高成本。
+  对长对话里的 CoT 结果，只保留『抽取的答案』入历史，丢弃冗长推理，
+  或定期用摘要压缩（见 m4 记忆系统）。
+</Callout>
+
+<Callout type="note" title="小模型用了反而更差">
+  在 7B/13B 级模型上强塞 CoT，常出现『伪推理』——格式像推理但逻辑断裂。
+  上线前用你的评测集实测 CoT 是否带来净增益，别凭感觉。弱模型优先升级
+  模型或走 Few-shot 约束，而非堆 CoT 短语。
+</Callout>
+
+<Callout type="danger" title="CoT 掩盖了知识盲区">
+  CoT 让错误答案『看起来很合理』，比直接答错更危险——人会放松警惕。
+  涉及钱、医疗、法律的结论，CoT 只是辅助，最终必须可验证（外部核算/
+  工具校验），不能因为『推理很顺』就放行。
+</Callout>
+
+## 10. 评测口径
+
+判断 CoT 是否值得上，建议量化对比：
+
+- **准确率**：同批题，直接作答 vs CoT 的正确率差（用你自己的评测集，别只看论文）；
+- **成本比**：CoT 平均 token 倍数 / 准确率提升倍数，算性价比；
+- **失败可诊断性**：CoT 错题里，能否从推理链定位错误步（可诊断性本身有工程价值）。
+
+<Callout type="tip" title="A/B 你的提示">
+  CoT 触发短语、示例选择、锚点格式都影响结果。用 promptfoo 等工具
+  做批量 A/B，把『哪个 CoT 写法在你的数据上最优』变成数据决策，而非玄学。
+</Callout>
+
+## 小结
+
+- CoT 是推理期提示技巧，给模型『草稿纸』，把复杂计算摊到更多 token 降低出错。
+- 三形态：Zero-shot（触发短语，最省事）、Few-shot（带推理示例，最稳）、Auto-CoT（自动造示例，需校验防自污染）。
+- 生效机制：中间计算空间 + 子问题分解 + 对齐先验；且仅在大模型上显著涌现。
+- 有效于算术/逻辑/决策/算法，无效于事实/生成/简单分类/时效查询——用路由区分。
+- 工程红线：只消费抽取的答案而非推理文本、加答案锚点与回退、低温、控制上下文、小模型慎用、关键结论须可验证。
+
+<Callout type="note" title="下一步">
+  单条 CoT 仍有随机性。要进一步提升准确率，可走『多条 CoT 投票』的
+  自我一致性（Self-Consistency），以及思维树、Reflexion 等高级范式——
+  见 **prompt-advanced（高级推理技巧）**。
+</Callout>
+
+## 延伸阅读 / 参考
+
+- Wei et al., *Chain-of-Thought Prompting Elicits Reasoning in Large Language Models*（CoT 奠基论文）
+- Kojima et al., *Large Language Models are Zero-Shot Reasoners*（Zero-shot CoT 触发短语）
+- Zhang et al., *Automatic Chain of Thought Prompting*（Auto-CoT）
+- *Self-Consistency Improves Chain of Thought Reasoning*（CoT-SC，投票提升准确率）
+- OpenAI / Anthropic 推理类任务的最佳实践（temperature、结构化输出，以官方为准）
+- promptfoo 文档：对 CoT 提示做批量评测与 A/B

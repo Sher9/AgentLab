@@ -1,0 +1,200 @@
+---
+title: 评测集构建：黄金集、边界用例与版本管理
+description: 评测集是 LLM/Agent 系统可信迭代的基石。讲清黄金集、边界用例、对抗样本三类数据的定位，标注规范与一致性、覆盖度设计、版本管理与漂移检测，并给出可运行的 Python 校验与回归骨架。
+category: 数据处理
+order: 5
+difficulty: 进阶
+duration: 22 分钟
+tags: [评测集, 标注, 黄金集, 边界用例, 版本管理]
+date: 2026-07-29
+---
+
+# 评测集构建：黄金集、边界用例与版本管理
+
+改了 Prompt、换了模型、调了检索策略——你怎么知道系统是变好了还是变差了？靠『我手测了几个例子感觉还行』是最危险的错觉。**评测集（Evaluation Set）** 是把『感觉』变成『可量化回归』的硬通货。没有它，任何优化都是盲飞。
+
+这一篇面向有经验的开发者，聚焦评测集本身的构建：三类数据的定位、标注规范、覆盖度、版本管理，并给出能直接套用的 Python 校验/回归骨架。
+
+## 1. 为什么评测集是工程资产
+
+LLM 系统是非确定性的：同一输入换次调用可能给出不同答案，模型还会随厂商升级悄悄变。没有固定评测集，你无法回答两个基本问题：
+
+- **回归**：这次改动有没有把以前好的 case 搞坏？
+- **对比**：模型 A 和模型 B，到底谁在哪些维度更强？
+
+评测集应当和代码一样进版本库、走评审、带 changelog。它是团队共享的『事实基准』，不是个人随手记的便签。
+
+<Callout type="note" title="评测集与训练集不是一回事">
+  这里说的评测集是用来『验收系统表现』的离线样本，不是模型训练用的数据集。
+  它的目标是覆盖『真实会遇到的、以及不该翻车的』情况，规模不必大，但要有代表性。
+</Callout>
+
+## 2. 评测集的三类数据
+
+一个健康的评测集通常混编三类样本，缺一不可：
+
+| 类型 | 作用 | 例子 |
+|------|------|------|
+| 黄金集（Golden） | 覆盖核心主路径，衡量『正常该对的』 | 标准问答、典型工具调用、常规分类 |
+| 边界用例（Edge） | 卡住易错边界，衡量鲁棒性 | 超长输入、空值、模糊指代、多意图混杂 |
+| 对抗样本（Adversarial） | 检验安全与稳健，衡量不翻车 | 提示注入、越狱话术、非法请求 |
+
+黄金集保证『主功能没坏』，边界用例保证『角落不崩』，对抗样本保证『不被攻破』。只测黄金集会高估系统；只堆对抗样本则永远红灯、无从迭代。
+
+<Callout type="tip" title="比例建议起步值">
+  经验起步：黄金 70% / 边界 20% / 对抗 10%。上线后根据实际失败分布再调——
+  哪类 case 老出问题，就针对性补哪类，让评测集跟着系统的弱点长。
+</Callout>
+
+## 3. 标注规范与一致性
+
+评测集里每条样本最好带**标准答案或评分要点**，否则评测只能靠人肉看，无法自动化回归。两种标注形态：
+
+- **有参考答案（reference answer）**：适合事实问答，用相似度/包含关系自动判分；
+- **有评分要点（rubric）**：适合开放式任务，配 LLM-as-judge 或人工按要点打分。
+
+无论哪种，都要有一份**标注规范文档**：什么算对、什么算部分对、边界怎么判。多人标注时务必做一致性校验（两人标同一批，算一致率），否则评测集本身就有噪声。
+
+```python
+# schema.py —— 评测样本的结构定义（单一事实来源）
+from dataclasses import dataclass
+from enum import Enum
+
+class CaseType(str, Enum):
+    GOLDEN = "golden"
+    EDGE = "edge"
+    ADVERSARIAL = "adversarial"
+
+@dataclass
+class EvalCase:
+    id: str                 # 稳定主键，跨版本不变
+    type: CaseType          # 三类之一
+    input: str              # 喂给系统的输入
+    # 二选一：有标准答案就填 reference，开放式填 rubric 要点
+    reference: str | None = None
+    rubric: list[str] | None = None
+    tags: list[str] = None  # 用于按维度筛选，如 ["多意图", "超长"]
+```
+
+<Callout type="warn" title="标注规范要写进库">
+  『什么算对』如果不成文，三个人会标出三种标准，评测集噪声直接污染所有回归结论。
+  规范文档和样本一起进版本库，新增样本先过规范评审再合并。
+</Callout>
+
+## 4. 覆盖度与代表性
+
+评测集不是越多越好，而是越能代表真实分布越好。构建时按『维度 × 难度』画一张覆盖矩阵，刻意补齐空缺格：
+
+- **维度**：业务场景（售前/售后）、输入语言（中/英/混合）、用户层级（新手/专家）；
+- **难度**：简单直球、需多步推理、含干扰信息。
+
+覆盖矩阵能直观暴露『我们只测了简单中文用例，英文长文全空着』这类盲区。
+
+```python
+# coverage.py —— 用覆盖矩阵检查评测集盲区
+from collections import Counter
+
+def coverage_gaps(cases: list[EvalCase], dims: list[str]) -> dict:
+    # 统计 (维度值) 的出现次数，找出为 0 的格子
+    counts: Counter = Counter()
+    for c in cases:
+        for d in dims:
+            val = c.tags.get(d) if isinstance(c.tags, dict) else None
+            counts[(d, val)] += 1
+    return {k: v for k, v in counts.items() if v == 0}  # 返回空白维度，提示补数据
+```
+
+## 5. 版本管理与漂移检测
+
+评测集会变（加边界用例、修正错误标注），但**每次变都要可追溯到结论**。建议：
+
+- 评测集文件进 Git，每次变更一个 PR，描述『为什么加这条 / 改了哪条』；
+- 在样本上带 `version` 或 changelog，能回答『这条是哪个版本引入的』；
+- **漂移检测**：固定一个『基线评测集』长期不动，用来横向对比不同系统版本的得分；
+  另设一个『滚动集』持续吸收新 case。基线集漂移（平均分莫名下降）往往意味着系统或模型本身变了。
+
+<Callout type="tip" title="基线集要冻结">
+  基线集一旦定下就别轻易改，否则你无法区分『是系统变差了』还是『是评测集变简单了』。
+  新 case 加进滚动集；只有确认某条基线标注有误，才走正式修订流程并记下 revision。
+</Callout>
+
+## 6. 可运行骨架：校验与回归
+
+下面给出两个最小可跑脚本：一个是**入库前校验**（结构合法、类型齐全、无重复 id），一个是**回归跑分**（对每条 case 调系统、算通过率）。系统调用处用伪函数，接你自己的链路即可。
+
+```python
+# validate_set.py —— 评测集入库前校验
+def validate(cases: list[EvalCase]) -> list[str]:
+    errors = []
+    ids = set()
+    for c in cases:
+        if c.id in ids:
+            errors.append(f"重复 id: {c.id}")
+        ids.add(c.id)
+        if c.type not in CaseType:
+            errors.append(f"{c.id} 类型非法: {c.type}")
+        if not c.reference and not c.rubric:
+            errors.append(f"{c.id} 既没有 reference 也没有 rubric，无法自动判分")
+    return errors  # 非空则阻断合并，保证评测集质量
+```
+
+```python
+# run_eval.py —— 回归跑分骨架
+def call_system(prompt: str) -> str:
+    # TODO: 换成你真实的 Agent / LLM 调用；返回模型输出文本
+    ...
+
+def score(case: EvalCase, output: str) -> float:
+    # 有参考答案：用包含/相似度；有 rubric：逐条核对（可接 LLM-as-judge）
+    if case.reference:
+        return 1.0 if case.reference in output else 0.0
+    return sum(1 for r in case.rubric if r.lower() in output.lower()) / len(case.rubric)
+
+def run_eval(cases: list[EvalCase]) -> dict:
+    by_type: dict[str, list[float]] = {}
+    for c in cases:
+        s = score(c, call_system(c.input))
+        by_type.setdefault(c.type.value, []).append(s)
+    # 分类型汇报通过率，避免被平均掩盖的短板
+    return {t: sum(v) / len(v) for t, v in by_type.items()}
+```
+
+运行：`python validate_set.py` 校验后再 `python run_eval.py` 看分类型通过率。把 `run_eval` 接进 CI，每次提 PR 自动跑回归。
+
+## 7. 踩坑清单
+
+<Callout type="danger" title="评测集泄漏进训练/微调">
+  如果评测样本意外出现在训练或 few-shot 里，分数会虚高且毫无意义。
+  严格隔离：评测集、训练集、few-shot 示例三套数据互不可见，CI 里加交叉校验。
+</Callout>
+
+<Callout type="warn" title="用模型给自己打分陷入循环">
+  LLM-as-judge 方便，但裁判模型和被评模型同源时会『互相包庇』。
+  关键评测用异构裁判或人工抽检校准，别把 judge 分数当唯一真理。
+</Callout>
+
+<Callout type="warn" title="只追总分忽略分类型">
+  总通过率 90% 可能掩盖『对抗样本 30%』的致命短板。永远分类型（黄金/边界/对抗）汇报，
+  短板优先补，而不是盯着总分自我安慰。
+</Callout>
+
+<Callout type="tip" title="失败 case 反向喂养集">
+  线上真实失败、人工复核发现的坏答案，是最宝贵的评测集素材。建立『失败即样本』的收集通道，
+  让评测集随系统真实弱点持续生长，而不是一次性凑完就锁死。
+</Callout>
+
+## 小结
+
+- 评测集是工程资产，要进版本库、走评审、带 changelog，和代码同权。
+- 三类数据互补：黄金集保主功能、边界用例保鲁棒、对抗样本保安全，比例约 7:2:1 起步。
+- 标注规范成文、多人一致性校验，否则评测集本身就是噪声源。
+- 用覆盖矩阵找盲区；基线集冻结做横向对比，滚动集持续吸收新 case。
+- 红线：评测集不与训练/few-shot 泄漏、judge 不循环自证、分类型汇报、失败即样本。
+
+## 延伸阅读 / 参考
+
+- Ragas 文档：RAG 系统的自动评测指标（faithfulness / answer correctness 等）
+- HELM / BIG-bench：大模型评测的方法论与基准设计思路
+- *Language Models are Few-Shot Learners* 中关于评测集与污染（contamination）的讨论
+- LLM-as-Judge 相关论文：裁判模型校准与偏差，以官方/论文为准
+- 数据版本管理（DVC / 数据集 Git 化）实践：把数据集当代码一样管

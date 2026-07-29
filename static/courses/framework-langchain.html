@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>LangChain 实战：从 Runnable 到 LCEL 的编排心智 · AgentLab</title>
+  <meta name="description" content="拆解 LangChain 的核心抽象 Runnable、LCEL 组合语法、Retriever 与 Callback 体系，对比原生 SDK 与 LangGraph，给出生产可用的代码骨架与高频踩坑。框架类以官方文档为准，API 易变。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="LangChain 实战：从 Runnable 到 LCEL 的编排心智 · AgentLab"/>
+  <meta property="og:description" content="拆解 LangChain 的核心抽象 Runnable、LCEL 组合语法、Retriever 与 Callback 体系，对比原生 SDK 与 LangGraph，给出生产可用的代码骨架与高频踩坑。框架类以官方文档为准，API 易变。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#frameworks">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🏗️</span>
+        <span class="art-moduleName">框架</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">38 分钟</span>
+      </div>
+      <h1 class="art-title">LangChain 实战：从 Runnable 到 LCEL 的编排心智</h1>
+      <p class="art-desc">拆解 LangChain 的核心抽象 Runnable、LCEL 组合语法、Retriever 与 Callback 体系，对比原生 SDK 与 LangGraph，给出生产可用的代码骨架与高频踩坑。框架类以官方文档为准，API 易变。</p>
+      <div class="art-tags"><span class="art-tag">#LangChain</span><span class="art-tag">#LCEL</span><span class="art-tag">#Runnable</span><span class="art-tag">#Retriever</span><span class="art-tag">#框架</span><span class="art-tag">#踩坑</span></div>
+    </div>
+    <div class="prose"><h1>LangChain 实战：从 Runnable 到 LCEL 的编排心智</h1>
+<p>如果你已经能手写 Agent 主循环（见 M1 工具调用、M2 架构模式），再来看 LangChain，会少很多『它到底替我干了啥』的困惑。LangChain 的价值不在『让你不用懂原理』，而在<strong>把常见编排模式沉淀成可组合的接口</strong>：提示拼接、模型调用、输出解析、检索、记忆、回调，全部统一成一种叫 <code>Runnable</code> 的对象，再用一套管道语法串起来。</p>
+<p>本篇面向已经写过原生 Agent 的开发者，重点讲清三件事：<strong>LangChain 的核心抽象是什么、LCEL 为什么比旧 Chain 好、以及它最容易踩的坑</strong>。代码骨架以 TS 为主（与站内其他篇一致），并标注『以官方文档为准，API 易变』——<strong>不要把它当作可复制运行的定版代码</strong>，先理解思路，再对照你使用的版本核对接口。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">先看清定位</span></div><div class="co-body"><p>  LangChain 是『把 SDK 调用封装成一堆可组合积木』的编排框架。它不替代模型厂商 SDK，
+  而是<strong>在 SDK 之上</strong>做了一层抽象。你写的每一段 LangChain 代码，最终都会展开成
+  类似 M1 里那种 <code>client.chat.completions.create</code> 调用。理解了这层，你就不会被它的
+  抽象迷惑，也知道一旦出事该往哪层去排查。</p>
+</div></div><h2 id="1-核心抽象-一切皆-runnable">1. 核心抽象：一切皆 Runnable</h2>
+<p>LangChain 的整个体系建筑在一个接口上——<code>Runnable</code>。一个 <code>Runnable</code> 是一个<strong>有统一签名的单元</strong>：你给它输入，它给你输出，且支持 <code>.invoke()</code>（单次）、<code>.batch()</code>（批量）、<code>.stream()</code>（流式）三种调用方式。</p>
+<ul>
+<li><code>PromptTemplate</code> 是 Runnable（把变量填进模板 → 字符串）</li>
+<li><code>ChatModel</code> 是 Runnable（字符串/消息 → 模型回复）</li>
+<li><code>OutputParser</code> 是 Runnable（模型文本 → 结构化对象）</li>
+<li>多个 Runnable 串起来，还是 Runnable</li>
+</ul>
+<p>这种『万物皆 Runnable』的设计带来一个巨大好处：<strong>组合是统一的</strong>。不管你是在拼提示、调模型、还是解析输出，组合语法完全一致，写出来的流水线长得都像一条管道。</p>
+<pre><code class="language-ts">// 思路骨架：一个最小 Runnable 链（伪代码，以官方文档为准，API 易变）
+// 注意：下面 import 路径与具体方法名随版本变化极大，仅展示『思路』
+
+import { ChatOpenAI } from '@langchain/openai';
+import { PromptTemplate } from '@langchain/core/prompts';
+import { StringOutputParser } from '@langchain/core/output_parsers';
+
+// ① 提示模板：把 {topic} 变量填进一句话模板，产出给模型的字符串
+const prompt = PromptTemplate.fromTemplate('用一句话解释：{topic}');
+
+// ② 模型：本质是对厂商 SDK 的封装，invoke 内部会构造 messages 并调用 chat.completions
+const model = new ChatOpenAI({ model: 'gpt-4o-mini', temperature: 0 });
+
+// ③ 输出解析：把模型的 AIMessage 转成纯字符串
+const parser = new StringOutputParser();
+
+// ④ 用 LCEL 管道符串起来：prompt | model | parser
+//    等价于：先跑 prompt 得字符串，再把字符串喂给 model，最后用 parser 收尾
+const chain = prompt.pipe(model).pipe(parser);
+
+// 调用：invoke 是 Runnable 的统一入口，返回最终解析结果
+const answer = await chain.invoke({ topic: '什么是向量数据库' });
+console.log(answer);
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">记住这张映射表</span></div><div class="co-body">  <code>prompt</code> ≈ 你手写的多行模板字符串；<code>model</code> ≈ <code>client.chat.completions.create</code>；
+  <code>parser</code> ≈ 你手写的 <code>JSON.parse</code> 或正则提取。LangChain 没发明新能力，只是把这些
+<p>  重复动作标准化了。当你调试不出结果时，在脑子里把它『翻译回』原生 SDK 调用，
+  问题往往立刻清晰。</p>
+</div></div><h2 id="2-lcel-为什么取代旧-chain">2. LCEL：为什么取代旧 Chain</h2>
+<p>早期 LangChain 用 <code>LLMChain</code>、<code>ConversationChain</code> 等具体类，每个类一个 API、彼此不互通、难以流式、难以批量。LCEL（LangChain Expression Language）是 2023 年后主推的<strong>声明式组合语法</strong>，用 <code>.pipe()</code>（JS 里也能用 <code>|</code> 风格的函数组合思维）把 Runnable 串成图。</p>
+<p>LCEL 相对旧 Chain 的硬性优势：</p>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>旧 Chain（如 LLMChain）</th>
+<th>LCEL（pipe 组合）</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>流式</td>
+<td>基本不支持</td>
+<td>原生 <code>stream()</code>，逐 token 出</td>
+</tr>
+<tr>
+<td>批量</td>
+<td>要自己写循环</td>
+<td>原生 <code>batch()</code>，自动并发</td>
+</tr>
+<tr>
+<td>异步</td>
+<td>零散支持</td>
+<td><code>invoke/stream/batch</code> 均有 async 版</td>
+</tr>
+<tr>
+<td>组合</td>
+<td>类与类之间接口不一</td>
+<td>全是 Runnable，统一可拼</td>
+</tr>
+<tr>
+<td>可观测</td>
+<td>靠 hack</td>
+<td>天然接入 Callback / LangSmith</td>
+</tr>
+<tr>
+<td>维护状态</td>
+<td>LangChain 官方已<strong>不再主推</strong>旧 Chain</td>
+<td>官方首推</td>
+</tr>
+</tbody></table>
+<pre><code class="language-ts">// 思路骨架：LCEL 的几种调用方式（伪代码，API 易变）
+// 同一条 chain，可以用三种方式跑——这是 Runnable 抽象的统一红利
+
+// 单次：拿到完整结果
+const full = await chain.invoke({ topic: 'RAG' });
+
+// 流式：逐块拿到，适合打字机体验（见产品工程-流式输出）
+for await (const chunk of await chain.stream({ topic: 'Agent' })) {
+  process.stdout.write(chunk); // 每个 chunk 是一小段文本
+}
+
+// 批量：一次处理多个输入，框架内部会做并发调度
+const many = await chain.batch([
+  { topic: '向量' },
+  { topic: '索引' },
+  { topic: '重排' },
+]);
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">API 易变，先锁定版本</span></div><div class="co-body"><p>  LangChain 的包结构经历过剧烈调整（<code>langchain</code> 大包被拆成 <code>@langchain/core</code>、
+  <code>@langchain/openai</code> 等）。本文 import 路径在你读到时很可能已变化。
+  落地前：<strong>先 <code>npm i</code> 你目标版本，再照着该版本 README 核对 import 与方法名</strong>，
+  不要照抄网络旧教程。这是用 LangChain 最大的隐性成本——抽象稳定，但包路径不稳定。</p>
+</div></div><h2 id="3-组合原语-分支-并行-兜底">3. 组合原语：分支、并行、兜底</h2>
+<p>真实流水线不会是直线。LCEL 提供几个组合原语，让你在不写大量 <code>if/else</code> 的情况下表达复杂流向。</p>
+<ul>
+<li><strong>并行 <code>RunnableParallel</code></strong>：多个 Runnable 同时吃同一份输入，结果合并成对象。</li>
+<li><strong>分支 <code>RunnableBranch</code></strong>：根据条件选不同子链（类似 <code>if/else</code>，但仍是 Runnable）。</li>
+<li><strong>兜底 <code>withFallbacks</code></strong>：主链失败自动切备用链（网络超时、模型报错时极有用）。</li>
+<li><strong>绑定 <code>.bind</code></strong>：给 Runnable 注入固定参数（如给模型绑死 <code>temperature</code>）。</li>
+</ul>
+<pre><code class="language-ts">// 思路骨架：并行 + 兜底（伪代码，API 易变）
+
+import { RunnableParallel, RunnableBranch } from '@langchain/core/runnables';
+
+// ① 并行：同一份问题，同时走『摘要链』和『关键词链』，结果合并
+const parallel = RunnableParallel.from({
+  summary: summaryChain,   // 产出 { summary: '...' }
+  keywords: keywordChain,  // 产出 { keywords: '...' }
+});
+// parallel.invoke(q) → { summary: '...', keywords: '...' }
+
+// ② 兜底：主模型挂了，自动切到更便宜/更稳的备用模型
+const robustModel = expensiveModel.withFallbacks([cheapModel]);
+
+// ③ 分支：问题含『代码』走代码专家链，否则走通用链
+const router = RunnableBranch.from([
+  {
+    // condition 返回 true 就走对应的 chain
+    condition: (input) =&gt; /代码|报错|bug/i.test(input.question),
+    chain: codeExpertChain,
+  },
+  {
+    condition: () =&gt; true, // 默认分支，相当于 else
+    chain: generalChain,
+  },
+]);
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">组合原语先想清楚再写</span></div><div class="co-body"><p>  这些原语本质是『控制流的声明式写法』。动手前先在一张纸上画出数据流：哪些要并行、
+  哪些要分支、哪里要兜底。画清楚再翻译成 LCEL，比边写边改省十倍时间。
+  另外：<code>withFallbacks</code> 是生产必备——模型 API 一定会偶发 5xx，没兜底用户就看到报错。</p>
+</div></div><h2 id="4-retriever-rag-链里的-取数-环节">4. Retriever：RAG 链里的『取数』环节</h2>
+<p>在 RAG（检索增强生成）场景里，LangChain 用 <code>Retriever</code> 这个 Runnable 表示『给定查询，返回相关文档』。Retriever 把向量库、BM25、混合检索全部统一成同一个接口，于是『检索』可以直接 <code>pipe</code> 进『生成』。</p>
+<pre><code class="language-ts">// 思路骨架：Retriever 接进生成链（伪代码，API 易变）
+// 关键认知：Retriever 的输入是 query 字符串，输出是 Document[]，它也是 Runnable
+
+import { createRetrievalChain } from 'langchain/chains/retrieval'; // 仅示意路径
+
+// retriever 背后可以是 pgvector / Chroma / Qdrant（见 RAG 分类）
+// 它的核心方法：invoke(query) → Document[]
+const retriever = vectorStore.asRetriever({ k: 4 }); // 取 top-4
+
+// 把 retriever 和『带上下文的生成链』拼起来
+// 流程：query → retriever 取 4 篇 → 填进提示 → 模型作答并附引用
+const ragChain = createRetrievalChain({
+  retriever,
+  combineDocsChain: answerChain, // 负责把文档拼进提示并调用模型
+});
+
+const out = await ragChain.invoke({ input: 'LangChain 和 LangGraph 区别？' });
+console.log(out.answer); // 以及 out.context 里是检索到的原文，可用于引用溯源
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">Retriever 只是接口，检索质量靠你</span></div><div class="co-body"><p>  LangChain 的 Retriever 只负责『统一调用形态』，检索准不准取决于你的切块粒度、
+   embedding 模型、向量库索引（HNSW 等）、以及是否做重排（见 RAG 分类各篇）。
+  框架不会帮你把召回率从 60% 提到 90%——那部分工程活儿框架替代不了。</p>
+</div></div><h2 id="5-对话记忆-把状态塞回链">5. 对话记忆：把状态塞回链</h2>
+<p>M1/M4 讲过：LLM 无状态，记忆靠你的代码在调用间搬运上下文。LangChain 把这个模式封装成 <code>RunnableWithMessageHistory</code>——它给任意链套一层『自动存取历史消息』的外壳，你不用手忙脚乱地维护 <code>history</code> 数组。</p>
+<p>思路是：<strong>把『某次会话的历史』按 sessionId 存进一个 <code>BaseChatMessageHistory</code> 后端</strong>（内存、Redis、数据库皆可），每次 invoke 时按 sessionId 取出历史，拼到输入前；链跑完再把新消息写回。</p>
+<pre><code class="language-ts">// 思路骨架：给链加上会话记忆（伪代码，API 易变）
+import { RunnableWithMessageHistory } from '@langchain/core/runnables';
+import { InMemoryChatMessageHistory } from '@langchain/core/chat_history';
+
+// ① 用一个 Map 按 sessionId 存历史；生产换成 Redis/DB 实现同一接口
+const store = new Map&lt;string, InMemoryChatMessageHistory&gt;();
+function getHistory(sessionId: string) {
+  if (!store.has(sessionId)) store.set(sessionId, new InMemoryChatMessageHistory());
+  return store.get(sessionId)!;
+}
+
+// ② 用 withMessageHistory 包住原链；注意输入里要带 sessionId
+const chainWithMemory = new RunnableWithMessageHistory({
+  runnable: chain,                  // 第 1 节的 prompt|model|parser
+  getMessageHistory: getHistory,   // 提供按 id 取历史的工厂
+  inputMessagesKey: 'topic',       // 标记哪个输入字段是『用户新消息』
+  historyMessagesKey: 'history',   // 历史会被填进提示的哪个变量
+});
+
+// ③ 调用时带 sessionId，框架自动加载/保存该会话历史
+await chainWithMemory.invoke(
+  { topic: '我叫小明' },
+  { configurable: { sessionId: 'u_001' } }
+);
+await chainWithMemory.invoke(
+  { topic: '我刚说我叫什么？' },
+  { configurable: { sessionId: 'u_001' } } // 能答上来，因为历史被自动带上
+);
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">记忆后端要按 sessionId 隔离</span></div><div class="co-body"><p>  历史存储必须支持按 <code>sessionId</code> 隔离，多用户绝不能串号（见 M4 记忆的隐私红线）。
+  内存 Map 仅演示；生产用 Redis 等带 TTL 的后端，避免历史无限膨胀、陈旧记忆误导。
+  另外：长会话仍要走 M4 讲的摘要压缩，否则历史塞爆窗口、成本线性涨。</p>
+</div></div><h2 id="6-callback-不用改业务代码就能插监控">6. Callback：不用改业务代码就能插监控</h2>
+<p>LangChain 内置一套 Callback 机制，让你在『链开始/结束、LLM 开始/结束、token 用量、报错』等事件上挂载钩子，而<strong>不侵入业务代码</strong>。这是它相对『自己手写循环』最实用的优势之一——可观测性内建。</p>
+<p>典型用途：把每次调用的 token 用量、耗时、链路打到 LangSmith 或你自己的日志/追踪系统（参考评估调优分类的链路追踪篇）。</p>
+<pre><code class="language-ts">// 思路骨架：用 Callback 记录 token 与耗时（伪代码，API 易变）
+import { BaseCallbackHandler } from '@langchain/core/callbacks/base';
+
+// 自己写一个 handler，挂在任意 invoke 上，业务代码不用改
+class TokenLogger extends BaseCallbackHandler {
+  name = 'token-logger'; // handler 标识
+  async LLMEnd(llmOutput: any) {
+    // llmOutput 里通常含 usage_metadata（token 数），按你用的版本核对字段名
+    console.log('本次消耗 token：', llmOutput?.usage_metadata);
+  }
+}
+
+// 调用时通过 callbacks 参数注入；也可全局配置，对全站生效
+await chain.invoke(
+  { topic: 'Agent' },
+  { callbacks: [new TokenLogger()] } // 只在这一次调用挂日志
+);
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">Callback 字段名随版本漂移</span></div><div class="co-body">  <code>LLMEnd</code> 回调里 token 用量的字段，在不同 LangChain 版本里叫过 <code>tokenUsage</code>、
+  <code>llmUsage</code>、<code>usage_metadata</code> 等。读之前先 <code>console.log</code> 看实际结构，别硬编码老字段名，
+<p>  否则监控静默失效（最危险的一种 bug：看起来在跑，其实啥也没记）。</p>
+</div></div><h2 id="7-对比-langchain-vs-原生-sdk-vs-langgraph">7. 对比：LangChain vs 原生 SDK vs LangGraph</h2>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>原生 SDK（自己写循环）</th>
+<th>LangChain (LCEL)</th>
+<th>LangGraph</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>学习成本</td>
+<td>低，直接看厂商文档</td>
+<td>中，要学抽象与包结构</td>
+<td>高，要学图/状态/检查点</td>
+</tr>
+<tr>
+<td>控制力</td>
+<td>最高，每行你都懂</td>
+<td>中，抽象层遮了一层</td>
+<td>中，图结构可解释</td>
+</tr>
+<tr>
+<td>流式/批量</td>
+<td>自己写</td>
+<td>原生支持</td>
+<td>原生支持</td>
+</tr>
+<tr>
+<td>循环/分支 Agent</td>
+<td>自己写 <code>for</code> 循环</td>
+<td>用组合原语，但<strong>多轮循环仍要自己兜</strong></td>
+<td><strong>原生支持状态图循环</strong></td>
+</tr>
+<tr>
+<td>可观测</td>
+<td>自己接</td>
+<td>Callback 内建</td>
+<td>Callback + 检查点内建</td>
+</tr>
+<tr>
+<td>适合</td>
+<td>简单、要极致可控</td>
+<td>线性/半线性 RAG、固定流水线</td>
+<td>多步、有状态、需 Human-in-loop 的 Agent</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">选 LangChain 还是 LangGraph</span></div><div class="co-body"><p>  一个实用判断：如果你的流程是『提示→模型→解析』这种<strong>线性或树状</strong>的，LangChain 够用；
+  如果流程是『可以绕回上一步、要等待人工确认、要在节点间共享可变状态』的<strong>有状态图</strong>，
+  直接上 LangGraph（本分类下一篇专讲）。别用 LangChain 硬凑循环——那正是 LangGraph 解决的。</p>
+</div></div><h2 id="8-高频踩坑">8. 高频踩坑</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">把旧 Chain 教程当现行用法</span></div><div class="co-body"><p>  网上大量教程仍用 <code>LLMChain</code>、<code>ConversationalChain</code>，官方已不再主推。照抄会写出
+  既无法流式、又难维护、且 API 即将移除的代码。新项目一律用 LCEL（pipe 组合）。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">包版本不锁，import 全红</span></div><div class="co-body"><p>  LangChain 拆包后，<code>ChatOpenAI</code> 在 <code>@langchain/openai</code>，<code>PromptTemplate</code> 在
+  <code>@langchain/core</code>。漏装子包、混用大包与子包，编译直接报错。落地第一件事：
+  锁死版本、按该版本文档装对应的子包，别凭记忆 import。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">过度抽象，调试像黑盒</span></div><div class="co-body"><p>  一条长链出错时，你不知道是提示问题、模型问题、还是解析问题。对策：
+  ① 把链拆小，单独 <code>.invoke</code> 每段验证；② 开 <code>verbose</code> 或挂 Callback 看中间输出；
+  ③ 关键节点打印 <code>console.log</code>。抽象省了写代码的力，但没省『理解数据流』的力。</p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">盲目套框架，简单任务变复杂</span></div><div class="co-body"><p>  如果你的 Agent 就是『调一次工具、问一个问题』，手写 M1 那种 30 行循环比引入整套
+  LangChain 更清晰、更可控、依赖更小。框架在『流程复杂到值得抽象』时才回本。
+  参考本分类『原生 vs 框架抉择』篇——能用 50 行写完的，别上框架。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">Callback 里抛异常会污染主链</span></div><div class="co-body"><p>  你在 Callback handler 里写的代码若抛错，可能直接中断正在跑的链。
+  handler 内部务必 <code>try/catch</code>，把日志/监控的失败与业务逻辑隔离——监控挂了不能连累主流程。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">缓存能省真金白银</span></div><div class="co-body"><p>  LangChain 提供 <code>CacheBackedEmbeddings</code> 与 LLM 缓存（如 Redis/InMemory）。
+  对 embedding 这类『同样输入反复算』的操作做缓存，RAG 场景能砍掉大量重复 token 开销。
+  上线前评估哪些输入是稳定的、值得缓存（见 LLM大模型-成本与计费优化）。</p>
+</div></div><h2 id="9-适用-不适用场景">9. 适用 / 不适用场景</h2>
+<p><strong>适用：</strong></p>
+<ul>
+<li>半线性 RAG 流水线（检索→拼接→生成→解析），LCEL 表达起来很干净；</li>
+<li>需要流式、批量、回退原生支持的中等复杂度链；</li>
+<li>团队已统一用 LangChain，希望复用现成的 Retriever / Parser / Document 生态；</li>
+<li>需要内建可观测（Callback / LangSmith）又不想自己搭。</li>
+</ul>
+<p><strong>不适用：</strong></p>
+<ul>
+<li>极简 Agent（一次工具调用），手写循环更直白；</li>
+<li>强状态、多轮循环、需 Human-in-loop 的编排——那是 LangGraph 的主场；</li>
+<li>对依赖体积、冷启动极敏感的 Serverless / 边缘部署（整包较重）；</li>
+<li>需要逐行掌控每 prompt、每 token 的极致可控场景。</li>
+</ul>
+<h2 id="小结">小结</h2>
+<ul>
+<li>LangChain 的核心是 <strong>Runnable</strong>：提示、模型、解析器、检索器全是 Runnable，组合语法统一。</li>
+<li><strong>LCEL（pipe 组合）</strong> 取代旧 Chain，带来流式/批量/异步/可观测的原生支持，新项目别再用 <code>LLMChain</code>。</li>
+<li>组合原语 <code>Parallel / Branch / Fallbacks / bind</code> 把控制流声明化；Retriever 统一了『取数』环节；Callback 让监控不侵入业务。</li>
+<li>对比结论：线性半线性用 LangChain，强状态循环用 LangGraph，极简场景手写 SDK。</li>
+<li>红线：锁版本、按版本文档核对 import、别照抄旧 Chain 教程、别用框架硬凑循环、Callback 内隔离异常、调试时拆链验证。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  LangChain 擅长线性编排，但当你需要『节点能绕回、状态可共享、能等人确认』的 Agent 时，
+  就该看同分类下的 <strong>LangGraph 编排</strong>——它把流程显式建模成一张状态图。</p>
+</div></div><h2 id="10-落地清单-安装与最小依赖">10. 落地清单：安装与最小依赖</h2>
+<p>LangChain 拆包后，依赖要装『核心 + 具体集成』两组。下面是一份最小可跑的 TS 清单（<strong>版本号以你落地时 npm 上最新的为准，先锁版再写代码</strong>）：</p>
+<pre><code class="language-bash"># 核心抽象（Runnable / Prompt / Parser / Callback 都在这里）
+npm i @langchain/core
+# 具体模型集成（不同厂商一个包，避免大包 langchain 全量引入）
+npm i @langchain/openai
+# 若用 RAG，再装向量库集成，例如：
+npm i @langchain/community      # 大量第三方 Retriever / VectorStore 集成
+# 跑 TS：用 tsx 直接执行，不必先 tsc 编译
+npm i -D tsx
+npx tsx your-chain.ts
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">别装大包 langchain 又装子包</span></div><div class="co-body"><p>  同时装 <code>langchain</code>（旧大包）和 <code>@langchain/*</code> 子包，极易出现『同一份类被加载两份』的
+  诡异报错（instanceof 失效、类型不兼容）。新项目只装子包，按需引入，依赖更轻、冲突更少。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">先写最小链验证环境</span></div><div class="co-body"><p>  装完不要直接上业务。先复制第 1 节那个 <code>prompt|model|parser</code> 三行链跑通，
+  确认 import 路径、模型 key、版本都对，再往上叠 Retriever / 记忆 / 回调。
+  环境先跑通，后续调试心智负担减半。</p>
+</div></div><h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>LangChain 官方文档（LCEL、Runnable 接口、Retriever、Callback，以官方为准，API 易变）</li>
+<li>LangChain JS / Python 对应版本的 Release Notes（核对 import 路径与字段名漂移）</li>
+<li>LangSmith 文档：基于 Callback 的链路追踪与评估（见评估调优分类）</li>
+<li>本分类《主流框架选型 m3-frameworks》：LangChain 与 LangGraph / LlamaIndex / AutoGen 横向对比</li>
+<li>本分类《LangGraph 编排 framework-langgraph》：从链到状态图的进阶</li>
+<li>RAG 分类各篇（切分、向量库、重排）：Retriever 背后的检索质量工程 LangChain 替代不了</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="m3-frameworks.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">主流框架选型：原生 SDK vs LangChain/LangGraph vs LlamaIndex vs AutoGen vs CrewAI</span></a>
+    <a class="art-pagerLink art-pagerRight" href="framework-langgraph.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">LangGraph 编排：把 Agent 显式建模成状态图</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

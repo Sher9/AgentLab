@@ -1,0 +1,354 @@
+---
+title: MCP 协议与开发：给 Agent 接上标准插座
+description: 深入 Model Context Protocol 的协议本质、Host/Client/Server 架构、Transport 形态、Tools/Resources/Prompts 原语，并用 TypeScript SDK 给出可运行的 Server/Client 骨架，最后讲清它与 Function Calling 的分工、踩坑与和 Agent 的集成方式。MCP 为快速演进协议，代码骨架以官方文档为准。
+category: 工具开发
+order: 3
+difficulty: 进阶
+duration: 38 分钟
+tags: [MCP, Model Context Protocol, 工具开发, Agent 集成, 协议]
+date: 2026-07-29
+---
+
+# MCP 协议与开发：给 Agent 接上标准插座
+
+前面 `m1-tool-calling` 讲的是『模型怎么调用你写死的几个函数』。但当工具越来越多、来源五花八门（本地脚本、SaaS、数据库、别人的服务），每次都得为每个工具手写一套对接代码，复用几乎为零。
+
+**MCP（Model Context Protocol，模型上下文协议）** 就是来治这个病的：它把『工具提供方（Server）』和『工具使用方（Host/Client）』之间用一套开放协议标准化，业界常比喻成『AI 应用的 USB-C 口』——任何符合协议的 Server 都能即插即用到任何支持 MCP 的 Host 上。
+
+<Callout type="note" title="关键认知">
+  MCP 不是给模型换了个调用方式，而是给『工具生态』定了标准接口。
+  Function Calling 解决『模型怎么发指令』，MCP 解决『工具怎么被统一发现、加载、调用』。
+  二者是互补关系，不是替代关系——下文第 6 节专门对比。
+</Callout>
+
+## 1. 为什么需要 MCP
+
+在没有标准协议之前，每个 Agent 框架（LangChain、CrewAI、自研）都要自己定义『工具长什么样、怎么注册、怎么调用』。结果就是：
+
+- 同一个『查 GitHub 仓库』的功能，A 框架写一遍、B 框架再写一遍，互不兼容；
+- 想给 Claude Desktop 加一个本地文件工具，得等官方把能力合进去，开发者没法自助扩展；
+- 工具的安全边界、权限模型各自为政，难以审计。
+
+MCP 把这件事拆成三层角色，让『做工具的人』和『用工具的人』解耦：
+
+| 角色 | 是什么 | 例子 |
+|------|--------|------|
+| Host | 承载 LLM 的**应用**，内部跑 MCP Client | Claude Desktop、IDE 插件、你自己的 Agent 进程 |
+| Client | Host 内的连接器，负责和一个 Server 一对一通信 | 每个 MCP Server 对应一个 Client 实例 |
+| Server | 把某个能力（工具/数据）按协议暴露出去的进程 | 文件系统 Server、GitHub Server、数据库 Server |
+
+<Callout type="tip" title="一个 Host 多个 Client">
+  Host 可以同时连多个 Server：一个管文件、一个管日历、一个管数据库。
+  每个 Server 一个独立 Client，互不干扰——这正是 MCP 解耦价值落地的形态。
+</Callout>
+
+## 2. 协议本质：不是 SDK，是规范
+
+MCP 的『协议』层定义了消息格式与生命周期，和具体语言无关（官方有 TS / Python SDK，社区有 Go / Rust 实现）。协议核心包含：
+
+- **生命周期（Lifecycle）**：`initialize` 握手 → `initialized` → 正常通信 → 断开。双方先交换能力（我支持哪些原语），再开始干活。
+- **JSON-RPC 2.0**：所有消息走 JSON-RPC，请求/响应/通知三种形态，method 形如 `tools/list`、`tools/call`、`resources/read`。
+- **原语（Primitives）**：协议定义了几类 Server 能暴露的能力，这是 MCP 比『裸 Function Calling』更丰富的地方。
+
+<Callout type="note" title="原语不止 Tools">
+  MCP 不止能暴露『可调用函数』，还定义了：
+  - **Tools**：模型可主动调用的函数（≈ Function Calling）；
+  - **Resources**：只读的数据源（如一个文件、一条数据库记录），由应用或模型按需读取；
+  - **Prompts**：预置的提示模板（如『按固定格式总结这份文档』）；
+  - **Sampling**：Server 反向请求 Host 让 LLM 生成内容（Server 调用模型，权限需 Host 授权）；
+  - **Roots / Elicitation**：Host 告知 Server 可访问的根目录、Server 向用户索取额外输入。
+  标准化的原语让『能力』的表达维度比单纯工具更完整。
+</Callout>
+
+## 3. Transport：进程间怎么传消息
+
+MCP 不规定你用什么管道，只定义消息语义。官方主推两种 Transport：
+
+### 3.1 stdio（标准输入输出）
+
+Server 作为**本地子进程**被 Host 拉起，双方通过 stdin/stdout 收发 JSON-RPC。最常用、最安全（不暴露端口），适合本机工具。
+
+```
+Host 进程
+  └─ spawn 子进程：node my-server.js
+        Host 写 → Server 的 stdin
+        Server 写 → Host 的 stdout
+        （stderr 给日志，不混进协议流）
+```
+
+### 3.2 Streamable HTTP（含 SSE）
+
+Server 跑在远端，Host 通过 HTTP POST 发请求，用 SSE（Server-Sent Events）收流式响应。适合『远程托管、多个 Host 共享』的工具，但要多考虑鉴权与网络隔离。
+
+<Callout type="warn" title="远程 Transport 必带鉴权">
+  stdio 靠『本机进程』天然隔离，风险低；一旦用 HTTP 暴露 Server，
+  任何人都能调用你的工具。务必在 Host/Server 间加 token、mTLS 或网段限制，
+  否则等于把一台能读文件/发请求的机器裸奔到公网。
+</Callout>
+
+## 4. 写一个 MCP Server（骨架）
+
+下面用官方 TypeScript SDK 给出一个最小可运行的 Server，暴露一个 `add` 工具。
+
+<Callout type="note" title="API 以官方文档为准">
+  MCP 仍是快速演进的协议，SDK 的导出路径、方法签名可能随版本变化。
+  本骨架展示『套路』而非逐字节不变的契约，落地时以你所装 SDK 版本的官方文档为准。
+</Callout>
+
+```ts
+// mcp-server.ts —— 一个最小 MCP Server（TypeScript SDK 骨架）
+// 安装：npm i @modelcontextprotocol/sdk zod
+// 运行：node mcp-server.ts   （由 Host 以 stdio 方式拉起，不要手动常驻）
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { z } from 'zod';
+
+// ① 声明 Server 身份（name/version 会随 initialize 握手发给 Host）
+const server = new McpServer({
+  name: 'demo-calc',
+  version: '1.0.0',
+});
+
+// ② 注册一个工具：名字 + 人类描述 + 参数 schema（Zod 复用，校验交给 SDK）
+server.tool(
+  'add',                              // 工具名，Host 侧模型靠它识别
+  '把两个整数相加',                    // 描述，直接影响模型会不会选它
+  { a: z.number(), b: z.number() },   // 参数定义，SDK 据此生成 JSON Schema
+  // ③ 工具实现：入参已是校验后的对象，返回约定结构
+  async ({ a, b }) => ({
+    content: [{ type: 'text', text: String(a + b) }],
+  })
+);
+
+// ④ 用 stdio Transport 启动，等待 Host 连接
+const transport = new StdioServerTransport();
+await server.connect(transport);
+// 此后 Server 阻塞在 stdin 上收发 JSON-RPC，直到 Host 关闭管道
+```
+
+### 4.1 加上 Resources 与鉴权意识
+
+真实 Server 往往不止一个工具，还会暴露 Resources（只读数据）。下面演示『注册一个文件读取资源』的骨架思路（路径校验是关键，避免目录穿越）：
+
+```ts
+// 资源骨架（思路级，API 以官方文档为准）
+server.resource(
+  'project-file',                          // 资源标识
+  'file://{path}',                         // URI 模板
+  async (uri, vars) => {
+    const p = String(vars.path);
+    // 关键：白名单根目录，禁止 ../ 穿越，否则等于给模型开了任意读文件权限
+    if (!p.startsWith('/safe/root/') || p.includes('..')) {
+      throw new Error('路径越界，已拒绝');
+    }
+    const text = await readFileUnderRoot(p);
+    return { contents: [{ uri: uri.href, text }] };
+  }
+);
+```
+
+<Callout type="danger" title="资源与工具的边界要收紧">
+  凡是 Server 暴露的读/写能力，默认都可能有模型自动触发。
+  文件系统、网络、shell 类 Server 必须做『根目录白名单 + 路径规范化 + 越界拒绝』，
+  这层校验不能依赖模型『自觉不越界』——模型会被提示注入带歪。
+</Callout>
+
+## 5. 写一个 MCP Client（骨架）
+
+Host 侧要连上 Server，核心是 `Client` + 对应 Transport。下面演示以 stdio 拉起上面的 Server 并列出、调用它的工具：
+
+```ts
+// mcp-client.ts —— 连接本地 Server 并调用工具（骨架，API 以官方文档为准）
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+
+// ① 定义如何启动 Server 子进程（命令 + 参数）
+const transport = new StdioClientTransport({
+  command: 'node',
+  args: ['mcp-server.ts'], // 实际部署用编译后的 .js
+});
+
+// ② 创建 Client 并发起连接（内部完成 initialize 握手）
+const client = new Client({ name: 'my-host', version: '1.0.0' });
+await client.connect(transport);
+
+// ③ 列出 Server 暴露的工具——这套清单可直接转成模型能用的 Function Calling schema
+const { tools } = await client.listTools();
+console.log('可用工具：', tools.map((t) => t.name));
+
+// ④ 调用某个工具，拿到结构化结果
+const result = await client.callTool({ name: 'add', arguments: { a: 2, b: 3 } });
+console.log('结果：', result.content);
+```
+
+<Callout type="tip" title="Client 拿到 tools 后怎么喂给模型">
+  `client.listTools()` 返回的 `{ name, description, inputSchema }` 几乎可以直接
+  映射成 OpenAI Function Calling 的 `tools` 数组。于是『MCP Server 提供能力，
+  Client 把它翻译成模型能懂的工具集』——这就是 MCP 与 Function Calling 衔接的接缝。
+</Callout>
+
+## 6. MCP vs Function Calling：分工还是替代
+
+| 维度 | Function Calling | MCP |
+|------|------------------|-----|
+| 解决什么 | 模型『决定调什么、传什么参』 | 工具『如何被统一发现/加载/调用』 |
+| 作用层 | 模型接口层 | 工具生态/传输层 |
+| 复用性 | 每个框架各写一套对接 | 一次实现，任何 MCP Host 可用 |
+| 能力维度 | 只有『可调用函数』 | Tools + Resources + Prompts + Sampling 等 |
+| 典型关系 | 模型侧协议 | Server/Client 间协议，结果常转成 Function Calling 给模型 |
+
+一句话：**MCP 负责『把工具标准化地摆上货架』，Function Calling 负责『模型从货架上选一个用』**。生产里两者常共存——MCP Client 把 Server 能力拉成工具清单，再交给模型的 Function Calling 循环执行。
+
+<Callout type="note" title="别为简单场景硬上 MCP">
+  如果你只有两三个写死的工具、且永不跨应用复用，直接 Function Calling 最省事。
+  MCP 的回报在『工具多、来源杂、要跨 Host 共享』时才会显现。提前抽象反而增加复杂度。
+</Callout>
+
+## 7. 把 MCP Server 接入你的 Agent 主循环
+
+把 `m1-tool-calling` 的四步闭环换成『工具来自 MCP』即可：
+
+```
+① Host 启动 → 连上若干 MCP Server → 收集全部 tools 清单
+② 把清单作为 Function Calling 工具集交给模型
+③ 模型返回 tool_calls → Client 把调用转发给对应 Server（callTool）
+④ Server 执行，结果回填 → 模型继续，直到无 tool_calls
+```
+
+注意第 ③ 步的『路由』：不同工具由不同 Server 提供，Client 要按 `tool.name` 找到持有它的那个 Server 再转发。多 Server 场景下，维护一张 `toolName → server` 的索引表是必须的。
+
+```ts
+// 多 Server 路由骨架（思路级）
+const servers = new Map<string, Client>(); // name -> client
+// 假设已连好多个 client，并各自 listTools
+
+async function dispatch(toolName: string, args: unknown) {
+  // 找到『声称拥有该工具』的 client；真实场景用预建的索引表 O(1) 查
+  for (const client of servers.values()) {
+    const { tools } = await client.listTools();
+    if (tools.some((t) => t.name === toolName)) {
+      return client.callTool({ name: toolName, arguments: args });
+    }
+  }
+  throw new Error(`未找到工具 ${toolName} 的 Server`);
+}
+```
+
+<Callout type="warn" title="工具名冲突">
+  多个 Server 可能都暴露同名工具（如都叫 `search`）。接入前必须做命名空间化
+  （如 `github.search` / `notion.search`），否则 dispatch 会调错 Server。
+  这是多 Server 集成最高频的坑。
+</Callout>
+
+## 8. 踩坑与最佳实践
+
+<Callout type="danger" title="stdio 的 stderr 别混进协议流">
+  Server 往 stderr 打日志是安全的；但**绝不能**把业务 JSON 写到 stdout——
+  stdout 是 JSON-RPC 专用管道，任何非协议输出都会让 Client 解析失败、连接断开。
+  日志统一走 stderr 或文件。
+</Callout>
+
+<Callout type="warn" title="远程 Server 的认证与速率">
+  用 HTTP Transport 时，Server 暴露在网。除鉴权外，还要限流、做调用审计，
+  因为模型可能高频触发工具把下游打爆。stdio 本地场景也建议给每个调用加超时。
+</Callout>
+
+<Callout type="warn" title="不要信任 Server 返回的全部内容">
+  Server 返回的文本会被回填进模型上下文。恶意或被黑的 Server 可能注入提示、
+  泄露数据。对返回内容做长度截断、来源标记，关键操作（写库/发信）前加 Human-in-loop。
+</Callout>
+
+<Callout type="tip" title="先本地 stdio 验证再上远程">
+  开发期一律用 stdio 本地子进程，能避开 90% 的网络/鉴权问题。
+  跑通后再把 Transport 换成 HTTP，并单独测认证与限流。分层验证最省力。
+</Callout>
+
+<Callout type="note" title="版本兼容要靠 initialize 协商">
+  Host 与 Server 的协议版本可能不一致。务必走完整 `initialize` 握手，
+  以双方协商出的能力集合为准，不要假设对端一定支持某原语。
+</Callout>
+
+## 9. 高级原语：Sampling / Roots / Elicitation
+
+第 2 节提过 MCP 不止 Tools。下面三个原语决定了『Server 能不能反过来用模型、能不能知道可访问范围、能不能向人问话』，是做复杂 Server 时绕不开的：
+
+- **Sampling（采样）**：Server 可以反向请求 Host，让 Host 侧的 LLM 生成一段文本。典型用途：Server 内部需要先『总结一下读到的文件』再返回。注意这必须**经过 Host 授权与审计**——否则恶意 Server 能借模型之手干坏事。
+- **Roots（根目录）**：Host 在握手时告知 Server『你被允许访问的根路径列表』。Server 应只在这些 Root 内操作，配合第 4.1 节的路径白名单形成双重约束。
+- **Elicitation（询问）**：执行中途 Server 可向**用户**索取额外输入（如『要确认删除吗？』）。这把 Human-in-loop 变成了协议级能力，而不是各框架自己造轮子。
+
+<Callout type="warn" title="Sampling 是双刃剑">
+  Server 一旦能触发模型，就可能把『从宿主读到的秘密』借生成请求外传。
+  Host 必须对 Sampling 做内容审计与出网限制，绝不让 Server  silently 调用模型。
+</Callout>
+
+## 10. 一个更完整的 Server 示例
+
+下面把前面的单工具 `add` 扩成一个带多工具、带错误处理的 Server 骨架，演示真实项目里该怎么组织：
+
+```ts
+// mcp-server-full.ts —— 多工具 + 错误处理的 Server 骨架（API 以官方为准）
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { z } from 'zod';
+
+const server = new McpServer({ name: 'utils', version: '1.0.0' });
+
+// 工具一：字符串反转（纯函数，无副作用，最安全）
+server.tool('reverse', '反转字符串', { s: z.string() },
+  async ({ s }) => ({ content: [{ type: 'text', text: s.split('').reverse().join('') }] }));
+
+// 工具二：按白名单读文件（有副作用，必须校验路径）
+server.tool('read_safe', '读取白名单内文件', { path: z.string() },
+  async ({ path }) => {
+    // 路径规范化 + 根目录校验，越界直接以错误结构返回（不抛未捕获异常）
+    if (!path.startsWith('/safe/') || path.includes('..')) {
+      return { content: [{ type: 'text', text: '拒绝：路径越界' }], isError: true };
+    }
+    const text = await readFileUnderRoot(path);
+    return { content: [{ type: 'text', text }] };
+  });
+
+// isError 标记让 Host/模型知道这次调用失败了，便于它自我纠正或向用户解释
+await server.connect(new StdioServerTransport());
+```
+
+<Callout type="tip" title="用 isError 而非抛异常">
+  Server 内对可预期的失败（越界、找不到），返回 `{ isError: true, content: [...] }`
+  比直接 throw 更友好——Host 能把错误作为工具结果回填给模型，让它有机会纠正，
+  而不是整条连接因未捕获异常断开。
+</Callout>
+
+## 11. 调试与排错清单
+
+- **握手失败**：先确认 Host 与 Server 的协议版本，看 `initialize` 返回的能力集合是否匹配；版本错配是连接不上的头号原因。
+- **Client 收不到工具**：检查 Server 是否真的 `connect` 成功、工具是否在 `listTools` 之前注册；动态注册要在连接前完成。
+- **stdout 被污染导致解析报错**：确认 Server 所有日志走 stderr；临时 `console.log` 调试忘了删是最常见的『灵异断连』元凶。
+- **工具被模型无视**：多半是 `description` 写得太含糊。把『何时用、参数怎么填』写具体，参考 `m1-tool-calling` 的描述写法。
+- **远程 Server 连不上**：先本地 stdio 跑通，再加 HTTP；HTTP 重点查鉴权头、CORS、SSE 流是否被代理截断。
+
+<Callout type="note" title="先在 Host 之外单测 Server">
+  用一个最小 Client 脚本单独 `listTools` / `callTool` 验证 Server 行为，
+  再塞进完整 Agent。把『协议层问题』和『Agent 编排问题』分开，排错快一倍。
+</Callout>
+
+## 小结
+
+- MCP 是『工具生态的标准插座』：Host 用 Client 连 Server，解耦工具提供方与使用方。
+- 协议层是 JSON-RPC 2.0 + 生命周期握手，与语言无关；原语含 Tools/Resources/Prompts/Sampling，比裸 Function Calling 维度更全。
+- Transport 主推 stdio（本地、安全）与 Streamable HTTP（远程、需鉴权）。
+- Server 用 SDK 注册工具/资源并做路径与权限校验；Client 拉起 Server、`listTools` 后把能力转成模型可用的工具集。
+- MCP 与 Function Calling 互补：前者管『货架标准化』，后者管『模型选购』，常共存于 Agent 主循环。
+- 红线：远程必鉴权、stdio 的 stdout 不许混日志、工具名冲突要命名空间化、Server 返回内容要审计、版本靠握手协商。
+
+<Callout type="note" title="下一步">
+  工具能力标准化之后，下一个问题是：当工具会执行**模型生成的代码或任意命令**时，
+  怎么保证宿主环境不被搞崩、被提权、被刷爆？这就是 **tool-sandbox（工具沙箱与安全执行）** 的主题。
+</Callout>
+
+## 延伸阅读 / 参考
+
+- MCP 官方规范与 TypeScript/Python SDK 文档（协议细节、原语与 Transport，以官方为准）
+- Anthropic 发布的 MCP 介绍文与示例 Server 仓库（stdio / HTTP 形态参考实现）
+- OpenAI Function Calling 文档（MCP 工具清单如何映射为模型工具集）
+- 社区 Server 合集（filesystem、github、postgres 等）的实现，学习权限与边界处理
+- 安全方向：OWASP Top 10 for LLM Applications（提示注入、供应链风险对照阅读）

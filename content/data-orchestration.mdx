@@ -1,0 +1,199 @@
+---
+title: 编排：Airflow 与 Prefect 的 DAG 实践
+description: 当数据任务多到需要定时、依赖、重试与告警，就要上编排。对比 Airflow 与 Prefect 的 DAG 模型、重试告警机制、动态与静态 DAG，给出两个框架的可运行骨架，以及与 ML/LLM 管线结合时的注意点。
+category: 数据处理
+order: 6
+difficulty: 进阶
+duration: 24 分钟
+tags: [编排, Airflow, Prefect, DAG, 调度, 重试]
+date: 2026-07-29
+---
+
+# 编排：Airflow 与 Prefect 的 DAG 实践
+
+一条数据管线从『手动跑一个脚本』演化到『几十个任务、互相依赖、每天定时、挂了要告警』时，就需要**编排（Orchestration）**。编排系统的核心价值就一句话：**把任务依赖、调度、重试、可观测性从业务代码里剥离出来，变成声明式配置**。
+
+这一篇对比两款主流编排工具——Airflow 与 Prefect，讲清 DAG 模型、重试与告警，给出两个框架的可运行骨架，以及接 ML/LLM 管线时的坑。
+
+## 1. 为什么不能只靠 cron + 脚本
+
+单任务用 `cron` 调脚本确实够。但当任务变多，纯脚本方案会迅速腐烂：
+
+- **依赖混乱**：任务 B 必须等 A 跑完，cron 只能靠『错开时间』近似，上游延迟就全乱；
+- **失败静默**：脚本挂了没人知道，第二天才发现数据断了；
+- **无状态可视**：想知道『昨天那次跑到第几步』，只能翻日志大海捞针；
+- **重试与并发难做**：手动写重试易漏、并发易打爆下游。
+
+编排系统把这些问题内建化：你声明『任务与依赖』，它负责调度、重试、告警、可视化。
+
+<Callout type="note" title="编排管的是流程，不是计算">
+  编排框架本身不替你算数据，它只决定『谁先跑、失败了怎么办、跑完通知谁』。
+  重计算逻辑（嵌入、训练）仍是你的 Python/SQL，编排只负责把它们串起来并兜底。
+</Callout>
+
+## 2. DAG 模型：任务、依赖、重试
+
+两个框架的核心抽象都是 **DAG（有向无环图）**：节点是任务（Task），边是依赖。关键概念：
+
+- **依赖（dependency）**：`a >> b` 表示 b 等 a 成功后才跑；支持多对多；
+- **重试（retry）**：任务失败自动重试 N 次、退避间隔可配；
+- **幂等（idempotency）**：同一任务重跑应得到等价结果，编排才敢放心重试；
+- **告警（alert）**：失败/超时通过回调（邮件、Webhook、Slack）通知。
+
+```text
+extract >> clean >> embed >> sync >> reconcile
+                clean >> validate
+```
+上面表示：clean 完成后并行跑 embed 与 validate，embed 完成后 sync，最后 reconcile。编排引擎据此生成执行计划并在失败时只在受影响分支重试。
+
+## 3. Airflow vs Prefect 对比
+
+| 维度 | Airflow | Prefect |
+|------|---------|---------|
+| 范式 | 静态 DAG（调度时解析，结构固定） | 动态流（Python 原生，运行时灵活） |
+| 部署 | 较重（Scheduler + Worker + 元数据库） | 较轻（可纯 Python 跑，也可托管云） |
+| 学习曲线 | 陡，概念多（Operator/DagRun/XCom） | 平缓，写普通 Python 函数即可 |
+| 动态生成 | 需小心处理（避免 DAG 注入） | 天然擅长（循环/条件生成任务） |
+| 适用 | 传统 ETL、固定批处理、团队已成熟 | 快速迭代、动态任务、Python 优先团队 |
+
+<Callout type="tip" title="按团队成熟度选">
+  已有数据平台、流程固定、要丰富 Operator 生态 → Airflow。
+  团队是 Python 优先、任务图常变、想少运维 → Prefect。没有强约束时，Prefect 上手更快。
+</Callout>
+
+## 4. Airflow 骨架
+
+下面是 Airflow 风格的最小 DAG（API 以官方文档为准，版本间有差异，伪代码示意结构）：
+
+```python
+# airflow_dag.py —— 向量管线 DAG 骨架（结构示意，operator 名以官方为准）
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from datetime import datetime, timedelta
+
+default_args = {
+    "retries": 3,                      # 失败自动重试 3 次
+    "retry_delay": timedelta(minutes=5),  # 退避间隔
+    "email_on_failure": True,          # 失败发告警
+}
+
+def extract(): ...   # 抽取任务
+def embed(): ...     # 嵌入任务（复用数据处理逻辑）
+def sync(): ...      # 同步向量库
+
+with DAG(
+    dag_id="vector_pipeline",
+    schedule="0 2 * * *",              # 每天凌晨 2 点
+    start_date=datetime(2026, 1, 1),
+    default_args=default_args,
+    catchup=False,                     # 不补跑历史遗漏的调度
+) as dag:
+    t1 = PythonOperator(task_id="extract", python_callable=extract)
+    t2 = PythonOperator(task_id="embed", python_callable=embed)
+    t3 = PythonOperator(task_id="sync", python_callable=sync)
+    t1 >> t2 >> t3                     # 声明依赖：线性串起
+```
+
+注意 `catchup=False`：避免停机后 Airflow 疯狂补跑历史日期把下游打爆，多数新管线都应关掉。
+
+## 5. Prefect 骨架
+
+Prefect 更 Python 原生，`@flow` 与 `@task` 装饰普通函数即可，依赖用 `await` 表达：
+
+```python
+# prefect_flow.py —— 同一条管线在 Prefect 的写法
+from prefect import flow, task
+from datetime import timedelta
+
+@task(retries=3, retry_delay_seconds=300)
+def extract(): ...
+
+@task(retries=3, retry_delay_seconds=300)
+def embed(): ...
+
+@task(retries=3, retry_delay_seconds=300)
+def sync(): ...
+
+@flow(name="vector_pipeline")
+def pipeline():
+    data = extract()          # 普通函数调用即表达依赖
+    vec = embed(data)
+    sync(vec)
+
+if __name__ == "__main__":
+    pipeline()                 # 本地直接跑，无需先起 Scheduler
+```
+
+<Callout type="tip" title="本地先跑通再上调度">
+  Prefect 的 `@flow` 能直接 `python prefect_flow.py` 本地执行，调试体验远好于 Airflow。
+  先用本地模式把逻辑跑顺，再接 Prefect 的调度/云，避免一上来就陷入部署排错。
+</Callout>
+
+## 6. 告警与监控
+
+编排的价值一半在『出事你知道』。两种必做告警：
+
+- **任务失败告警**：重试耗尽仍失败，立即通知（Slack/Webhook/邮件）；
+- **时长/数据量异常告警**：某次抽取行数骤降 90%，可能是上游断流，比失败更隐蔽。
+
+Airflow 用 `on_failure_callback` + 连接；Prefect 用 `state_handlers` 或托管平台的 notification。无论哪种，告警要带 **DagRun id / 任务 id / 失败原因**，让值班人能一键定位。
+
+## 7. 与 ML / LLM 管线结合
+
+向量管线、模型训练、批处理推理都很适合挂到编排上，但有几点特别注意：
+
+- **长任务与超时**：LLM 嵌入一批可能几小时，编排的默认超时可能误杀。显式设 `execution_timeout`，并把大任务拆成可断点续跑的小批；
+- **资源隔离**：嵌入任务吃 GPU/网络，别和普通 ETL 抢同一 Worker，用队列/标签把重任务路由到专用资源；
+- **成本护栏**：LLM 相关任务加『本次预计调用量』上限检查，超阈值直接失败告警而非盲目跑空预算。
+
+```python
+# 在编排任务里加成本护栏（伪代码，接你自己的计量）
+def embed_with_budget(batch):
+    est_calls = len(batch)
+    if est_calls > BUDGET_PER_RUN:        # 超预算直接失败，触发告警而非烧钱
+        raise RuntimeError(f"预估调用 {est_calls} 超预算 {BUDGET_PER_RUN}")
+    return embed(batch)
+```
+
+<Callout type="warn" title="编排不是重试万能药">
+  非幂等任务（如『给每个用户发邮件』）被编排重试会重复发送。给这类任务加幂等键
+  （如已发送记录表），或在编排层标记为『不可重试』。重试只该用于真正可重入的任务。
+</Callout>
+
+## 8. 踩坑清单
+
+<Callout type="danger" title="DAG 里写了重副作用却没幂等">
+  Airflow 重试时，如果任务已经『发了一半邮件 / 写了一半数据』，重试会重复。把副作用做成幂等
+  （去重键、upsert、事务），否则编排的重试机制反而成故障放大器。
+</Callout>
+
+<Callout type="warn" title="catchup 把下游打爆">
+  Airflow 默认会补跑错过的调度日期。停机一周后恢复，它可能瞬间提交 7 天的任务。
+  新管线默认 `catchup=False`，确需要历史补跑时再手动触发并评估下游承载。
+</Callout>
+
+<Callout type="warn" title="把重计算塞进编排进程">
+  编排 Worker 应只跑『协调逻辑』，重嵌入/训练要提交给专用计算（队列/单独服务）。
+  在 Worker 里跑几小时大模型推理会占满调度资源，拖垮同节点其他任务。
+</Callout>
+
+<Callout type="tip" title="任务粒度别太碎也别太粗">
+  太碎（每步一个任务）依赖图难读、调度开销大；太粗（一万个文件一个任务）重试成本高、难定位。
+  按『一个可独立重试的语义单元』切，比如『一个数据源的当日全量』为一个任务。
+</Callout>
+
+## 小结
+
+- 编排把依赖、调度、重试、告警从业务代码剥离，cron+脚本在任务变多后会腐烂。
+- DAG = 任务+依赖；重试与幂等是前提，告警是价值一半。
+- Airflow 适合固定批处理/成熟团队；Prefect 适合 Python 优先/动态任务/快速迭代。
+- ML/LLM 管线要设超时、资源隔离、成本护栏；非幂等副作用必须加幂等键。
+- 红线：DAG 重副作用要幂等、谨慎开 catchup、重计算别占用编排 Worker、任务粒度适中。
+
+## 延伸阅读 / 参考
+
+- Apache Airflow 官方文档：DAG 定义、Operator、Scheduler 架构、回调与告警
+- Prefect 官方文档：flow/task 装饰器、重试、托管云与本地运行差异
+- *Data Pipelines with Apache Airflow*（书籍）：生产编排的实战经验
+- 数据处理中的幂等设计：upsert、事务、去重键在编排重试下的必要性
+- 编排与数据质量（Great Expectations / 校验任务）：在 DAG 里内建质量门禁

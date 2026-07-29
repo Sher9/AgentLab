@@ -1,0 +1,189 @@
+---
+title: 多租户与权限：一个后端服务好多个客户
+description: 讲透 SaaS 形态下 Agent 产品的多租户设计——数据隔离、密钥隔离、配额控制与审计，给出行级隔离、每租户密钥、配额限流与审计日志的可运行骨架。
+category: 产品工程
+order: 5
+difficulty: 进阶
+duration: 24 分钟
+tags: [多租户, 数据隔离, 密钥隔离, 配额, 审计]
+date: 2026-07-29
+---
+
+# 多租户与权限：一个后端服务好多个客户
+
+当你把 Agent 做成 SaaS，一个后端要同时服务 N 个客户（租户）。核心矛盾是：**既要共享一套代码与基础设施省成本，又要让每个租户的数据、密钥、额度互不串门**。这一篇讲四个支柱——数据隔离、密钥隔离、配额、审计，全给骨架。
+
+## 1. 多租户的三种隔离模型
+
+| 模型 | 做法 | 隔离强度 | 成本 | 适用 |
+|------|------|----------|------|------|
+| 独立库/独立实例 | 每租户一个 DB 或部署 | 最强 | 最高 | 大客户/合规严苛 |
+| 共享库 + 行级隔离 | 同库同表，每行带 `tenant_id` | 中（靠代码纪律） | 最低 | 大多数 SaaS |
+| 共享库 + Schema 隔离 | 每租户一个 schema | 较强 | 中 | 中等规模 |
+
+<Callout type="note" title="选型的本质是成本与合规的权衡">
+  早期几乎都用『共享库 + 行级隔离』，因为加租户只是多写个 `tenant_id`、无需运维新库。
+  但当某客户体量或合规要求到阈值（如金融、医疗），再切到独立实例。先用行级隔离起步，
+  把 `tenant_id` 当成一等公民贯穿全链路，未来迁移才不痛。
+</Callout>
+
+## 2. 数据隔离：行级是底线
+
+行级隔离的关键不是『建了 `tenant_id` 字段』，而是**每一次查询都强制带上它**，且不能靠调用方自觉。
+
+```ts
+// tenant-context.ts —— 用请求上下文绑定 tenantId，杜绝漏带
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+// 把当前租户 ID 放进异步上下文，一次请求内任意处可取，避免层层传参
+const tenantStore = new AsyncLocalStorage<string>();
+
+export function withTenant<T>(tenantId: string, fn: () => T): T {
+  return tenantStore.run(tenantId, fn);
+}
+export const currentTenant = () => {
+  const id = tenantStore.getStore();
+  if (!id) throw new Error('no tenant in context'); // 没绑定就报错，逼你显式传入
+  return id;
+};
+
+// 所有数据访问必须经过这层封装，自动注入 tenantId
+async function listConversations(db: DB, onlyResolved: boolean) {
+  const tid = currentTenant(); // 从上下文取，调用方没法漏
+  return db.query(
+    'SELECT * FROM conversations WHERE tenant_id = $1 AND resolved = $2',
+    [tid, onlyResolved]
+  );
+}
+```
+
+<Callout type="danger" title="漏带 tenantId 是数据泄露事故">
+  任何一处手写 SQL 忘了 `WHERE tenant_id = ?`，就会把 A 客户的数据返给 B。
+  做法：封装统一的数据访问层强制注入；CI 里用 lint/正则扫描裸 `SELECT`；给表加
+  `tenant_id` 非空约束 + 复合唯一索引 `(tenant_id, id)`，从数据库层兜底。
+</Callout>
+
+## 3. 密钥隔离：每个租户用自己的 LLM Key
+
+很多 Agent 产品允许客户自带 LLM API Key（BYOK），或平台按租户分配独立配额 key。绝不能把所有租户混用同一个全局 Key——一旦泄露或超配额，全体瘫痪。
+
+```ts
+// key-vault.ts —— 按租户取独立密钥，密钥本身只存密文
+async function getTenantKey(tenantId: string): Promise<string> {
+  // 真实场景：从 KMS / Vault 取解密后的明文，密文落库
+  const row = await secretStore.get(`llm_key:${tenantId}`);
+  if (!row) throw new Error(`tenant ${tenantId} has no key provisioned`);
+  return decrypt(row.cipher); // 运行时解密，日志/数据库里只留密文
+}
+
+// 调用 LLM 时按租户注入对应密钥，配额与账单天然按租户归集
+async function chatForTenant(tenantId: string, messages: Msg[]) {
+  const apiKey = await getTenantKey(tenantId);
+  const client = new LLMClient({ apiKey }); // 每租户独立 key → 独立限流/计费
+  return client.chat(messages);
+}
+```
+
+<Callout type="warn" title="密钥别进日志">
+  解密后的明文 key 绝不能打日志、不能进错误信息、不能进前端。
+  日志只记 `tenantId` 与 `key_id`。密钥轮换要有版本号，旧 key 失效不影响在途请求。
+</Callout>
+
+## 4. 配额：按租户的 RPM / Token / 成本限流
+
+共享资源下，一个租户的突发流量不能挤掉别人。配额在**两个层面**做：上游 LLM 的调用频率、以及平台自身的成本上限。
+
+```ts
+// quota.ts —— 基于滑动窗口的租户配额（Redis 实现示意）
+async function checkQuota(tenantId: string, cost: number): Promise<boolean> {
+  const key = `quota:${tenantId}:${minuteBucket()}`; // 按分钟分桶
+  const used = await redis.incrby(key, cost);
+  if (used === cost) await redis.expire(key, 60); // 首写设过期，避免无限堆积
+  const limit = await getTenantLimit(tenantId);     // 每租户独立上限
+  return used <= limit; // 超了就拒，返回 429 + 剩余额度提示
+}
+
+// 用法：在入口网关处对每个租户请求先过配额闸
+async function handle(req: Req, res: Res) {
+  if (!(await checkQuota(req.tenantId, estimateTokens(req)))) {
+    return res.status(429).json({ error: '配额已用尽，请升级套餐或稍后重试' });
+  }
+  // ...正常处理
+}
+```
+
+<Callout type="tip" title="配额要可观测可升级">
+  配额不是『堵』，是『可弹性』。把每租户用量做成实时面板，临近上限主动提醒，
+  并提供一键升级套餐——把限流从『拒绝』变成『商业转化』的入口。
+</Callout>
+
+## 5. 审计：谁在何时做了什么
+
+多租户系统里，审计日志是合规与排障的命脉：出问题能定位到具体租户、具体操作、具体人。
+
+```ts
+// audit.ts —— 结构化审计事件，tenantId 必填
+type AuditEvent = {
+  tenantId: string;
+  actor: string;       // 用户/服务账号
+  action: string;      // chat.create / key.rotate / data.export
+  target?: string;
+  at: string;          // ISO 时间戳
+  meta?: Record<string, unknown>;
+};
+
+async function audit(e: AuditEvent) {
+  // 写独立审计库（与生产库分离，防误删），且不可篡改（append-only）
+  await auditLog.append({ ...e, at: new Date().toISOString() });
+}
+```
+
+<Callout type="danger" title="审计库别和生产库混">
+  审计日志应落到独立、append-only 的存储，生产库被误删/回滚时审计仍在。
+  含 PII 的审计内容要做脱敏，且保留期要满足客户合同与当地法规。
+</Callout>
+
+## 6. 对比速查
+
+| 维度 | 行级隔离 | 独立实例 |
+|------|----------|----------|
+| 新增租户成本 | 极低（写条记录） | 高（建库/部署） |
+| 隔离强度 | 依赖代码纪律 | 物理隔离 |
+| 跨租户查询 | 容易（同库聚合） | 难（需跨实例） |
+| 典型故障半径 | 大（一处 bug 影响全部） | 小（仅该租户） |
+
+## 7. 踩坑清单
+
+<Callout type="danger" title="tenantId 靠前端传等于没隔离">
+  若 `tenant_id` 由客户端请求体/参数传入并直接用于查询，攻击者改个值就能跨租户读数据。
+  正确做法：tenantId 来自**服务端鉴权上下文**（JWT 校验后的声明），前端不可篡改。
+</Callout>
+
+<Callout type="warn" title="共享缓存忘了加租户前缀">
+  Redis key 不加 `tenantId:` 前缀，A 租户的会话会被 B 取到。所有缓存/队列 key 必须带租户前缀。
+</Callout>
+
+<Callout type="warn" title="配额用全局限流替代">
+  全局『每秒 100 请求』不能防『单租户占满 100』。配额必须按 `tenantId` 维度分别计数。
+</Callout>
+
+<Callout type="tip" title="把隔离做成中间件">
+  数据隔离、密钥注入、配额检查、审计，统一收敛到『租户中间件』，业务代码无感知。
+  隔离逻辑集中一处，才不会出现『某接口忘了加 tenantId』的散落漏洞。
+</Callout>
+
+## 小结
+
+- 多租户 = 共享代码、隔离数据/密钥/配额。起步用行级隔离，把 `tenant_id` 当一等公民。
+- 数据隔离靠封装层强制注入 `tenant_id`，密钥隔离按租户独立 Key 并只存密文。
+- 配额按租户分别限流（RPM/Token/成本），既防挤占也是商业化入口。
+- 审计落独立 append-only 库，tenantId 必填、含 PII 需脱敏。
+- 红线：tenantId 必须来自服务端鉴权而非前端、缓存 key 带前缀、配额按租户维度、密钥不进日志。
+
+## 延伸阅读 / 参考
+
+- Microsoft *Multitenant_SaaS_ architecture*：隔离模型选型与成本权衡
+- PostgreSQL Row Level Security（RLS）：在数据库层强制行级隔离，比应用层更稳
+- HashiCorp Vault 官方文档：密钥加密存储、动态密钥与轮换
+- AWS/云厂商『Well-Architected SaaS』白皮书：配额、计量与租户路由
+- 本系列 `product-fallback`（租户级熔断隔离）、`deploy-monitor`（按租户指标看板）

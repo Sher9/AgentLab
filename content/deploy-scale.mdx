@@ -1,0 +1,175 @@
+---
+title: 弹性伸缩：并发模型、任务队列、限流与成本弹性
+description: 掌握 Agent 服务的并发模型选择、用任务队列削峰解耦、用令牌桶限流保护下游 LLM、以及横向伸缩与成本弹性之间的权衡，并给出可运行骨架与踩坑。
+category: 部署运维
+order: 7
+difficulty: 进阶
+duration: 23 分钟
+tags: [弹性伸缩, 并发, 任务队列, 限流, 成本, 横向扩展]
+date: 2026-07-29
+---
+
+# 弹性伸缩：并发模型、任务队列、限流与成本弹性
+
+Agent 服务的负载有两个特征，让伸缩比普通 Web 服务更难：一是**单次请求重**（一次对话可能涉及多次模型调用 + 工具执行，耗时数秒到数分钟）；二是**下游是共享的 LLM 配额**（你租的 RPM/TPM 是有上限的，打爆就 429）。于是『伸缩』不只是加机器，还要在『并发、排队、限流、成本』之间找平衡。这一篇把这些机制串起来。
+
+## 1. 并发模型：先想清楚一个进程怎么干活
+
+| 模型 | 特点 | 适合 |
+|------|------|------|
+| 单进程同步 | 一个请求处理完再下一个 | 仅本地调试，生产别用 |
+| 多进程（多 worker） | 一个进程内开 N 个 worker 并行，吃满多核 | CPU/IO 混合、常驻服务 |
+| 异步事件循环 | 单线程靠 `asyncio` 在 IO 等待时切任务 | IO 密集、高并发连接 |
+| 进程 + 异步 | 多 worker 各跑事件循环 | Agent 服务主流形态 |
+
+<Callout type="note" title="Agent 是 IO 密集，不是 CPU 密集">
+  Agent 大部分时间在『等模型返回、等工具 IO』，CPU 反而闲。这类负载用异步/
+  多 worker 能把并发做很高；盲目堆大核 CPU 收益有限，不如把钱花在『更多并发连接 +
+  更大下游配额』上。先 profiling，再决定加算力和加进程。
+</Callout>
+
+## 2. 任务队列：把尖峰削成平谷
+
+突发流量（活动、批量任务）如果同步直冲 Agent，会瞬间打满下游 LLM 配额并触发 429，继而雪崩重试。用**任务队列**把『接收』和『执行』解耦：入口只负责入队并秒回，Worker 按自己能承受的并发平稳消费，天然削峰。
+
+```python
+# queue_worker.py —— 用 Redis 列表做最简任务队列的 Worker 骨架
+import redis, os, time, json
+r = redis.Redis.from_url(os.environ["QUEUE_URL"])
+
+def run_agent(task: dict) -> str:
+    # 真实 Agent 主循环在此；骨架占位，避免编造不存在的 API
+    return f"[完成] {task.get('prompt')}"
+
+def worker(concurrency=4):
+    # 用令牌桶控制对下游 LLM 的并发（见第 3 节），这里用信号量示意
+    sem = _Semaphore(concurrency)
+    while True:
+        _, raw = r.brpop("agent_queue")        # 阻塞取，空闲不空转
+        task = json.loads(raw)
+        sem.acquire()
+        try:
+            result = run_agent(task)
+            r.hset(f"task:{task['id']}", mapping={"status": "done", "result": result})
+        finally:
+            sem.release()
+
+class _Semaphore:   # 进程内并发上限的简单实现（跨进程请用 Redis/中心限流）
+    def __init__(self, n): self.n, self.c = n, n
+    def acquire(self):
+        while self.c <= 0: time.sleep(0.05)
+        self.c -= 1
+    def release(self): self.c += 1
+
+if __name__ == "__main__":
+    worker(concurrency=int(os.environ.get("CONCURRENCY", 4)))
+```
+
+<Callout type="tip" title="Worker 数 ≠ 下游并发数">
+  启动 50 个 Worker 不代表你能并发打 50 个模型请求——你的 LLM 配额可能只够 10 个。
+  Worker 负责『吃任务』，真正限制『对模型并发』的是限流器（下一节）。
+  两者分开配，否则 Worker 越多，429 越多、重试越凶。
+</Callout>
+
+## 3. 限流：令牌桶保护下游 LLM
+
+下游模型的 RPM（每分钟请求数）/ TPM（每分钟 token）是硬配额。用**令牌桶**在客户端侧限流，既保护配额，也避免 429 雪崩。下面是可运行骨架（进程内；多实例需换成 Redis 令牌桶，思路一致）。
+
+```python
+# token_bucket.py —— 令牌桶限流骨架（保护下游 LLM 配额）
+import time
+
+class TokenBucket:
+    def __init__(self, rate: float, capacity: float):
+        self.rate = rate          # 每秒补充令牌数（对应你的 RPM/60）
+        self.cap = capacity       # 桶容量（突发上限）
+        self.tokens = capacity
+        self.ts = time.time()
+
+    def allow(self) -> bool:
+        now = time.time()
+        # 按时间补充令牌，最多补到 capacity
+        self.tokens = min(self.cap, self.tokens + (now - self.ts) * self.rate)
+        self.ts = now
+        if self.tokens >= 1:
+            self.tokens -= 1
+            return True
+        return False   # 没令牌 → 这次调用被限，需排队或退避重试
+
+# 用法：每次打模型前先问桶
+bucket = TokenBucket(rate=10, capacity=15)   # 例如 RPM=600 → rate=10/s
+def call_llm_limited(prompt):
+    if not bucket.allow():
+        time.sleep(0.1)        # 退避后由上层重试；别无脑猛打
+        return call_llm_limited(prompt)
+    return f"[模型回复]{prompt}"   # 真实场景接 LLM SDK
+```
+
+## 4. 自动伸缩：横向加 Worker
+
+队列 + 限流就位后，伸缩变得简单：流量大了就**多加 Worker 实例**（横向），而不是把单实例堆到极限。在 K8s 上用 HPA 基于队列长度/CPU 扩；在 Serverless 上靠并发自动扩（配合 `deploy-serverless` 篇的异步模式）。
+
+<Callout type="warn" title="基于『队列积压长度』扩最准">
+  别只按 CPU 扩 Agent Worker——Worker 大多在等 IO，CPU 可能很低但队列已积压上千。
+  用『队列待处理数 / 单位时间入队速率』做 HPA 指标，扩容才对得上真实压力。
+</Callout>
+
+## 5. 成本弹性：按量 vs 预留
+
+| 策略 | 适用 | 成本特征 |
+|------|------|----------|
+| 纯按量（Serverless） | 流量波动大、闲时多 | 闲时近零，峰时单价高 |
+| 常驻基准 + 按量溢出 | 有稳定基线流量 | 基线便宜，溢出弹性 |
+| 预留/包年实例 | 流量平稳、7×24 | 单价最低，但闲时也付费 |
+
+<Callout type="tip" title="基准常驻 + 峰值弹性最划算">
+  多数 Agent 服务有稳定基线（白天持续有人用）+ 波动峰值。留一组常驻实例扛基线，
+  用 Serverless/HPA 扛峰值，综合成本通常低于『全按量』或『全常驻』两头极端。
+</Callout>
+
+## 6. 对比：同步直连 vs 队列异步
+
+| 维度 | 同步直连 LLM | 队列 + 限流 + 横向 Worker |
+|------|--------------|----------------------------|
+| 抗突发 | 差，易 429 雪崩 | 好，队列削峰 |
+| 下游保护 | 无 | 令牌桶限流 |
+| 伸缩独立性 | 接收与执行耦合 | 解耦，分别扩 |
+| 用户等待 | 同步等结果 | 需轮询/回调（见 serverless 篇） |
+
+## 7. 踩坑
+
+<Callout type="danger" title="无限制流打爆下游配额">
+  不设客户端限流，Worker 一多就把 LLM 配额打满，全返回 429；若再无脑重试，
+  会形成『限流→重试→更限流』的雪崩。令牌桶 + 指数退避是必备项，不是可选项。
+</Callout>
+
+<Callout type="warn" title="多实例限流要中心化">
+  进程内令牌桶在单实例 OK，但部署 10 个副本时各自计数，总并发 = 10×单桶，
+  照样超配额。多实例必须换成 Redis/ZooKeeper 等**中心化**令牌桶或分布式信号量。
+</Callout>
+
+<Callout type="warn" title="扩容不扩容下游就白搭">
+  只给 Agent 加 Worker，却不提升 LLM 配额或数据库连接数，瓶颈会平移到下游，
+  表现为『实例多了但吞吐没涨、错误没少』。伸缩前先定位真正瓶颈（profile/链路）。
+</Callout>
+
+<Callout type="tip" title="给队列加死信与超时">
+  任务执行失败或卡死要有归宿：重试 N 次进死信队列供排查，超时的任务标记失败告警，
+  否则积压任务会无限占用 Worker 与配额，且前端永远拿不到结果。
+</Callout>
+
+## 小结
+
+- Agent 是 IO 密集负载，优先靠异步/多 worker 提并发，而非堆 CPU；先 profiling 再投算力。
+- 用任务队列把『接收』与『执行』解耦削峰；Worker 数管吃任务，限流器管打下游模型，两者分开配。
+- 令牌桶在客户端保护 LLM 配额（RPM/TPM），配合指数退避防 429 雪崩；多实例务必中心化限流。
+- 横向加 Worker 最灵活，HPA 按『队列积压』而非 CPU 扩最准；成本上『常驻基线 + 弹性峰值』最划算。
+- 伸缩前先定位真瓶颈，别只加 Agent 实例；队列要配死信与超时兜底。
+
+## 延伸阅读 / 参考
+
+- Redis / Celery / RabbitMQ 官方文档：任务队列、死信、优先级（以官方为准，API 易变）
+- 令牌桶/漏桶算法经典资料：*Guava RateLimiter* 设计与分布式限流实现
+- Kubernetes HPA 官方文档：基于自定义指标（如队列长度）的自动伸缩
+- *12-Factor App* 的『并发』原则：把进程当作无状态、可水平扩展的一等公民
+- 各 LLM 厂商配额（RPM/TPM）与 429 退避文档：客户端限流的真实上限来源

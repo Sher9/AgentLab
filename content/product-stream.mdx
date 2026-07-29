@@ -1,0 +1,192 @@
+---
+title: 流式输出体验
+description: 用 SSE 实现 Agent 的流式输出：打字机效果、客户端取消、服务端背压，给出可运行骨架与对比、踩坑。
+category: 产品工程
+order: 2
+difficulty: 入门
+duration: 20 分钟
+tags: [流式, SSE, 打字机, 取消, 背压]
+date: 2026-07-29
+---
+
+# 流式输出体验
+
+Agent 生成一段回答可能要好几秒。如果等它**全部生成完**才一次性吐给用户，用户面对的是一段死寂的等待，弃用率会飙升。流式输出（边生成边显示）能把『首字延迟』从几秒压到几百毫秒，是 Agent 产品最划算的体验升级之一。
+
+这一篇讲清 SSE 协议、打字机效果、取消、背压，并给出可运行骨架。
+
+## 1. 为什么要流式
+
+- **首字延迟（TTFT）**：用户秒见反馈，焦虑骤降；
+- **可感知进度**：字在动，说明『它还活着』；
+- **可取消**：看到方向不对，中途就能停，省 token。
+
+<Callout type="note" title="流式是体验杠杆">
+  同样一个 5 秒的回答，流式让用户『第 0.3 秒就开始读』，一次性返回让用户
+  『前 5 秒干瞪眼』。成本几乎不变，体验差一个量级。
+</Callout>
+
+## 2. SSE 协议基础
+
+服务端推送用 **SSE（Server-Sent Events）** 最省事：基于 HTTP、文本协议、原生 `EventSource` 可消费（注意：要发自定义结构化事件时，前端用 `fetch` + `ReadableStream` 更灵活，见第 7 节）。
+
+每条消息格式：`data: <内容>\n\n`（两个换行分隔）。响应头固定三项：
+
+```
+Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+```
+
+## 3. 打字机效果
+
+『打字机』不是真的逐字慢生成，而是**后端按 chunk 推送、前端按收到顺序追加渲染**。chunk 可以按 token、按词、或按句切；太快显得抖，太慢显得卡，通常按模型原生 token 流即可。
+
+## 4. 取消（Abort）
+
+用户点『停止』，前端要 `reader.cancel()` 切断流；**后端也必须 abort** 下游的模型调用，否则它还在后台烧 token。两端都必须断，缺一不可。
+
+```ts
+// stream-cancel.ts —— 后端用 AbortController 贯穿取消（骨架）
+import http from 'node:http';
+
+const server = http.createServer((req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+  });
+
+  // 客户端断开（关页面/点停止）时触发，立刻停掉后续推送
+  const ac = new AbortController();
+  req.on('close', () => ac.abort());
+
+  (async () => {
+    try {
+      for (const ch of '这是一段流式回答，边生成边推送。') {
+        if (ac.signal.aborted) break; // 已取消，停止推送
+        res.write(`data: ${ch}\n\n`);
+        await new Promise((r) => setTimeout(r, 40));
+      }
+      res.write('data: [DONE]\n\n');
+    } finally {
+      res.end();
+    }
+  })();
+});
+
+server.listen(3000, () => console.log('SSE on :3000'));
+```
+
+<Callout type="warn" title="只断前端不断后端等于白断">
+  前端 `reader.cancel()` 只断了『接收』，后端若没监听 `req.close` 去 `abort`，
+  模型调用继续跑、token 继续烧。取消必须端到端。
+</Callout>
+
+## 5. 背压（Backpressure）
+
+背压指：**生产者（后端）推送速度 > 消费者（前端/网络）消费速度**时，数据在中间堆积。SSE 基于 TCP，操作系统有发送缓冲；但若后端疯狂 `write` 而客户端慢，内存会涨。
+
+应对：
+
+- 用 `res.write` 的返回值判断：返回 `false` 表示底层缓冲已满，应暂停推送、等 `'drain'` 事件再继续；
+- 控制 chunk 节奏，避免一次性灌爆缓冲；
+- 客户端卡死/断开时靠第 4 节的 `close` 事件及时停。
+
+```ts
+// backpressure.ts —— 尊重 res.write 返回值的背压处理（骨架）
+function pushChunk(res: http.ServerResponse, chunk: string): Promise<void> {
+  const ok = res.write(`data: ${chunk}\n\n`);
+  if (ok) return Promise.resolve();           // 缓冲未满，继续
+  // 缓冲满：等 drain 再继续，避免内存无限增长
+  return new Promise((resolve) => res.once('drain', resolve));
+}
+```
+
+<Callout type="tip" title="背压是生产隐形坑">
+  本地测试永远『很快』，背压从不暴露；上线遇到慢网络/弱网手机，
+  缓冲堆积直接 OOM。把 `write` 返回值当信号，是流式服务的及格线。
+</Callout>
+
+## 6. 对比：一次性返回 vs 流式
+
+| 维度 | 一次性返回 | 流式输出 |
+|------|-----------|----------|
+| 首字延迟 | 全部生成完才返回 | 首 token 即显示 |
+| 可取消 | 难（已全算完） | 易（中途断流） |
+| 实现复杂度 | 低 | 中（需 SSE + 客户端解析） |
+| 用户焦虑 | 高 | 低 |
+
+<Callout type="note" title="不是所有场景都该流式">
+  结构化数据抽取、工具结果这类『要么全有要么全无』的内容，流式无意义；
+  真正受益的是『自然语言长回答』。别为流式而流式。
+</Callout>
+
+## 7. 可运行骨架：前端消费 SSE
+
+后端见第 4、5 节。前端用 `fetch` + `ReadableStream` 读取（比 `EventSource` 更灵活，能拿到结构化事件并取消）：
+
+```ts
+// client.ts —— 前端流式消费 + 取消（骨架）
+async function streamChat(onToken: (s: string) => void, signal: AbortSignal) {
+  const res = await fetch('/agent/run', { signal }); // 传入 signal 用于取消
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const parts = buf.split('\n\n');      // 按 SSE 分隔符切
+    buf = parts.pop() ?? '';
+    for (const p of parts) {
+      const data = p.replace(/^data: /, '').trim();
+      if (data === '[DONE]') return;
+      onToken(data);                      // 追加渲染 → 打字机效果
+    }
+  }
+}
+
+// 取消：AbortController 一 abort，fetch 中断，后端也收到 close
+const ac = new AbortController();
+streamChat((t) => console.log('收到:', t), ac.signal);
+// 用户点停止 → ac.abort();
+```
+
+<Callout type="danger" title="客户端解析要容错">
+  网络分包可能把一条 `data:` 切成两半。务必用缓冲区 `buf` 累积、按 `\n\n` 完整切分后再 `JSON.parse`，
+  否则半包解析直接抛错白屏。
+</Callout>
+
+## 踩坑与最佳实践
+
+<Callout type="warn" title="忘记设 no-cache 被代理缓存">
+  SSE 默认可能被中间代理/CDN 缓冲。务必 `Cache-Control: no-cache`，
+  必要时加 `X-Accel-Buffering: no`（Nginx）关掉缓冲，否则前端迟迟收不到。
+</Callout>
+
+<Callout type="warn" title="连接超时断流">
+  部分网关对长连接有时长上限，超时就掐断。长任务要加心跳注释行（如 `: ping\n\n`）
+  保活，或改用分块任务 + 轮询进度。
+</Callout>
+
+<Callout type="tip" title="首字优化优先于速度">
+  用户感知最强的是『多久看到第一个字』，其次才是总时长。优先压 TTFT
+  （先推思考/工具状态），再优化整体。
+</Callout>
+
+## 小结
+
+- 流式把首字延迟从秒级压到百毫秒级，是性价比最高的体验升级。
+- SSE 用 `text/event-stream` + `data: ...\n\n`；客户端用 `fetch`+`ReadableStream` 更灵活。
+- 打字机 = 后端按 chunk 推、前端追加渲染；取消必须端到端（前端 `cancel` + 后端 `abort`）。
+- 背压靠 `res.write` 返回值 + `drain` 事件，防止缓冲堆积 OOM。
+- 红线：不忘 `no-cache`、长连接心跳保活、客户端半包容错、别为结构化数据强行流式。
+
+## 延伸阅读 / 参考
+
+- MDN：Server-Sent Events 与 `EventSource` 规范
+- WHATWG Fetch 标准：`ReadableStream` 与 `AbortController` 用法
+- Node.js `http.ServerResponse`：`write` 返回值与 `drain` 事件（背压）
+- Nginx：`X-Accel-Buffering` 关闭 SSE 缓冲的配置说明

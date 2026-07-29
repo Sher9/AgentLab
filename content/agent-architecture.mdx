@@ -1,0 +1,411 @@
+---
+title: Agent 系统架构设计：模块划分、契约、状态机与可观测性
+description: 从一次性脚本进阶到可维护的 Agent 系统——感知/决策/执行/记忆四层划分、模块间接口契约、显式状态机驱动、可观测性内建，并给出生产级骨架与对比、踩坑。
+category: AI Agent
+order: 2
+difficulty: 进阶
+duration: 35 分钟
+tags: [架构设计, 模块划分, 状态机, 接口契约, 可观测性]
+date: 2026-07-29
+---
+
+# Agent 系统架构设计：模块划分、契约、状态机与可观测性
+
+M0 讲清了『什么是 Agent』，M1 跑通了『工具调用四步闭环』。但当你要把一个 Agent 真正上线、长期迭代，几十条 if/else 和几百行循环塞在一个 `agent.ts` 里，会迅速变成无人敢碰的祖传代码。这一篇讲**架构**：如何把 Agent 拆成职责清晰、可单独替换、可观测的模块，用显式状态机代替散落的 flag，并让可观测性从第一天就内建。
+
+面向有经验的开发者，我们重实战、轻口水：给出可运行的骨架与逐行注释，而不是再来一遍『Agent 很有用』的空话。
+
+## 1. 为什么需要显式架构
+
+先承认一个事实：一个能跑的 Agent，最初往往就是一段 for 循环 + 工具数组（M1 的 `tool-agent.ts`）。它在 demo 阶段完全够用。架构问题在三个时刻爆发：
+
+- **需求扩张**：从『查天气』变成『查天气→下单→发邮件→等用户确认』，循环里开始嵌套业务分支；
+- **可替换性**：想把模型从 gpt-4o-mini 换成更强的，或把工具执行从中国服务器挪到海外，结果牵一发动全身；
+- **出事后查不清**：线上 Agent 答错了，你却说不出它调了哪些工具、传了什么参数、卡在哪一步。
+
+<Callout type="note" title="架构的本质是边界">
+  好的 Agent 架构不是『更多抽象层』，而是把**变与不变**分开：模型会变、工具会变、prompt 会变，
+  但『感知→决策→执行→记忆』这条主链路和模块间的契约是稳定的。架构的价值是让变化局部化。
+</Callout>
+
+## 2. 四层模块划分
+
+把 Agent 拆成四个职责明确的层，每一层只对自己的输入输出负责，层与层之间靠明确的数据结构通信。
+
+```
+                    ┌─────────────────────────────┐
+   用户输入 ───────▶ │  感知层 Perception           │  归一化、补全、路由意图
+                    └──────────────┬──────────────┘
+                                   ▼
+                    ┌─────────────────────────────┐
+                    │  决策层 Decision             │  LLM + 规划 + 工具选择
+                    └──────────────┬──────────────┘
+                                   ▼
+                    ┌─────────────────────────────┐
+                    │  执行层 Action               │  工具注册/调度/沙箱
+                    └──────────────┬──────────────┘
+                                   ▼
+                    ┌─────────────────────────────┐
+                    │  记忆层 Memory               │  短期/长期读写（见 m4）
+                    └─────────────────────────────┘
+```
+
+### 2.1 感知层（Perception）
+
+负责把**杂乱的真实输入**变成**决策层能稳定消费的干净结构**。典型职责：
+
+- 多源输入归一化（聊天文本、上传的文件、系统事件、Webhook 参数）统一成 `UserMessage`；
+- 意图粗分类（用轻量模型或规则），为后续模态路由/工具路由提供依据；
+- 输入护栏：长度截断、PII 检测、敏感词过滤。
+
+```ts
+// perception.ts —— 感知层：把任意输入归一化成统一结构
+import { z } from 'zod';
+
+// 决策层只认这个结构，绝不认『原始 req.body』
+export const UserMessageSchema = z.object({
+  userId: z.string().min(1),
+  text: z.string().max(8000, '单次输入过长，请分段'),
+  attachments: z.array(z.object({
+    kind: z.enum(['image', 'pdf', 'audio']),
+    url: z.string().url(),
+  })).default([]),
+  traceId: z.string(), // 贯穿全链路，便于排查
+});
+
+export type UserMessage = z.infer<typeof UserMessageSchema>;
+
+export function perceive(raw: unknown): UserMessage {
+  const parsed = UserMessageSchema.safeParse(raw);
+  if (!parsed.success) {
+    // 感知层是系统边界，必须在这里挡住非法输入，而不是传到 LLM 再崩
+    throw new Error(`输入非法：${parsed.error.message}`);
+  }
+  return parsed.data;
+}
+```
+
+<Callout type="tip" title="边界校验前置">
+  所有『来自外部』的数据，在进感知层那一刻就用 Zod 校验。这是系统边界，
+  越早挡住脏数据，后面每一层都能假设『拿到的就是干净的』，省下大量防御性代码。
+</Callout>
+
+### 2.2 决策层（Decision）
+
+Agent 的『大脑』：把感知后的输入 + 记忆 + 可用工具，交给 LLM 做推理，产出『下一步动作』（回复用户 / 调某个工具 / 进入某个状态）。这一层尽量**只做决策、不碰副作用**——真正干活的留给执行层。
+
+M1 的 `client.chat.completions.create({ messages, tools })` 就位于此层。它的职责是『决定调什么、传什么参』，不是『去执行』。
+
+### 2.3 执行层（Action）
+
+负责把决策层的『意图』变成『真实世界的副作用』：调用工具、发消息、写库、跑代码。关键设计点：
+
+- **工具注册表**：所有工具集中注册，决策层只看到 schema，执行层按名字 dispatch；
+- **副作用隔离**：本地代码执行必须进沙箱（见『工具沙箱』篇），远程调用要带超时与重试；
+- **结果标准化**：无论工具成功失败，都转成统一的 `ToolResult`，回填给决策层。
+
+### 2.4 记忆层（Memory）
+
+负责跨轮次、跨会话的状态。此处只引用概念，完整读写策略见 M4《记忆系统》。架构上的关键是：**记忆层对决策层暴露的是『取 / 存』两个干净接口**，内部用 KV/向量/摘要哪种形态，决策层不关心。
+
+```ts
+// memory.ts —— 记忆层对决策层暴露的最小接口（实现见 m4）
+export interface MemoryStore {
+  // 读取与当前问题相关的上下文片段
+  recall(userId: string, query: string, k?: number): Promise<string[]>;
+  // 把一句话事实落库（带去重与 TTL）
+  remember(userId: string, fact: string): Promise<void>;
+}
+```
+
+<Callout type="note" title="四层不是四个文件">
+  四层是『职责边界』，不是强制拆成四个微服务。小项目里可以是同一个文件里的四个函数组；
+  大项目里可以是四个独立模块。先守住职责边界，再谈物理拆分。
+</Callout>
+
+## 3. 接口契约：模块间用类型说话
+
+架构能否长久，取决于模块之间的『契约』是否显式、强类型、单一事实来源。最怕的是『A 函数悄悄给 messages 塞了个字段，B 函数默默读它』——三个月后没人敢动。
+
+做法：用 TypeScript 类型 + Zod 把每个模块的入参出参钉死。
+
+```ts
+// contracts.ts —— 决策层与执行层之间的契约（单一事实来源）
+import { z } from 'zod';
+
+// 决策层产出的『动作』只有三种，用 discriminated union 强制穷尽
+export const ActionSchema = z.discriminatedUnion('type', [
+  z.object({ type: 'reply', content: z.string() }),        // 直接回复用户
+  z.object({                                               // 调用工具
+    type: 'tool',
+    name: z.string(),
+    args: z.record(z.unknown()),
+  }),
+  z.object({ type: 'transition', state: z.string() }),     // 切状态（见第 4 节）
+]);
+
+export type Action = z.infer<typeof ActionSchema>;
+
+// 执行层返回的『结果』也标准化，决策层只看 ok / content
+export const ToolResultSchema = z.object({
+  ok: z.boolean(),
+  content: z.string(),
+  // 可选：把结构化数据回传，便于下游工具消费，而非塞进纯文本
+  data: z.unknown().optional(),
+});
+export type ToolResult = z.infer<typeof ToolResultSchema>;
+```
+
+<Callout type="warn" title="别用 any 打通关">
+  模块间一旦用 `any` 传数据，契约就名存实亡，类型检查形同虚设。
+  决策层产出 `Action`、执行层产出 `ToolResult`，两边各守各的 schema，
+  中间的 messages 数组才是 LLM 的『私有协议』，业务逻辑不要往里塞自定义字段。
+</Callout>
+
+## 4. 状态机：用显式状态代替散落 flag
+
+很多 Agent 的崩溃源于『隐式状态』：代码里一堆 `if (awaitingConfirm) { ... }` 的布尔 flag，状态组合爆炸后没人算得清。更稳的做法是用**显式有限状态机（FSM）**描述 Agent 的生命周期。
+
+```
+        ┌─────────┐  收到任务   ┌──────────┐  需要工具  ┌─────────┐
+        │  IDLE   │ ─────────▶ │ PLANNING │ ─────────▶ │ ACTING  │
+        └─────────┘            └──────────┘            └─────────┘
+                                    │                      │  ▲
+                                    │ 无需工具              │  │ 工具结果
+                                    ▼                      ▼  │
+                              ┌──────────┐            ┌─────────┐
+                              │ REPLYING │ ◀────────  │ CHECKING│ 自我检查/反思
+                              └──────────┘   完成      └─────────┘
+                                    │
+                                    ▼
+                              ┌─────────┐  用户确认   ┌──────────┐
+                              │  DONE   │ ◀────────  │ AWAIT_.. │ 等人工/外部
+                              └─────────┘            └──────────┘
+```
+
+状态机的价值：
+
+- **合法性由结构保证**：非法迁移（如从 DONE 直接跳 ACTING）在代码里根本写不出来；
+- **可观测**：当前状态就是一条现成的指标，配合 trace 一眼看出卡在哪；
+- **易测试**：每个状态迁移可单测，不必跑通整个对话。
+
+```ts
+// state-machine.ts —— 极简 FSM 骨架（状态 + 合法迁移表）
+type State = 'IDLE' | 'PLANNING' | 'ACTING' | 'CHECKING' | 'REPLYING' | 'AWAIT_INPUT' | 'DONE';
+
+// 迁移表：state -> 允许到达的下一个状态集合。写死，拒绝野路子跳转
+const TRANSITIONS: Record<State, State[]> = {
+  IDLE:        ['PLANNING'],
+  PLANNING:    ['ACTING', 'REPLYING'],
+  ACTING:      ['CHECKING', 'AWAIT_INPUT'],
+  CHECKING:    ['PLANNING', 'REPLYING', 'DONE'],
+  REPLYING:    ['DONE', 'AWAIT_INPUT'],
+  AWAIT_INPUT: ['PLANNING'],
+  DONE:        [], // 终态，除非被外部重置回 IDLE
+};
+
+export function nextState(current: State, target: State): State {
+  if (!TRANSITIONS[current].includes(target)) {
+    // 非法迁移：宁可抛错也别默默放行，否则状态会失控
+    throw new Error(`非法状态迁移：${current} → ${target}`);
+  }
+  return target;
+}
+```
+
+<Callout type="tip" title="状态机与循环不冲突">
+  状态机管『宏观阶段』，M1 的四步闭环管『ACTING 阶段的微观执行』。
+  二者是正交的两层抽象：外层 FSM 决定『现在在干嘛』，内层循环决定『这步怎么调工具』。
+  agent-loop 篇会展开循环控制流。
+</Callout>
+
+## 5. 可观测性内建：从第一行就埋点
+
+可观测性不是上线后补的『监控大盘』，而是架构里每层的『天然产物』。一个 Agent 至少该能回答：这次请求调了哪些工具、每步耗时多少、花了多少 token、卡在哪个状态、最终为什么这么答。
+
+三层信号：
+
+| 信号 | 来源 | 用途 |
+|------|------|------|
+| Trace / Span | 每层入口出口打点 | 还原一次请求的完整路径，定位卡点 |
+| 结构化日志 | 关键决策前后 | 事后审计『它为什么调了 X』 |
+| 指标 Metrics | 步数、token、错误率 | 长期看趋势、设告警 |
+
+```ts
+// observability.ts —— 轻量 span 埋点（生产换 OpenTelemetry，思路一致）
+type Span = { name: string; start: number; end?: number; meta?: Record<string, unknown> };
+
+class Tracer {
+  private spans: Span[] = [];
+  // 包裹任意异步函数，自动记录起止与元数据
+  async span<T>(name: string, fn: () => Promise<T>, meta?: Record<string, unknown>): Promise<T> {
+    const s: Span = { name, start: Date.now(), meta };
+    this.spans.push(s);
+    try {
+      return await fn();
+    } finally {
+      s.end = Date.now();
+      console.log(`[span] ${name} 耗时 ${s.end - s.start}ms`, meta ?? '');
+    }
+  }
+  dump() { return this.spans; }
+}
+
+// 在决策/执行层分别埋点，一次请求的全貌就清楚了
+const tracer = new Tracer();
+const action = await tracer.span('decision.plan', () => decide(userMsg, memory));
+if (action.type === 'tool') {
+  const res = await tracer.span('action.invoke', () => invokeTool(action.name, action.args));
+}
+```
+
+<Callout type="warn" title="日志别把密钥打出来">
+  埋点日志里常会带上工具参数，记得对 API Key、用户 PII 做脱敏再落盘。
+  一条把 `Authorization: Bearer sk-xxx` 打进 stdout 的日志，比 Agent 答错更危险。
+</Callout>
+
+<Callout type="note" title="可观测性是调试 Agent 的唯一抓手">
+  Agent 的行为是『概率性』的，同样的输入未必有同样的输出。没有 trace，
+  你永远在盲人摸象。把可观测性当架构的一等公民，而不是事后补丁。
+</Callout>
+
+## 6. 可运行骨架：四层 + 状态机 + 埋点拼起来
+
+下面把前面几节拼成一个最小但结构完整的骨架。它不追求跑通所有工具，而是展示**分层如何咬合**。存成 `agent-arch.ts`，在已装 `openai` + `dotenv` + `zod` 的环境下可直接运行（部分工具用桩实现）。
+
+```ts
+// agent-arch.ts —— 分层架构骨架（感知/决策/执行/记忆 + 状态机 + 埋点）
+import OpenAI from 'openai';
+import 'dotenv/config';
+import { z } from 'zod';
+import { perceive, type UserMessage } from './perception';
+import { ActionSchema, type Action, type ToolResult } from './contracts';
+import { nextState, type State } from './state-machine';
+import { Tracer } from './observability';
+
+const client = new OpenAI();
+const tracer = new Tracer();
+
+// 执行层：工具注册表。决策层只看到名字和描述，执行层按名分发
+const registry: Record<string, (args: any) => Promise<ToolResult>> = {
+  get_weather: async (args) => ({ ok: true, content: `${args.city}：晴 26°C` }),
+  // 真实项目在这里挂接数据库/API/沙箱，结构不变
+};
+
+async function decide(input: UserMessage, state: State): Promise<Action> {
+  // 决策层：只问模型『下一步动作』，并把系统状态作为上下文
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: `你是 Agent，当前状态=${state}。按需调用工具或回复。` },
+      { role: 'user', content: input.text },
+    ],
+    tools: [{ type: 'function', function: {
+      name: 'get_weather', description: '查天气',
+      parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
+    }}],
+  });
+  const msg = res.choices[0].message;
+  // 把模型输出收敛成我们定义的 Action 契约
+  if (msg.tool_calls?.length) {
+    const c = msg.tool_calls[0];
+    return ActionSchema.parse({ type: 'tool', name: c.function.name, args: JSON.parse(c.function.arguments) });
+  }
+  return ActionSchema.parse({ type: 'reply', content: msg.content ?? '' });
+}
+
+async function run(rawInput: unknown) {
+  const input = perceive(rawInput);          // ① 感知层：边界校验 + 归一化
+  let state: State = nextState('IDLE', 'PLANNING');
+
+  for (let step = 0; step < 6; step++) {
+    const action = await tracer.span('decision', () => decide(input, state));
+    if (action.type === 'reply') {
+      state = nextState(state, 'REPLYING');
+      console.log('助手：', action.content);
+      break;
+    }
+    if (action.type === 'tool') {
+      state = nextState(state, 'ACTING');
+      const fn = registry[action.name];
+      const result = fn ? await fn(action.args)            // ② 执行层：按名分发
+                         : { ok: false, content: '未注册工具' };
+      state = nextState(state, 'CHECKING');
+      // 把工具结果回填，进入下一轮决策（此处省略 CHECKING→PLANNING 的细节）
+      console.log(`工具 ${action.name} →`, result.content);
+    }
+  }
+}
+
+run({ userId: 'u1', text: '北京天气？', attachments: [], traceId: 't-001' });
+```
+
+<Callout type="tip" title="骨架能跑，但生产要补三件事">
+  上面的骨架演示了分层咬合。上线前至少补：① 记忆层真实接入（m4）；
+  ② 执行层加超时/重试/沙箱；③ 状态机补全 CHECKING/AWAIT_INPUT 的迁移逻辑。
+  架构对了，补这些只是填空。
+</Callout>
+
+## 7. 对比：三种组织方式
+
+| 方式 | 适合 | 优点 | 缺点 |
+|------|------|------|------|
+| 单文件循环（M1 风格） | demo、一次性任务 | 写起来快、易理解 | 需求一扩就乱、不可观测、难测 |
+| 分层架构（本篇） | 要长期迭代的产品 | 职责清晰、可替换、可观测、可单测 | 前期抽象成本略高 |
+| 直接上框架（LangChain 等） | 想快速用现成编排 | 生态全、少造轮子 | 抽象泄露时难调试、耦合重 |
+
+<Callout type="note" title="分层与框架不矛盾">
+  先在本篇的分层思路里把『自己想要什么』想清楚，再决定是否用框架。
+  框架本质是『别人写好的分层』，你懂了自己的边界，才不会在框架抽象里迷路。
+  框架选型对比见『主流框架选型』篇。
+</Callout>
+
+## 8. 架构踩坑
+
+<Callout type="danger" title="把业务状态塞进 messages">
+  最常见反模式：在 messages 里偷偷塞自定义字段传递业务状态。
+  messages 是 LLM 的私有协议，模型可能把它当文本读出来、或它随上下文被截断而丢失。
+  业务状态走状态机/记忆层，messages 只装『对话内容』。
+</Callout>
+
+<Callout type="warn" title="执行层没隔离副作用">
+  直接在主循环里写文件 / 执行用户代码极其危险。执行层必须：
+  远程调用带超时、本地代码进沙箱、写操作加确认。一个失控的工具调用能删库。
+</Callout>
+
+<Callout type="warn" title="可观测性事后才补">
+  等出事再补 trace，往往发现关键决策点没埋点，只能靠猜。可观测性在写第一层时就内建，
+  成本最低、收益最高。
+</Callout>
+
+<Callout type="danger" title="状态机退化成 flag 堆">
+  awaitingConfirm、needTool 这类布尔 flag 一多，组合态就失控。
+  用本节 FSM 把合法迁移写死，非法跳转直接抛错，状态才可控。
+</Callout>
+
+<Callout type="warn" title="契约用 any 击穿">
+  模块间用 any 传数据，等于拆掉了护栏。坚持 Zod + 判别联合，
+  让类型检查在编译期拦住『决策层产出了执行层不认识的动作』。
+</Callout>
+
+## 小结
+
+- Agent 架构的本质是『把变与不变分开』：模型/工具/prompt 会变，主链路与契约稳定。
+- 四层划分：感知（归一化/护栏）、决策（只决策不碰副作用）、执行（调度/沙箱）、记忆（取/存接口）。
+- 模块间用 TypeScript 类型 + Zod 钉死契约，拒绝 any；业务状态走状态机/记忆，别塞 messages。
+- 用显式有限状态机代替散落 flag，非法迁移直接抛错，状态才可控、可观测、可测。
+- 可观测性从第一行内建：trace/span 还原路径，日志/指标看趋势，记得脱敏。
+- 对比：单文件循环适合 demo，分层适合长期产品，框架是『别人写好的分层』——先想清自己要什么。
+
+<Callout type="note" title="下一步">
+  架构搭好了，下一个问题是：决策层到底按什么『思考策略』组织工具调用？
+  是直接 ReAct 边想边做，还是先 Plan 再 Execute？这就是 **agent-planning（规划与推理）** 的主题。
+</Callout>
+
+## 延伸阅读 / 参考
+
+- OpenAI 官方 Cookbook：Agent 循环与工具调用的参考实现（以官方为准，API 易变）
+- Zod 官方文档：用 schema 做模块间契约与单一事实来源
+- ReAct / Reflexion 论文：决策层『推理—行动—反思』的范式起点
+- OpenTelemetry 文档：生产级 trace/span/metric 标准
+- 状态机设计模式（FSM / 状态模式）：用显式状态管理取代布尔 flag 的组合爆炸

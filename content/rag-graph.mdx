@@ -1,0 +1,374 @@
+---
+title: GraphRAG：用知识图谱做全局问答
+description: 深入 GraphRAG 的原理——实体关系抽取、社区摘要、全局/局部查询模式，给出 LLM 抽取骨架与图谱构建思路（伪代码，以官方文档为准），并对比传统向量 RAG 的适用边界与踩坑。
+category: RAG
+order: 8
+difficulty: 高级
+duration: 38 分钟
+tags: [RAG, GraphRAG, 知识图谱, 社区摘要, 全局问答]
+date: 2026-07-29
+---
+
+# GraphRAG：用知识图谱做全局问答
+
+传统向量 RAG 擅长『**点查**』：给你一段具体上下文，回答一个聚焦问题（如『某合同条款是什么』）。但当你问的是**全局性、总结性**的问题——『**这整个数据集在讲什么主题？**』『**客户的主要痛点和诉求有哪些？**』——向量检索就力不从心了：没有哪几篇文档能直接回答这种『跨语料综合』的问题，top-k 召回的只是局部片段，拼不出全局图景。
+
+GraphRAG 的解法是：把语料抽成**知识图谱**（实体—关系—声明），再做**社区检测与摘要**，让模型既能『顺藤摸瓜』做局部检索，也能『俯瞰全图』做全局汇总。本篇讲清原理、抽取、摘要、查询四类模式，并标注哪些环节是思路、哪些要查官方文档。
+
+## 1. 为什么向量 RAG 答不了全局问题
+
+向量检索的本质是『**相似度匹配**』：用户问句 embedding 和文档块 embedding 算余弦，取最近的几个。它对『**哪个**』『**如何**』这类点查有效，但在两类问题上崩：
+
+- **归纳性问题**（『数据集的主要结论是什么』）：答案分散在成百上千个块里，没有单个块能覆盖，top-k 自然遗漏绝大多数；
+- **连通性问题**（『A 和 B 通过哪些中间方关联』）：需要沿关系链跳转，向量检索是无结构的，跳不动。
+
+<Callout type="note" title="关键认知">
+  GraphRAG 不是要『取代』向量 RAG，而是补上它缺的『结构化、可跳转、可汇总』能力。
+  生产里两者常并存：点查走向量，全局/连通走图谱。选型看问题形态，不是二选一。
+</Callout>
+
+## 2. GraphRAG 端到端流程
+
+```
+原始文档
+  ├─ 切块（复用 rag-chunking 的切分策略）
+  ├─ ① 图谱抽取：LLM 从每块抽 实体 / 关系 / 声明(带源引用)
+  ├─ ② 图谱构建：去重合并实体、落库（图数据库 / 内存图）
+  ├─ ③ 社区检测：用图算法把图分成若干紧密子群（Leiden）
+  ├─ ④ 社区摘要：对每个社区生成自然语言摘要（自底向上多层级）
+  └─ 查询时：
+        ├─ 局部查询：问题 → 抽实体 → 图上游走取子图 → 生成
+        └─ 全局查询：问题 → 用社区摘要做 Map-Reduce 汇总 → 生成
+```
+
+<Callout type="tip" title="抽取和摘要是一次性成本">
+  图谱抽取与社区摘要都在『建索引』阶段跑一次，查询时只做轻量检索 + 生成。
+  所以 GraphRAG 适合『写入少、查询多』的知识库场景；频繁全量更新的语料要谨慎算账。
+</Callout>
+
+## 3. 知识图谱抽取（LLM 驱动）
+
+抽取是 GraphRAG 的起点：把非结构化文本变成『**实体—关系—声明**』三元组。这里天然用到 LLM，沿用 OpenAI SDK + Zod 约束输出结构。
+
+```ts
+// graph-extract.ts —— 实体/关系抽取骨架（可运行）
+import OpenAI from 'openai';
+import 'dotenv/config';
+import { z } from 'zod';
+
+const client = new OpenAI();
+
+// 单一事实三元组：主体—关系—客体，并保留来源块引用（溯源用）
+const Triple = z.object({
+  subject: z.string(),
+  relation: z.string(),
+  object: z.string(),
+  source_chunk_id: z.number(),
+});
+
+// 一次抽取返回多个三元组
+const Extraction = z.object({ triples: z.array(Triple) });
+
+async function extractTriples(chunk: string, chunkId: number) {
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o',
+    response_format: { type: 'json_schema', json_schema: {
+      name: 'extraction',
+      schema: {
+        type: 'object',
+        properties: {
+          triples: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                subject: { type: 'string' },
+                relation: { type: 'string' },
+                object: { type: 'string' },
+                source_chunk_id: { type: 'integer' },
+              },
+              required: ['subject', 'relation', 'object', 'source_chunk_id'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ['triples'],
+        additionalProperties: false,
+      },
+    }},
+    messages: [
+      {
+        role: 'system',
+        content: '从文本中抽取实体关系三元组（主体-关系-客体）。只抽文本中明确陈述的事实，不要推断。',
+      },
+      { role: 'user', content: `[块${chunkId}]\n${chunk}` },
+    ],
+  });
+  const parsed = Extraction.parse(JSON.parse(res.choices[0].message.content ?? '{}'));
+  // 回填 chunk id（即便模型漏写也能对齐）
+  return parsed.triples.map((t) => ({ ...t, source_chunk_id: chunkId }));
+}
+
+// 用法：遍历所有块，逐个抽取后汇入图（见第 4 节合并逻辑）
+// const all = (await Promise.all(chunks.map((c, i) => extractTriples(c, i + 1)))).flat();
+```
+
+<Callout type="warn" title="抽取别让模型推断">
+  提示里强调『只抽明确陈述的事实』，否则模型会补出语料里没有的关系，图谱被污染、
+  全局摘要跟着失真。忠实于原文，是图谱质量的第一道闸。
+</Callout>
+
+<Callout type="tip" title="实体归一化决定图谱密度">
+  『北京』『北京市』『Beijing』若不作归一（entity resolution），会变成三个孤立节点，
+  图谱碎片化。抽取后要做一层同义词/别名合并（可用 embedding 聚类或字典），再落库。
+  这是 GraphRAG 效果的关键隐藏成本。
+</Callout>
+
+## 4. 图谱构建与存储（思路 + 伪代码）
+
+**以下图谱存储/查询为思路骨架，具体 API 以官方文档为准，各图数据库差异较大，切勿照抄。**
+
+图谱落库通常选图数据库（Neo4j / NebulaGraph）或内存图结构。核心动作是『**合并而非新增**』：同名实体只留一个节点，关系去重。
+
+```
+# 伪代码：图谱合并逻辑（思路，非某库具体 API）
+func upsert_triple(triple):
+    s = get_or_create_node(triple.subject)   # 按归一后名字查/建节点
+    o = get_or_create_node(triple.object)
+    link(s, o, triple.relation)              # 关系边；同关系已存在则计数+1
+    attach_source(s, triple.source_chunk_id) # 节点/边挂溯源引用
+```
+
+<Callout type="note" title="以官方文档为准">
+  上述是『合并语义』的通用思路。Neo4j 的 Cypher、NebulaGraph 的 nGQL、或内存库
+  NetworkX 的 API 各不相同，且版本易变。落地时请查对应官方文档，这里只给必须实现的
+  『查/建 + 去重 + 挂溯源』这几件事。
+</Callout>
+
+## 5. 社区检测与社区摘要
+
+图谱建好后是一张大网。GraphRAG 的巧妙之处在于：用**图社区检测算法**（最常用 Leiden）把图切成若干『内部连接密、彼此连接疏』的子群，再对**每个社区生成摘要**。这样全局问题就有了『现成的局部总结』可以直接汇总。
+
+- **Leiden 算法**：对图做模块度优化，输出层级化社区（社区可再分社区）；
+- **社区摘要生成**：对每个社区，把其下实体、关系、关键声明喂给 LLM，生成一段自然语言摘要；
+- **层级摘要**：自底向上——先摘要叶子社区，再摘要父社区，形成多层级『全局—局部』摘要树。
+
+```
+# 伪代码：社区摘要（思路）
+communities = leiden_detect(graph)          # 图算法，具体实现以库文档为准
+for level in top_down_levels(communities):  # 自顶向下或自底向上皆可
+    for comm in communities[level]:
+        elements = comm.entities + comm.relations + comm.child_summaries
+        comm.summary = llm_summarize(elements)  # 用模型把社区内容压成摘要
+```
+
+<Callout type="tip" title="摘要层级让你的查询更省">
+  有层级摘要后，全局问题可以只『汇总高层摘要』，不必把整张图喂给模型——
+  既控住 token，又保留全局视野。这也是 GraphRAG 相比『暴力把所有块喂进去』的省成本之处。
+</Callout>
+
+## 6. 两种查询模式
+
+GraphRAG 的查询分两类，对应于第 1 节说的两类问题。
+
+### 6.1 局部查询（Local Query）
+
+适合『点查 + 需要上下文』的问题。先抽问题里的实体，去图上**游走取子图**（邻域若干跳），连同原文块一起生成。
+
+```
+# 伪代码：局部查询（思路）
+entities = extract_entities(question)          # 复用第 3 节抽取思路
+subgraph = graph.traverse(entities, hops=2)    # 取邻域 2 跳子图
+context  = subgraph.to_text() + retrieve_chunks(question, k=5)
+answer   = llm_generate(question, context)
+```
+
+### 6.2 全局查询（Global Query）
+
+适合『归纳/总结』问题。把社区摘要做 **Map-Reduce**：先并行让各社区摘要各自回答，再 Reduce 成最终答案。
+
+```ts
+// graph-global.ts —— 全局查询 Map-Reduce 骨架（生成部分可运行）
+import OpenAI from 'openai';
+import 'dotenv/config';
+
+const client = new OpenAI();
+
+// Map：每个社区摘要独立作答（可并行）
+async function mapCommunity(question: string, communitySummary: string): Promise<string> {
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: '基于给定社区摘要，回答用户问题。若摘要无关，回 无关。' },
+      { role: 'user', content: `问题：${question}\n\n社区摘要：${communitySummary}` },
+    ],
+  });
+  return res.choices[0].message.content ?? '';
+}
+
+// Reduce：把各社区的部分答案汇总成全局答案
+async function reduceAnswers(question: string, partials: string[]): Promise<string> {
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o',
+    messages: [
+      { role: 'system', content: '综合以下多份局部回答，给出全面、去重、不矛盾的全局答案。' },
+      { role: 'user', content: `问题：${question}\n\n局部回答：\n${partials.join('\n---\n')}` },
+    ],
+  });
+  return res.choices[0].message.content ?? '';
+}
+
+// 流程：partials = await Promise.all(summaries.map(s => mapCommunity(q, s)))
+//       final   = await reduceAnswers(q, partials)
+```
+
+<Callout type="note" title="全局查询本质是分治">
+  把『答全局问题』拆成『每个社区先答、再汇总』，是 GraphRAG 能扩展到大规模语料的核心 trick。
+  它把 O(全部文档) 的上下文压力，变成了 O(社区数) 的并行小任务。
+</Callout>
+
+## 7. 对比：向量 RAG vs GraphRAG
+
+| 维度 | 向量 RAG | GraphRAG |
+|------|----------|----------|
+| 擅长问题 | 点查、事实问答 | 全局归纳、实体连通 |
+| 数据结构 | 扁平向量 | 实体—关系图 |
+| 检索方式 | 相似度 top-k | 图游走 + 社区摘要 |
+| 建索引成本 | 低（只嵌入） | 高（抽取+建图+社区摘要） |
+| 查询成本 | 低 | 局部低 / 全局中等（Map-Reduce） |
+| 可解释性 | 弱（相似块） | 强（可沿关系链溯源） |
+
+<Callout type="warn" title="别为点查上 GraphRAG">
+  如果你的场景 90% 是『这篇文章里 X 是什么』，向量 RAG 足够且便宜。
+  GraphRAG 的建图成本只有在『确实需要全局/连通问答』时才回本。先量问题分布再决策。
+</Callout>
+
+## 8. 适用场景与不适用场景
+
+**适用：**
+- 大规模、主题多样的语料，需要『总结全集』『归纳趋势』（调研报告、舆情、企业知识中枢）；
+- 实体关系密集、需要『谁和谁怎么关联』的连通问答（风控关系网、科研文献脉络）；
+- 对可解释性要求高，答案要能沿关系链回溯。
+
+**不适用：**
+- 中小语料、纯点查，向量 RAG 性价比更高；
+- 语料频繁全量更新，建图成本反复发生；
+- 实体稀疏、关系稀少的文本（如纯小说），图谱建不起来。
+
+<Callout type="tip" title="混合检索是常见最优解">
+  实战里常把向量 RAG 与 GraphRAG 并列：路由层根据问题类型分发——归纳/连通走图谱，
+  点查走向量。两者共享同一份切块与 embedding，增量成本主要在『图构建』这一块。
+</Callout>
+
+## 9. 踩坑
+
+<Callout type="danger" title="实体未归一，图谱碎片化">
+  不做实体归一，『苹果公司』『Apple』『Apple Inc.』成三个节点，社区检测失真、
+  全局摘要支离破碎。归一化（别名合并/消歧）是 GraphRAG 上线前必须投入的一关。
+</Callout>
+
+<Callout type="warn" title="抽取幻觉污染全图">
+  模型在抽取时编造不存在的关系，会被建图永久固化，后续所有全局摘要都被带偏。
+  对策：抽取提示强调『只抽显式事实』+ 低置信关系过滤 + 抽样人工校验。
+</Callout>
+
+<Callout type="warn" title="社区太多，全局查询退化成向量 RAG">
+  社区数爆炸（成千上万）时，Map-Reduce 的 partials 数量失控，token 反而比直接喂块更贵。
+  通过调社区检测分辨率参数控制社区粒度，并在 Reduce 前按相关性过滤社区。
+</Callout>
+
+<Callout type="note" title="建图是重活，先小样本验证">
+  别一上来就全量跑。先用 1% 语料跑通『抽取→建图→社区摘要→查询』闭环，
+  肉眼看图谱质量和摘要合理性，再规模化。图谱问题一旦规模化才暴露，返工成本极高。
+</Callout>
+
+## 10. 工程化：成本、延迟与增量更新
+
+GraphRAG 的『建图贵、查询便宜』特征，决定了它是一笔**前期重投入、后期摊薄**的账。落地前要算清三笔账。
+
+**建图成本拆解：**
+- 抽取调用次数 ≈ 文档块数（每块一次 LLM 调用，可用批处理压价）；
+- 社区摘要调用次数 ≈ 社区数（通常远小于块数，但层级摘要会乘层级数）；
+- 实体归一可纯规则/轻量 embedding，几乎不给 LLM 加压。
+
+**增量更新策略（思路）：** 语料追加时，不要全量重建。只对新块跑抽取，把三元组合并进现有图（第 4 节的 `upsert_triple` 天然支持去重），再对『受影响社区』局部重算摘要。完全重跑只在该社区结构大变时才需要。
+
+<Callout type="tip" title="批处理抽省大钱">
+  抽取是海量同构调用，优先用厂商的 batch / 异步接口（如 OpenAI batch），单价常打对折且不限速率。
+  这是 GraphRAG 建图阶段最值得做的成本优化。
+</Callout>
+
+**延迟特征：**
+- 局部查询：1 次实体抽取 + 1 次图游走 + 1 次生成，端到端通常数百毫秒到一两秒；
+- 全局查询：Map 阶段各社区**并行**，瓶颈在 Reduce 那一次调用，整体随社区数线性但可并行摊薄。
+
+```ts
+// graph-incremental.ts —— 增量合并新块的三元组（思路骨架）
+async function ingestNewChunks(newChunks: { id: number; text: string }[]) {
+  const triples = (await Promise.all(
+    newChunks.map((c) => extractTriples(c.text, c.id)) // 复用第 3 节抽取
+  )).flat();
+  for (const t of triples) {
+    upsertTriple(t); // 见第 4 节：查/建节点 + 去重关系 + 挂溯源
+  }
+  // 仅对『含新增实体的社区』触发重算摘要，避免全图重跑
+  const touched = communitiesTouching(triples);
+  await rebuildSummaries(touched); // 思路，具体以官方文档为准
+}
+```
+
+## 11. 评估 GraphRAG 质量
+
+GraphRAG 的链路比向量 RAG 长，每一环都要有指标，否则出问题不知道坏在哪一环。
+
+| 评估层 | 指标 | 怎么做 |
+|--------|------|--------|
+| 抽取层 | 实体/关系准确率、召回率 | 抽 50 块人工标黄金三元组，算 F1 |
+| 归一层 | 同实体合并率 | 构造含别名的测试集，看是否合并为同一节点 |
+| 社区摘要 | 覆盖率、忠实度 | LLM-as-judge 判摘要是否涵盖社区关键事实、无编造 |
+| 全局答案 | 主题覆盖度、矛盾率 | 人工 + LLM 评『主要主题是否都提到、有无自相矛盾』 |
+| 对比基线 | 相对向量 RAG 提升 | 针对全局问题做 A/B，向量 RAG 本就弱，重点看 Gap |
+
+<Callout type="warn" title="别只评最终答案">
+  全局答案差，可能是抽取漏了实体、也可能是社区摘要丢了重点、还可能是 Reduce 没汇总好。
+  只评最终输出会让你瞎改。分层埋点、逐环评，才能定位瓶颈——这和 RAG 评估（见 rag-eval）
+  的『拆解检索/生成』思路一脉相承。
+</Callout>
+
+## 12. 选型决策树
+
+把前面的判断收敛成一条可执行路径：
+
+```
+问题是否涉及『多个文档的综合/归纳/连通』？
+  ├─ 否（纯点查）        → 向量 RAG 足够，别上图
+  └─ 是
+       ├─ 语料实体稀疏？  → 图谱建不起来，退回向量 + 重排
+       └─ 实体密集
+            ├─ 语料频繁全量更新且规模小？ → 建图成本摊不薄，谨慎
+            └─ 规模大 / 更新慢
+                 ├─ 需要沿关系链解释？    → GraphRAG 强项，上
+                 └─ 只需主题汇总？         → GraphRAG 全局查询，上
+```
+
+<Callout type="note" title="先向量、后图谱、再混合">
+  务实路线：先用向量 RAG 跑通业务，收集真实问题分布；确认『全局/连通类问题』占比高、
+  且向量 RAG 答不好时，再引入 GraphRAG，并最终走向『路由分发』的混合架构。
+  不要在一开始就为『可能用得到』付出建图的全套成本。
+</Callout>
+
+## 小结
+
+- GraphRAG 补的是向量 RAG 缺的『全局归纳 + 实体连通』能力，两者常并存而非互斥。
+- 端到端：切块 → LLM 抽取三元组 → 建图去重 → 社区检测 + 层级摘要 → 局部/全局查询。
+- 抽取要忠实、实体要归一；图谱存储/查询是思路层面，具体 API 以官方文档为准。
+- 全局查询用 Map-Reduce 分治，把『答全集』变成『各社区先答再汇总』。
+- 选型红线：纯点查别硬上 GraphRAG；语料频繁全量更新要算清建图账。
+
+## 延伸阅读 / 参考
+
+- Microsoft GraphRAG 官方仓库与论文 *From Local to Global*（社区摘要 + Map-Reduce 原始出处，以官方为准）
+- Leiden 社区检测算法论文（Traag et al.）：图分区模块度优化
+- Neo4j / NebulaGraph 官方文档：图存储与 Cypher/nGQL 查询（API 易变，落地以官方为准）
+- LlamaIndex `PropertyGraphIndex` / `GraphRAG` 实现：框架层图谱抽取与查询思路
+- 论文 *Rethinking GraphRAG* 系列：对抽取成本、实体消歧的最新讨论

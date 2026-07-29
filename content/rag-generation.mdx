@@ -1,0 +1,232 @@
+---
+title: RAG 生成与引用：把检索结果变成可信答案
+description: 聚焦 RAG 的『生成』阶段——上下文压缩、引用溯源、抗幻觉与答案组织，给出 OpenAI SDK + Zod 的可运行骨架，并对比朴素拼接的优劣与常见坑。
+category: RAG
+order: 7
+difficulty: 进阶
+duration: 22 分钟
+tags: [RAG, 生成, 引用溯源, 抗幻觉, 上下文压缩]
+date: 2026-07-29
+---
+
+# RAG 生成与引用：把检索结果变成可信答案
+
+前几篇把『检索』（切分、向量化、混合检索、重排）讲透了。但拿到 top-k 块之后，怎么把它们**喂给模型、产出带出处、不胡编的答案**，是 RAG 的『最后一公里』。这一阶段做不好，前面检索再准也会前功尽弃：要么上下文太长压垮窗口，要么模型张冠李戴、凭空捏造。
+
+本篇面向已搭好检索链路的开发者，聚焦四件事：**上下文压缩、引用溯源、抗幻觉、答案组织**。
+
+## 1. 为什么生成阶段是 RAG 的瓶颈
+
+朴素 RAG 最常见的写法，是把 top-k 块用 `\n\n` 拼起来直接塞进 prompt。这在块少、问题简单时还行，一旦遇到真实场景就露出三个问题：
+
+- **噪声淹没信号**：召回 10 个块，真正相关的可能只有 2 个，其余 8 个反而带偏模型；
+- **窗口与成本压力**：块越多，prompt 越长，模型注意力被稀释，token 费用线性上涨；
+- **无法溯源**：用户问『依据是什么』，模型答不上来，也没法点开看原文。
+
+<Callout type="note" title="检索准不等于答案对">
+  检索召回率（recall）高只代表『好材料在候选集里』，不代表模型『用对了材料』。
+  生成阶段负责把材料『用对、用好、标出处』，是忠实度（faithfulness）真正的决定环节。
+</Callout>
+
+## 2. 上下文压缩：先瘦身再喂
+
+上下文压缩（Context Compression）的核心思路是：**在把检索块送进生成 prompt 之前，先做一轮『与问题相关的提纯』**，只保留对回答有用的片段。两种主流做法：
+
+- **抽取式压缩**：用一个小模型/重排器，从每个块里标出『和问题相关的句子』，只保留这些句子；
+- **生成式压缩**：让一个压缩模型把 top-k 块改写成一段精简、去重、和问题强相关的摘要，再交给主模型作答。
+
+下面给出生成式压缩的骨架（生产里可换 LangChain 的 `ContextualCompressionRetriever` 思路，以官方文档为准）。
+
+```ts
+// compress.ts —— 检索结果生成式压缩骨架
+import OpenAI from 'openai';
+import 'dotenv/config';
+
+const client = new OpenAI();
+
+// 把召回的多个块压缩成一段与问题强相关的精简上下文
+async function compressContext(query: string, chunks: string[]): Promise<string> {
+  const joined = chunks.map((c, i) => `[块${i + 1}]\n${c}`).join('\n\n');
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o-mini', // 用小模型压缩，省成本
+    messages: [
+      {
+        role: 'system',
+        content: '你是检索结果的压缩器。只保留与用户问题直接相关、能支撑作答的事实，删除无关与重复内容，不要编造。',
+      },
+      { role: 'user', content: `问题：${query}\n\n检索到的内容：\n${joined}` },
+    ],
+  });
+  return res.choices[0].message.content ?? '';
+}
+```
+
+<Callout type="tip" title="压缩器用小模型">
+  压缩是『信息筛选』不是『深度推理』，用 4o-mini 这类小模型足够，且能显著降低主模型
+  的 token 负担。压缩失败也不致命——退化成原文直喂即可。
+</Callout>
+
+## 3. 引用溯源：让每个结论可点
+
+引用溯源（Citation）让用户能**核实答案来自哪段原文**，是建立信任、降低幻觉的关键。工程上最稳的做法是**结构化输出**：让模型在生成时把『引用了哪个块编号』一并输出。
+
+```ts
+// cite.ts —— 带引用的结构化生成骨架（Zod 校验）
+import OpenAI from 'openai';
+import 'dotenv/config';
+import { z } from 'zod';
+
+const client = new OpenAI();
+
+// 用 Zod 定义『带引用的答案』结构，强制模型给每个论点标来源
+const CitedAnswer = z.object({
+  answer: z.string(),
+  citations: z.array(z.object({
+    claim: z.string(),        // 具体结论
+    chunk_id: z.number(),     // 对应检索块编号（从 1 开始）
+  })),
+});
+
+async function generateWithCitations(query: string, chunks: string[]) {
+  const context = chunks.map((c, i) => `[${i + 1}] ${c}`).join('\n\n');
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o',
+    // strict 模式：模型输出严格符合下方 JSON Schema，解析零歧义
+    response_format: { type: 'json_schema', json_schema: {
+      name: 'cited_answer',
+      schema: {
+        type: 'object',
+        properties: {
+          answer: { type: 'string' },
+          citations: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                claim: { type: 'string' },
+                chunk_id: { type: 'integer' },
+              },
+              required: ['claim', 'chunk_id'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ['answer', 'citations'],
+        additionalProperties: false,
+      },
+    }},
+    messages: [
+      {
+        role: 'system',
+        content: '基于给定上下文作答。每个结论必须在 citations 里标注它来自哪个 [编号] 块；上下文没有的内容不要写。',
+      },
+      { role: 'user', content: `问题：${query}\n\n上下文：\n${context}` },
+    ],
+  });
+
+  const parsed = CitedAnswer.parse(JSON.parse(res.choices[0].message.content ?? '{}'));
+  return parsed; // answer + citations，前端可渲染成可点击引用
+}
+```
+
+<Callout type="warn" title="chunk_id 必须和上下文编号一致">
+  模型容易把编号写错（尤其块多时）。生产里对 `chunk_id` 做范围校验，越界就过滤或要求重试；
+  更稳的做法是让压缩阶段就给每块一个稳定 id，并在 prompt 里重复强调编号规则。
+</Callout>
+
+## 4. 抗幻觉：忠实度优先
+
+即使有上下文，模型仍可能『过度发挥』。三层防线：
+
+- **约束指令**：明确『只基于上下文回答，不知道就说不知道』；
+- **拒答机制**：当检索得分全低于阈值，直接返回『知识库未覆盖』，不强行编；
+- **忠实度校验**：生成后再用一次调用判断『答案里的每句话是否都能在上下文找到依据』，不达标则重生成或拒答。
+
+```ts
+// faithfulness.ts —— 生成后忠实度自校验（轻量）
+async function isFaithful(answer: string, context: string): Promise<boolean> {
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: '判断答案是否完全可由给定上下文支撑。只回 yes 或 no。' },
+      { role: 'user', content: `上下文：\n${context}\n\n答案：\n${answer}` },
+    ],
+  });
+  return res.choices[0].message.content?.trim().toLowerCase() === 'yes';
+}
+```
+
+<Callout type="note" title="检索质量差时宁可拒答">
+  当 top-k 全部低分，『强行生成』几乎必产生幻觉。与其给一个看似合理实则错误的答案，
+  不如返回『未检索到可靠依据』——对用户体验和信任反而更好。这是 RAG 的黄金护栏。
+</Callout>
+
+## 5. 答案组织：结构化与多块综合
+
+真实问题常需**跨多个块综合**（如『对比 A 和 B 的异同』）。让模型做『多文档摘要式』作答，而非逐块复述。用 Zod 约束输出形态，前端才好渲染：
+
+```ts
+// 综合型答案的结构：分点 + 引用，便于前端表格化展示
+const ComparativeAnswer = z.object({
+  summary: z.string(),
+  points: z.array(z.object({
+    aspect: z.string(),      // 比较维度，如 成本
+    a: z.string(),
+    b: z.string(),
+    source_chunk_ids: z.array(z.number()),
+  })),
+});
+```
+
+## 6. 对比：朴素拼接 vs 压缩+引用
+
+| 维度 | 朴素拼接 | 压缩 + 引用 + 校验 |
+|------|----------|--------------------|
+| 忠实度 | 中低，易漂移 | 高，逐句可溯源 |
+| 上下文长度 | 随块数线性膨胀 | 压缩后显著缩短 |
+| 用户信任 | 无法核实 | 可点开看原文 |
+| 成本 | 主模型承担全部块 | 压缩用小模型，主模型输入更短 |
+| 抗幻觉 | 弱 | 拒答 + 忠实度兜底 |
+
+<Callout type="tip" title="先上引用，再上压缩">
+  引用溯源改动小、收益大（立刻可信任），建议第一步就做；上下文压缩在『块多、
+  窗口吃紧』时再上。按痛点上，不要一上来就全堆。
+</Callout>
+
+## 7. 常见坑
+
+<Callout type="warn" title="块编号错位导致伪引用">
+  上下文里的编号和模型输出的 chunk_id 必须对得上。一旦压缩重排了块，编号映射要同步更新，
+  否则『引用』会指向错误原文——比没引用更危险。
+</Callout>
+
+<Callout type="danger" title="压缩丢关键信息">
+  生成式压缩可能把支撑答案的关键句误删。校验方式：压缩后用压缩结果去跑一次检索命中检查，
+  或保留『原文 + 压缩摘要』双通道，主模型两者皆可见。
+</Callout>
+
+<Callout type="warn" title="strict 模式下 schema 写错直接 400">
+  `response_format` 的 json_schema 必须 `additionalProperties: false` 且字段全 `required`，
+  否则厂商拒绝请求。上线前用最小 schema 验证一遍。
+</Callout>
+
+<Callout type="note" title="忠实度校验不是免费午餐">
+  每次生成后再调一次模型会翻倍延迟与成本。可对高价值问答（如医疗、金融）开，
+  普通问答用『拒答阈值 + 指令约束』即可。
+</Callout>
+
+## 小结
+
+- 生成阶段决定 RAG 的『忠实度』，检索准不等于答案对。
+- 上下文压缩先瘦身再喂，用小模型省成本；引用溯源用结构化输出让结论可点。
+- 抗幻觉三道防线：约束指令、低分拒答、生成后忠实度校验（按需开启）。
+- 答案组织用 Zod 约束形态，跨块综合优于逐块复述。
+- 落地顺序：先上引用溯源，再上压缩，最后按需加忠实度校验。
+
+## 延伸阅读 / 参考
+
+- OpenAI `response_format` JSON Schema 模式官方文档（strict 约束，以官方为准）
+- LangChain `ContextualCompressionRetriever` 文档：上下文压缩的框架级实现思路
+- RAGAS `faithfulness` / `answer_correctness` 指标：量化生成质量的评测口径
+- 论文 *REALM* / *FiD (Fusion-in-Decoder)*：检索增强生成的早期范式
+- 微软 GraphRAG / LlamaIndex `CitationQueryEngine`：引用溯源的工程参考

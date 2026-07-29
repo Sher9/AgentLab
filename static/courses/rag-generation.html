@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>RAG 生成与引用：把检索结果变成可信答案 · AgentLab</title>
+  <meta name="description" content="聚焦 RAG 的『生成』阶段——上下文压缩、引用溯源、抗幻觉与答案组织，给出 OpenAI SDK + Zod 的可运行骨架，并对比朴素拼接的优劣与常见坑。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="RAG 生成与引用：把检索结果变成可信答案 · AgentLab"/>
+  <meta property="og:description" content="聚焦 RAG 的『生成』阶段——上下文压缩、引用溯源、抗幻觉与答案组织，给出 OpenAI SDK + Zod 的可运行骨架，并对比朴素拼接的优劣与常见坑。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#rag">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">📚</span>
+        <span class="art-moduleName">RAG</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">22 分钟</span>
+      </div>
+      <h1 class="art-title">RAG 生成与引用：把检索结果变成可信答案</h1>
+      <p class="art-desc">聚焦 RAG 的『生成』阶段——上下文压缩、引用溯源、抗幻觉与答案组织，给出 OpenAI SDK + Zod 的可运行骨架，并对比朴素拼接的优劣与常见坑。</p>
+      <div class="art-tags"><span class="art-tag">#RAG</span><span class="art-tag">#生成</span><span class="art-tag">#引用溯源</span><span class="art-tag">#抗幻觉</span><span class="art-tag">#上下文压缩</span></div>
+    </div>
+    <div class="prose"><h1>RAG 生成与引用：把检索结果变成可信答案</h1>
+<p>前几篇把『检索』（切分、向量化、混合检索、重排）讲透了。但拿到 top-k 块之后，怎么把它们<strong>喂给模型、产出带出处、不胡编的答案</strong>，是 RAG 的『最后一公里』。这一阶段做不好，前面检索再准也会前功尽弃：要么上下文太长压垮窗口，要么模型张冠李戴、凭空捏造。</p>
+<p>本篇面向已搭好检索链路的开发者，聚焦四件事：<strong>上下文压缩、引用溯源、抗幻觉、答案组织</strong>。</p>
+<h2 id="1-为什么生成阶段是-rag-的瓶颈">1. 为什么生成阶段是 RAG 的瓶颈</h2>
+<p>朴素 RAG 最常见的写法，是把 top-k 块用 <code>\n\n</code> 拼起来直接塞进 prompt。这在块少、问题简单时还行，一旦遇到真实场景就露出三个问题：</p>
+<ul>
+<li><strong>噪声淹没信号</strong>：召回 10 个块，真正相关的可能只有 2 个，其余 8 个反而带偏模型；</li>
+<li><strong>窗口与成本压力</strong>：块越多，prompt 越长，模型注意力被稀释，token 费用线性上涨；</li>
+<li><strong>无法溯源</strong>：用户问『依据是什么』，模型答不上来，也没法点开看原文。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">检索准不等于答案对</span></div><div class="co-body"><p>  检索召回率（recall）高只代表『好材料在候选集里』，不代表模型『用对了材料』。
+  生成阶段负责把材料『用对、用好、标出处』，是忠实度（faithfulness）真正的决定环节。</p>
+</div></div><h2 id="2-上下文压缩-先瘦身再喂">2. 上下文压缩：先瘦身再喂</h2>
+<p>上下文压缩（Context Compression）的核心思路是：<strong>在把检索块送进生成 prompt 之前，先做一轮『与问题相关的提纯』</strong>，只保留对回答有用的片段。两种主流做法：</p>
+<ul>
+<li><strong>抽取式压缩</strong>：用一个小模型/重排器，从每个块里标出『和问题相关的句子』，只保留这些句子；</li>
+<li><strong>生成式压缩</strong>：让一个压缩模型把 top-k 块改写成一段精简、去重、和问题强相关的摘要，再交给主模型作答。</li>
+</ul>
+<p>下面给出生成式压缩的骨架（生产里可换 LangChain 的 <code>ContextualCompressionRetriever</code> 思路，以官方文档为准）。</p>
+<pre><code class="language-ts">// compress.ts —— 检索结果生成式压缩骨架
+import OpenAI from 'openai';
+import 'dotenv/config';
+
+const client = new OpenAI();
+
+// 把召回的多个块压缩成一段与问题强相关的精简上下文
+async function compressContext(query: string, chunks: string[]): Promise&lt;string&gt; {
+  const joined = chunks.map((c, i) =&gt; `[块${i + 1}]\n${c}`).join('\n\n');
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o-mini', // 用小模型压缩，省成本
+    messages: [
+      {
+        role: 'system',
+        content: '你是检索结果的压缩器。只保留与用户问题直接相关、能支撑作答的事实，删除无关与重复内容，不要编造。',
+      },
+      { role: 'user', content: `问题：${query}\n\n检索到的内容：\n${joined}` },
+    ],
+  });
+  return res.choices[0].message.content ?? '';
+}
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">压缩器用小模型</span></div><div class="co-body"><p>  压缩是『信息筛选』不是『深度推理』，用 4o-mini 这类小模型足够，且能显著降低主模型
+  的 token 负担。压缩失败也不致命——退化成原文直喂即可。</p>
+</div></div><h2 id="3-引用溯源-让每个结论可点">3. 引用溯源：让每个结论可点</h2>
+<p>引用溯源（Citation）让用户能<strong>核实答案来自哪段原文</strong>，是建立信任、降低幻觉的关键。工程上最稳的做法是<strong>结构化输出</strong>：让模型在生成时把『引用了哪个块编号』一并输出。</p>
+<pre><code class="language-ts">// cite.ts —— 带引用的结构化生成骨架（Zod 校验）
+import OpenAI from 'openai';
+import 'dotenv/config';
+import { z } from 'zod';
+
+const client = new OpenAI();
+
+// 用 Zod 定义『带引用的答案』结构，强制模型给每个论点标来源
+const CitedAnswer = z.object({
+  answer: z.string(),
+  citations: z.array(z.object({
+    claim: z.string(),        // 具体结论
+    chunk_id: z.number(),     // 对应检索块编号（从 1 开始）
+  })),
+});
+
+async function generateWithCitations(query: string, chunks: string[]) {
+  const context = chunks.map((c, i) =&gt; `[${i + 1}] ${c}`).join('\n\n');
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o',
+    // strict 模式：模型输出严格符合下方 JSON Schema，解析零歧义
+    response_format: { type: 'json_schema', json_schema: {
+      name: 'cited_answer',
+      schema: {
+        type: 'object',
+        properties: {
+          answer: { type: 'string' },
+          citations: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                claim: { type: 'string' },
+                chunk_id: { type: 'integer' },
+              },
+              required: ['claim', 'chunk_id'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ['answer', 'citations'],
+        additionalProperties: false,
+      },
+    }},
+    messages: [
+      {
+        role: 'system',
+        content: '基于给定上下文作答。每个结论必须在 citations 里标注它来自哪个 [编号] 块；上下文没有的内容不要写。',
+      },
+      { role: 'user', content: `问题：${query}\n\n上下文：\n${context}` },
+    ],
+  });
+
+  const parsed = CitedAnswer.parse(JSON.parse(res.choices[0].message.content ?? '{}'));
+  return parsed; // answer + citations，前端可渲染成可点击引用
+}
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">chunk_id 必须和上下文编号一致</span></div><div class="co-body"><p>  模型容易把编号写错（尤其块多时）。生产里对 <code>chunk_id</code> 做范围校验，越界就过滤或要求重试；
+  更稳的做法是让压缩阶段就给每块一个稳定 id，并在 prompt 里重复强调编号规则。</p>
+</div></div><h2 id="4-抗幻觉-忠实度优先">4. 抗幻觉：忠实度优先</h2>
+<p>即使有上下文，模型仍可能『过度发挥』。三层防线：</p>
+<ul>
+<li><strong>约束指令</strong>：明确『只基于上下文回答，不知道就说不知道』；</li>
+<li><strong>拒答机制</strong>：当检索得分全低于阈值，直接返回『知识库未覆盖』，不强行编；</li>
+<li><strong>忠实度校验</strong>：生成后再用一次调用判断『答案里的每句话是否都能在上下文找到依据』，不达标则重生成或拒答。</li>
+</ul>
+<pre><code class="language-ts">// faithfulness.ts —— 生成后忠实度自校验（轻量）
+async function isFaithful(answer: string, context: string): Promise&lt;boolean&gt; {
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: '判断答案是否完全可由给定上下文支撑。只回 yes 或 no。' },
+      { role: 'user', content: `上下文：\n${context}\n\n答案：\n${answer}` },
+    ],
+  });
+  return res.choices[0].message.content?.trim().toLowerCase() === 'yes';
+}
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">检索质量差时宁可拒答</span></div><div class="co-body"><p>  当 top-k 全部低分，『强行生成』几乎必产生幻觉。与其给一个看似合理实则错误的答案，
+  不如返回『未检索到可靠依据』——对用户体验和信任反而更好。这是 RAG 的黄金护栏。</p>
+</div></div><h2 id="5-答案组织-结构化与多块综合">5. 答案组织：结构化与多块综合</h2>
+<p>真实问题常需<strong>跨多个块综合</strong>（如『对比 A 和 B 的异同』）。让模型做『多文档摘要式』作答，而非逐块复述。用 Zod 约束输出形态，前端才好渲染：</p>
+<pre><code class="language-ts">// 综合型答案的结构：分点 + 引用，便于前端表格化展示
+const ComparativeAnswer = z.object({
+  summary: z.string(),
+  points: z.array(z.object({
+    aspect: z.string(),      // 比较维度，如 成本
+    a: z.string(),
+    b: z.string(),
+    source_chunk_ids: z.array(z.number()),
+  })),
+});
+</code></pre><h2 id="6-对比-朴素拼接-vs-压缩-引用">6. 对比：朴素拼接 vs 压缩+引用</h2>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>朴素拼接</th>
+<th>压缩 + 引用 + 校验</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>忠实度</td>
+<td>中低，易漂移</td>
+<td>高，逐句可溯源</td>
+</tr>
+<tr>
+<td>上下文长度</td>
+<td>随块数线性膨胀</td>
+<td>压缩后显著缩短</td>
+</tr>
+<tr>
+<td>用户信任</td>
+<td>无法核实</td>
+<td>可点开看原文</td>
+</tr>
+<tr>
+<td>成本</td>
+<td>主模型承担全部块</td>
+<td>压缩用小模型，主模型输入更短</td>
+</tr>
+<tr>
+<td>抗幻觉</td>
+<td>弱</td>
+<td>拒答 + 忠实度兜底</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">先上引用，再上压缩</span></div><div class="co-body"><p>  引用溯源改动小、收益大（立刻可信任），建议第一步就做；上下文压缩在『块多、
+  窗口吃紧』时再上。按痛点上，不要一上来就全堆。</p>
+</div></div><h2 id="7-常见坑">7. 常见坑</h2>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">块编号错位导致伪引用</span></div><div class="co-body"><p>  上下文里的编号和模型输出的 chunk_id 必须对得上。一旦压缩重排了块，编号映射要同步更新，
+  否则『引用』会指向错误原文——比没引用更危险。</p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">压缩丢关键信息</span></div><div class="co-body"><p>  生成式压缩可能把支撑答案的关键句误删。校验方式：压缩后用压缩结果去跑一次检索命中检查，
+  或保留『原文 + 压缩摘要』双通道，主模型两者皆可见。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">strict 模式下 schema 写错直接 400</span></div><div class="co-body">  <code>response_format</code> 的 json_schema 必须 <code>additionalProperties: false</code> 且字段全 <code>required</code>，
+<p>  否则厂商拒绝请求。上线前用最小 schema 验证一遍。</p>
+</div></div><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">忠实度校验不是免费午餐</span></div><div class="co-body"><p>  每次生成后再调一次模型会翻倍延迟与成本。可对高价值问答（如医疗、金融）开，
+  普通问答用『拒答阈值 + 指令约束』即可。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>生成阶段决定 RAG 的『忠实度』，检索准不等于答案对。</li>
+<li>上下文压缩先瘦身再喂，用小模型省成本；引用溯源用结构化输出让结论可点。</li>
+<li>抗幻觉三道防线：约束指令、低分拒答、生成后忠实度校验（按需开启）。</li>
+<li>答案组织用 Zod 约束形态，跨块综合优于逐块复述。</li>
+<li>落地顺序：先上引用溯源，再上压缩，最后按需加忠实度校验。</li>
+</ul>
+<h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>OpenAI <code>response_format</code> JSON Schema 模式官方文档（strict 约束，以官方为准）</li>
+<li>LangChain <code>ContextualCompressionRetriever</code> 文档：上下文压缩的框架级实现思路</li>
+<li>RAGAS <code>faithfulness</code> / <code>answer_correctness</code> 指标：量化生成质量的评测口径</li>
+<li>论文 <em>REALM</em> / <em>FiD (Fusion-in-Decoder)</em>：检索增强生成的早期范式</li>
+<li>微软 GraphRAG / LlamaIndex <code>CitationQueryEngine</code>：引用溯源的工程参考</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="rag-rerank.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">重排序：用 Cross-Encoder 精排检索结果</span></a>
+    <a class="art-pagerLink art-pagerRight" href="rag-graph.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">GraphRAG：用知识图谱做全局问答</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

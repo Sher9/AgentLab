@@ -1,0 +1,198 @@
+---
+title: Serverless 部署：云函数、冷启动与 Agent 长任务适配
+description: 理解 Serverless（FaaS 与 Serverless 容器）的运行模型、冷启动原理与成本特征，掌握把 Agent 长任务适配到函数超时限制下的工程模式，并对比常驻服务。
+category: 部署运维
+order: 4
+difficulty: 进阶
+duration: 22 分钟
+tags: [Serverless, 云函数, 冷启动, 异步任务, 弹性伸缩]
+date: 2026-07-29
+---
+
+# Serverless 部署：云函数、冷启动与 Agent 长任务适配
+
+Agent 上线时常面临一个两难：流量是脉冲式的（白天高、夜里低、活动期陡增），但你又不想为闲时峰值常年养着几台服务器。Serverless 把『资源按需分配、按用量计费』做到极致，天然契合这种负载。但它也不是银弹——尤其当你的任务是一个可能跑几十秒甚至几分钟的 Agent 时，函数的超时与冷启动会直接撞上 Agent 的运行特征。这一篇把运行模型讲清，并给出把长任务塞进 Serverless 的工程骨架。
+
+## 1. Serverless 的两种形态
+
+广义 Serverless 至少分两类，工程约束差别很大，选型前先分清：
+
+| 形态 | 代表 | 计费 | 典型超时 | 适用 |
+|------|------|------|----------|------|
+| FaaS 云函数 | AWS Lambda、阿里云函数计算、Cloudflare Workers | 按调用次数 + 运行时长 + 内存 | 秒级～分钟级（多数 15s/60s/15min 封顶） | 事件触发、短任务、Webhook、API 网关后端 |
+| Serverless 容器 | AWS Fargate、Cloud Run、函数计算 GPU 实例 | 按 CPU/内存/运行时长 | 可达数小时 | 长任务、大模型推理、带重依赖的服务 |
+
+<Callout type="note" title="选形态看任务时长">
+  Agent 单次对话若可能超过函数超时上限，就别硬塞进 FaaS。优先考虑 Serverless 容器，
+  或把 Agent 拆成『函数接单 + 队列派发 + 长时 Worker 执行』的异步模式（见第 4 节）。
+  用错形态，你会花大量精力跟平台超时作斗争，而不是做业务。
+</Callout>
+
+## 2. 冷启动：原理与代价
+
+Serverless 平台不会为你常驻实例。收到第一个请求（或扩容时）才现拉运行时、加载代码、初始化连接——这段叫**冷启动**。之后一段时间内的请求命中已 warm 的实例，叫**热启动**。
+
+```
+请求 ──► [冷启动: 拉运行时/加载依赖/建连接] ──► 执行业务 ──► 返回
+        [热启动: 直接复用实例]               ──► 执行业务 ──► 返回
+```
+
+对 Agent 场景，冷启动有两笔额外开销最疼：
+
+- **大模型客户端初始化**：建一个 OpenAI/SDK 客户端、加载配置，本身不慢；但若每次冷启动都重新建连接池、重新读大配置文件，会叠加延迟。
+- **大依赖加载**：Agent 常带一堆库（LangChain 之类动辄上百 MB），冷启动拉包、解包开销显著。
+
+<Callout type="tip" title="压冷启动的常规手段">
+  把重依赖尽量移到初始化阶段（函数外全局作用域，平台会复用）；
+  减小部署包体积（按需 import、用轻量 SDK）；对延迟敏感路径用预留并发/最小实例保 warm。
+  具体参数与接口因云厂商而异，以官方文档为准。
+</Callout>
+
+## 3. Agent 长任务的核心矛盾
+
+FaaS 函数普遍有**硬超时上限**（例如 15 分钟封顶、常见默认仅 30s～60s）。而一个 Agent 任务可能是：多轮工具调用 + 反思 + 长文生成，历时数十秒到数分钟。矛盾点在于：
+
+- 函数一旦超时会被平台强制杀掉，Agent 跑到一半直接 504/失败；
+- 同步等 Agent 跑完再返回，前端连接也会超时，用户体验差；
+- 并发高时，每个函数都长时间占着实例，违背 Serverless 弹性初衷。
+
+<Callout type="warn" title="别用同步长等待对抗超时">
+  最常见的错误是把函数写成『收到请求 → 同步跑完 Agent → 返回』。
+  只要 Agent 时长接近函数上限，你就会频繁撞超时、丢任务、烧钱。
+  正确解法是把『接单』和『执行』解耦（下一节）。
+</Callout>
+
+## 4. 适配模式：异步化 + 任务拆分
+
+把一次 Agent 请求拆成两段：
+
+1. **入口函数（短）**：接收请求、做参数校验、把任务写进队列/任务表，立即返回 `202 Accepted` + 一个任务 ID（如轮询地址或回调 URL）。
+2. **执行方（长）**：从队列取任务，在拥有充裕时长的环境里跑 Agent，结果写回存储；前端用任务 ID 轮询或等 Webhook 推送。
+
+下面是可运行骨架（Python，FaaS 风格 handler；具体入参结构因厂商而异，以官方为准）。
+
+```python
+# handler.py —— 入口函数：只接单、不跑 Agent，立刻返回 202
+import json
+import uuid
+import os
+
+# 任务队列用 Redis 列表示意；生产可换 SQS / 函数计算队列 / RabbitMQ
+import redis
+r = redis.Redis.from_url(os.environ["QUEUE_URL"])
+
+def handler(event, context):
+    # 1) 解析并校验入参（真实场景用 pydantic / 手写校验）
+    body = json.loads(event.get("body", "{}"))
+    prompt = (body.get("prompt") or "").strip()
+    if not prompt:
+        return _resp(400, {"error": "prompt 不能为空"})
+
+    # 2) 生成任务 ID，落库（状态=排队中），便于前端轮询
+    task_id = uuid.uuid4().hex
+    r.hset(f"task:{task_id}", mapping={
+        "status": "queued",
+        "prompt": prompt,
+        "created_at": _now(),
+    })
+
+    # 3) 投递到执行队列，立即返回，不等待 Agent 跑完
+    r.lpush("agent_queue", task_id)
+    return _resp(202, {"task_id": task_id, "status": "queued",
+                        "poll": f"/tasks/{task_id}"})
+
+def _resp(code, obj):
+    return {"statusCode": code, "body": json.dumps(obj, ensure_ascii=False)}
+
+def _now():
+    import time
+    return str(int(time.time()))
+```
+
+执行方（Worker）骨架——它运行在 Serverless 容器或常驻进程里，拥有足够时长：
+
+```python
+# worker.py —— 从队列取任务，跑 Agent，结果写回（骨架，不含真实模型调用）
+import redis, os, json
+r = redis.Redis.from_url(os.environ["QUEUE_URL"])
+
+def run_agent(prompt: str) -> str:
+    # 这里调用你的 Agent 主循环（多轮工具/反思），可能耗时数十秒
+    # 真实代码接 LLM SDK；本骨架只占位，避免编造不存在的 API
+    return f"[Agent 结果] 针对『{prompt}』的处理完成"
+
+def consume():
+    while True:
+        # 阻塞式取任务，空闲时挂起，不空转耗资源
+        _, task_id = r.brpop("agent_queue")
+        task_id = task_id.decode()
+        r.hset(f"task:{task_id}", "status", "running")
+        try:
+            prompt = r.hget(f"task:{task_id}", "prompt").decode()
+            result = run_agent(prompt)            # 长任务在此执行
+            r.hset(f"task:{task_id}", mapping={
+                "status": "done", "result": result})
+        except Exception as e:
+            r.hset(f"task:{task_id}", mapping={
+                "status": "failed", "error": str(e)})
+
+if __name__ == "__main__":
+    consume()
+```
+
+> 前端拿到 `task_id` 后，轮询 `GET /tasks/{task_id}` 读 `status`/`result`；或让 Worker 完成后主动回调你给的 Webhook。这样函数侧永远秒回，Agent 时长完全不受入口函数超时限制。
+
+<Callout type="danger" title="结果状态要可查询">
+  异步化后，『任务到底成没成』只能靠外部状态存储回答。务必为每任务落库状态机
+  （queued → running → done/failed），并设置超时兜底：超过 N 分钟仍 running 即标记 failed 并告警，
+  否则一个卡死的任务会让前端永远轮询不到结果。
+</Callout>
+
+## 5. 对比：Serverless vs 常驻服务
+
+| 维度 | Serverless（FaaS/容器） | 常驻服务（VM/自建 K8s） |
+|------|--------------------------|--------------------------|
+| 运维 | 几乎零（平台管运行时） | 自管节点、扩缩、补丁 |
+| 计费 | 按量，闲时近零成本 | 按实例常驻，闲时也付费 |
+| 弹性 | 毫秒～秒级自动扩 | 需配 HPA/手动 |
+| 长任务 | 受超时限制，需异步化 | 天然支持 |
+| 冷启动 | 有，首响可能抖 | 无 |
+| 调试/连内网 | 稍麻烦 | 简单 |
+
+## 6. 踩坑
+
+<Callout type="danger" title="超时杀进程丢任务">
+  入口函数若同步跑 Agent 并逼近超时，平台会直接杀进程，任务半途而废且无返回。
+  永远入口短、执行长，中间用队列/状态库解耦。
+</Callout>
+
+<Callout type="warn" title="有状态别放函数内存">
+  函数实例随时可能被回收，内存里的全局变量不保证跨请求存在。会话、任务进度、
+  缓存必须放外部存储（Redis/数据库）。依赖『函数内存常驻』会随机出错。
+</Callout>
+
+<Callout type="warn" title="出口 IP 不固定，连数据库要白名单">
+  弹性扩缩后函数出口 IP 变化，若你的数据库开了 IP 白名单会连不上。
+  用 VPC 内网接入、或给函数配固定出口、或改用托管数据库的连接代理。
+</Callout>
+
+<Callout type="tip" title="控制依赖体积就是控制钱">
+  部署包越大，冷启动越慢、传输越贵。用轻量 SDK、分层缓存依赖、剔除无关包，
+  对 Agent 这类重依赖场景收益明显。
+</Callout>
+
+## 小结
+
+- Serverless 分 FaaS 云函数（短、便宜、有硬超时）与 Serverless 容器（长、可跑重任务）两类，按任务时长选型。
+- 冷启动是首响抖动与延迟的来源，靠『全局初始化 + 减小包体 + 保 warm』缓解。
+- Agent 长任务与函数超时天然矛盾：用『入口函数接单 → 队列派发 → 长时 Worker 执行 → 状态可查』的异步模式解耦。
+- 每任务必须落库状态机并设超时兜底；有状态绝不依赖函数内存。
+- 对比常驻服务：Serverless 省运维、闲时省钱、弹性好，但长任务需改造、调试稍麻烦。
+
+## 延伸阅读 / 参考
+
+- 各云厂商函数计算/Lambda 官方文档：运行时、超时、并发、队列集成（以官方为准，API 易变）
+- AWS 官方 *Serverless Application Lens*（Well-Architected 系列）：异步任务与队列模式
+- *12-Factor App*：把后端进程当作无状态、可随时回收的一等公民
+- Cloud Run / Fargate 文档：Serverless 容器跑长任务与请求超时配置
+- OpenTelemetry 官方文档：为异步任务串联 Trace，定位跨函数/队列的链路断点

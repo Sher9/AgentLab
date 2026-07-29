@@ -1,0 +1,356 @@
+---
+title: Python 工程化：测试、Lint、打包、日志与配置
+description: 用 pytest 写测试、ruff/mypy 统一质量门禁、打包发布、logging 与配置管理，构建可维护可交付的 Python 项目。
+category: Python
+order: 3
+difficulty: 进阶
+duration: 40 分钟
+tags: [工程化, pytest, ruff, mypy, 打包, 日志]
+date: 2026-07-29
+---
+
+# Python 工程化：测试、Lint、打包、日志与配置
+
+能跑的脚本 ≠ 可维护的项目。当代码要从「我本地能跑」变成「团队能协作、CI 能交付、线上能排查」，就需要一整套工程化动作：自动化测试、统一的风格与类型门禁、可复现的打包、结构化的日志、分层可控的配置。这一篇把这条链路从头到尾串一遍（虚拟环境与 `pyproject` 已在 Python 核心篇讲过，这里专注交付侧）。
+
+## 1. 为什么要工程化
+
+| 痛点 | 工程化解法 |
+|------|------------|
+| 「我本地好好的」 | 锁版本 + CI 复现环境 |
+| 改 A 坏 B | 自动化测试 + 类型检查兜底 |
+| 风格争吵 | 工具统一 lint/format |
+| 线上出问题没法查 | 结构化日志 + 配置可观测 |
+| 别人装不上 | 标准打包 + 清晰的依赖声明 |
+
+<Callout type="note" title="工程化的本质">
+  不是堆工具，而是把「人容易忘、容易错」的事交给机器反复自动做。目标是：任何人在任何机器上，
+  跑同一条命令都能得到一致、可验证、可回滚的结果。
+</Callout>
+
+## 2. pytest：自动化测试
+
+pytest 是事实标准的测试框架，写测试就是写 `test_*.py` 里的 `test_*` 函数，断言用原生 `assert`。
+
+```python
+# test_calc.py
+def add(a, b):
+    return a + b
+
+def test_add():
+    assert add(1, 2) == 3
+    assert add(-1, 1) == 0
+```
+
+### 2.1 fixture：准备与清理
+
+`fixture` 用来注入测试上下文（建连接、造数据），可复用且自动收尾。它是 pytest 最强大的能力。
+
+```python
+import pytest
+
+@pytest.fixture
+def sample_data():
+    data = {"items": [1, 2, 3]}
+    yield data        # 测试拿到的就是 data；结束后走后面清理
+    data.clear()      # 相当于 teardown
+
+def test_len(sample_data):
+    assert len(sample_data["items"]) == 3
+```
+
+### 2.2 参数化：一套逻辑测多组输入
+
+```python
+import pytest
+
+@pytest.mark.parametrize("a,b,expect", [
+    (1, 2, 3),
+    (0, 0, 0),
+    (-1, 1, 0),
+])
+def test_add(a, b, expect):
+    assert add(a, b) == expect
+```
+
+### 2.3 mock：隔离外部依赖
+
+测「调用外部 API 的函数」时，不该真打网络。用 `unittest.mock` 替换掉依赖：
+
+```python
+from unittest.mock import patch
+
+def fetch_price(symbol: str) -> float:
+    # 真实实现会请求行情服务
+    ...
+
+@patch("__main__.fetch_price", return_value=100.0)
+def test_portfolio(mock_fetch):
+    assert fetch_price("AAPL") == 100.0
+    mock_fetch.assert_called_once_with("AAPL")   # 验证调用行为，而不关心返回值来源
+```
+
+### 2.4 覆盖率
+
+```bash
+pip install pytest-cov
+pytest --cov=myapp --cov-report=term-missing
+```
+
+<Callout type="note" title="测什么最划算">
+  优先覆盖「业务逻辑分支」和「边界条件」（空输入、越界、异常路径），而不是给每行都凑覆盖率。
+  覆盖率数字只是信号，不是目标——100% 覆盖的废测试毫无意义。
+</Callout>
+
+## 3. ruff + mypy：质量门禁双保险
+
+风格交给工具，类型交给检查器。两者都零运行时开销，只在开发/CI 阶段跑。
+
+### 3.1 ruff：lint + format 一把梭
+
+[ruff](https://docs.astral.sh/ruff/) 是 Rust 写的极快工具，集 lint（原 flake8）、import 排序（原 isort）、格式化（部分 black）于一身：
+
+```bash
+pip install ruff
+ruff check --fix .     # 检查并自动修复
+ruff format .          # 按 black 风格格式化
+```
+
+在 `pyproject.toml` 里统一配置，团队共享同一份规则：
+
+```toml
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "C4"]   # pycodestyle/pyflakes/isort/bugbear/flake8-comprehensions
+ignore = ["E501"]                      # 行过长交给 formatter 处理
+```
+
+### 3.2 mypy：静态类型检查
+
+类型注解写了不检查就等于零。mypy 在运行前找出「把 `None` 当字符串用」「传错类型」等问题：
+
+```bash
+pip install mypy
+mypy src/ --strict
+```
+
+```toml
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unused_ignores = true
+```
+
+<Callout type="tip" title="用 pre-commit 卡住质量">
+  装 `pre-commit`，在 git commit 时自动跑 ruff/mypy，风格或类型不对直接拦下，
+  保证进仓库的代码永远是被校验过的。这是低成本高回报的工程习惯：
+  ```yaml
+  # .pre-commit-config.yaml
+  repos:
+    - repo: https://github.com/astral-sh/ruff-pre-commit
+      rev: v0.4.0
+      hooks: [{ id: ruff, args: [--fix] }, { id: ruff-format }]
+  ```
+</Callout>
+
+## 4. 打包与发布
+
+当项目要作为库被别人 `pip install`，或要打成可分发产物，用标准 `build` + `twine`。
+
+```bash
+pip install build twine
+python -m build            # 在含 pyproject.toml 的根目录，生成 wheel + sdist 到 dist/
+twine check dist/*         # 上传前先校验元数据
+twine upload dist/*        # 上传到 PyPI
+```
+
+### 4.1 声明入口与依赖
+
+```toml
+[project]
+name = "agentlab-demo"
+version = "0.1.0"
+dependencies = ["fastapi>=0.110,<0.121"]
+
+[project.scripts]          # 安装后生成命令行入口
+agentlab = "agentlab.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+```
+
+### 4.2 版本与可复现
+
+- 遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`MAJOR.MINOR.PATCH`，破坏性变更升 MAJOR。
+- 生产依赖写上限：`fastapi>=0.110,<0.121`，避免自动升级到不兼容大版本。
+- 提交 `uv.lock`/`poetry.lock`，CI 用 `uv sync`/`poetry install` 精确还原。
+
+<Callout type="warn" title="别把敏感信息打进包">
+  打包前确保 `.env`、密钥、测试数据被 `.gitignore` / `MANIFEST.in` 排除，
+  否则会随 wheel 一起分发出去。CI 里用仓库 secrets 而非明文。
+</Callout>
+
+## 5. logging：别再用 print 排查问题
+
+`print` 无法控制级别、无法定向、无法带上下文。`logging` 是标准答案。
+
+```python
+import logging
+
+# 基础配置：级别 + 格式（含时间、模块、级别）
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+
+log = logging.getLogger(__name__)   # 用模块名做 logger 名，便于按模块过滤
+log.info("服务启动，端口=%s", 8000)
+log.warning("重试第 %d 次", 3)
+```
+
+### 5.1 分级与输出
+
+| 级别 | 用途 |
+|------|------|
+| `DEBUG` | 开发期细节，线上默认关 |
+| `INFO` | 正常流程里程碑 |
+| `WARNING` | 可恢复的异常/降级 |
+| `ERROR` | 影响单次请求但服务活着 |
+| `CRITICAL` | 服务级故障 |
+
+### 5.2 结构化日志（线上推荐）
+
+JSON 格式日志便于被 Loki/ELK 检索：
+
+```python
+import json, logging
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        return json.dumps({
+            "ts": self.formatTime(record),
+            "level": record.levelname,
+            "msg": record.getMessage(),
+            "module": record.name,
+        }, ensure_ascii=False)
+
+# handler.setFormatter(JsonFormatter())  # 挂到 handler 上
+```
+
+<Callout type="warn" title="不要在日志里打密钥">
+  请求参数、token、PII 可能经过 logger。务必做脱敏（mask），否则日志系统会变成
+  泄露面。用 `%s` 占位符而非 f-string，避免敏感信息在被记录前就拼进字符串。
+</Callout>
+
+## 6. 配置管理
+
+配置应「代码外置、环境决定」，绝不硬编码。常见三级来源（优先级从低到高）：默认值 → 配置文件 → 环境变量。
+
+### 6.1 用 pydantic-settings 做类型安全的配置
+
+```python
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="APP_", env_file=".env")
+
+    db_url: str = "sqlite:///local.db"   # 默认值；可被 APP_DB_URL 覆盖
+    debug: bool = False
+    max_workers: int = 4
+
+settings = Settings()   # 自动从环境变量/ .env 读取并按类型解析
+print(settings.db_url)
+```
+
+### 6.2 分层与 12-Factor
+
+- **12-Factor App** 原则：配置存于环境变量，不在代码里。
+- 敏感配置只走环境变量/密钥管理服务（Vault），不进仓库。
+- 不同环境（dev/test/prod）用同一份代码 + 不同配置，而非不同分支。
+
+<Callout type="note" title="配置与代码的边界">
+  把「会变的东西」（地址、阈值、开关）放配置；把「逻辑」留代码。功能开关（feature flag）
+  用配置驱动，可灰度、可回滚，不必重新发版。
+</Callout>
+
+## 7. CI/CD：让机器尽早反复地发现错
+
+工程化的终点是「每次提交自动验证」。一个最小 GitHub Actions 流水线：
+
+```yaml
+# .github/workflows/ci.yml
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install uv
+      - run: uv sync --dev
+      - run: uv run ruff check .
+      - run: uv run mypy src
+      - run: uv run pytest --cov --cov-fail-under=80
+```
+
+流程闭环：**装依赖（基于 lock）→ lint → type-check → 测试（带覆盖率门槛）**。任一环挂了，PR 就不让合。
+
+<Callout type="note" title="CI 的哲学">
+  CI 不是「证明代码对」，而是「尽早、反复地发现错」。把能自动化的检查都丢给 CI，
+  人只做机器做不了的审阅。本地 pre-commit + 远端 CI 双保险最佳。
+</Callout>
+
+## 8. 常见坑与最佳实践
+
+<Callout type="danger" title="把 pytest 当成了 print 调试">
+  测试里写 `print` 然后人眼核对，等于没测试。断言必须机器可判定，
+  且一个测试只验证一个行为，失败时一眼能定位。
+</Callout>
+
+<Callout type="warn" title="fixture 改了全局状态忘记还原">
+  fixture 里连接数据库、开端口，若 `yield` 后没清理，会污染后续测试导致偶发失败
+  （flaky test）。所有外部资源都要在 teardown 里释放。
+</Callout>
+
+<Callout type="warn" title="mypy 没设 strict 等于半裸奔">
+  默认 mypy 较宽松，会放过 `Any` 隐式扩散。至少开 `disallow_untyped_defs`，
+  关键模块上 `--strict`，让类型真正起作用。
+</Callout>
+
+## 9. 适用与不适用
+
+| 场景 | 工程化强度 |
+|------|------------|
+| 一次性脚本 | 轻量：venv + 基础 pytest 即可 |
+| 团队协作库/服务 | 全量：lock + lint + type + CI + 打包 |
+| 快速实验 | 先跑通，但 commit 前过一遍 ruff，省后续返工 |
+
+## 小结
+
+- 虚拟环境与 `pyproject` 隔离/声明依赖（见 Python 核心篇）；工程化专注交付侧。
+- pytest 三板斧：`fixture` 管上下文、`parametrize` 覆盖多输入、`mock` 隔离外部依赖；覆盖率只是信号。
+- 质量门禁：`ruff` 一把梭 lint+format，`mypy` 做静态类型；`pre-commit` 在提交时自动卡。
+- 打包用 `build`+`twine`；遵循语义化版本、依赖写上界、提交 lock 文件、排除敏感信息。
+- 日志用 `logging` 而非 `print`；线上用结构化 JSON 日志且务必脱敏。
+- 配置外置、按环境区分，用 `pydantic-settings` 做类型安全读取，敏感项只走环境变量。
+- CI 跑「装依赖→lint→type→测试」闭环，让机器尽早反复地发现错。
+
+<Callout type="note" title="合集回顾">
+  Python 三篇至此闭环：核心语法（python-core）→ 异步 Web 服务（python-fastapi）
+  → 工程化交付（本篇）。从会写到能交付，才算真正「会用 Python 做工程」。
+</Callout>
+
+## 延伸阅读
+
+- [pytest 官方文档](https://docs.pytest.org/) —  fixtures / parametrize / mock 权威参考
+- [ruff 文档](https://docs.astral.sh/ruff/) — lint 规则与配置
+- [mypy 文档](https://mypy.readthedocs.io/) — 静态类型检查进阶
+- [Python logging 指南](https://docs.python.org/3/howto/logging.html) — 结构化日志实战
+- [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) — 类型安全配置
+- [12-Factor App（中文）](https://12factor.net/zh_cn/) — 云端应用方法论

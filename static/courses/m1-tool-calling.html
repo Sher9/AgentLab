@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>工具调用：让 Agent 能『动手』 · AgentLab</title>
+  <meta name="description" content="深入 Function Calling 的协议本质、四步闭环、Zod 校验、并行与嵌套调用、错误重试与降级，并对比 JSON 模式与微调方案，给出生产级可运行骨架。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="工具调用：让 Agent 能『动手』 · AgentLab"/>
+  <meta property="og:description" content="深入 Function Calling 的协议本质、四步闭环、Zod 校验、并行与嵌套调用、错误重试与降级，并对比 JSON 模式与微调方案，给出生产级可运行骨架。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#tooldev">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🔧</span>
+        <span class="art-moduleName">工具开发</span>
+        <span class="art-diff">入门</span>
+        <span class="art-dur">30 分钟</span>
+      </div>
+      <h1 class="art-title">工具调用：让 Agent 能『动手』</h1>
+      <p class="art-desc">深入 Function Calling 的协议本质、四步闭环、Zod 校验、并行与嵌套调用、错误重试与降级，并对比 JSON 模式与微调方案，给出生产级可运行骨架。</p>
+      <div class="art-tags"><span class="art-tag">#工具调用</span><span class="art-tag">#Function Calling</span><span class="art-tag">#实战</span><span class="art-tag">#Zod</span><span class="art-tag">#重试</span></div>
+    </div>
+    <div class="prose"><h1>工具调用：让 Agent 能『动手』</h1>
+<p>M0 里我们跑通了『模型说一句话』。但真正的 Agent 必须能<strong>作用于真实世界</strong>：查天气、读订单、跑一段代码……这些事模型自己干不了，得靠<strong>工具（Tool）</strong>。</p>
+<p>这一篇把 Function Calling 讲透：协议本质、四步闭环、参数校验、并行与嵌套、错误重试与降级，并和 JSON 模式、微调做对比。重点始终是——给你<strong>能跑、能上生产的骨架</strong>。</p>
+<h2 id="1-为什么需要工具">1. 为什么需要工具</h2>
+<p>LLM 的知识来自训练数据，有两个硬限制：</p>
+<ul>
+<li><strong>时效性</strong>：不知道训练截止之后的事（比如『现在北京天气』）；</li>
+<li><strong>行动力</strong>：不能真正执行操作（发请求、写文件、查库）。</li>
+</ul>
+<p>工具就是补上这两块的接口：模型负责『决定调什么、传什么参数』，你的代码负责『真去执行』。换句话说，工具把 LLM 从『只能说话』变成『能办事』。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">关键认知</span></div><div class="co-body"><p>  模型<strong>永远不会自己执行</strong>工具。它只是在回复里『建议』调用某个工具并给出参数；
+  真正执行、并把结果送回去的，是你的程序。这是一个<strong>协作协议</strong>，不是魔法。
+  任何『Agent 自动执行了 XXX』的说法，背后都是一段在循环里执行工具、回填结果的代码。</p>
+</div></div><h2 id="2-function-calling-的协议本质">2. Function Calling 的协议本质</h2>
+<h3 id="2-1-四步闭环">2.1 四步闭环</h3>
+<p>整件事就是下面这个循环，记住它，后面所有 Agent 框架（LangChain、AutoGen、CrewAI）都是它的变体：</p>
+<pre><code>① 你带着 tools 把用户问题发给模型
+② 模型返回：要么直接回答，要么带上 tool_calls（要调哪个工具、参数是什么）
+③ 你执行这些工具，拿到结果
+④ 把结果以 role:"tool" 回填进 messages，回到 ①
+   → 直到模型不再要求调工具，输出最终答案
+</code></pre><h3 id="2-2-tool_choice-谁来决定要不要调工具">2.2 tool_choice：谁来决定要不要调工具</h3>
+<code>client.chat.completions.create</code> 支持 <code>tool_choice</code> 参数，控制『调用决策权』在哪：<table>
+<thead>
+<tr>
+<th>取值</th>
+<th>含义</th>
+<th>典型场景</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>auto</code>（默认）</td>
+<td>模型自己决定调不调、调哪个</td>
+<td>通用 Agent，让模型自由发挥</td>
+</tr>
+<tr>
+<td><code>required</code></td>
+<td>强制本轮必须返回一个 tool_call</td>
+<td>你确定这一步一定要走工具（如强制结构化抽取）</td>
+</tr>
+<tr>
+<td><code>none</code></td>
+<td>禁止调用工具，纯聊天</td>
+<td>想临时关掉工具能力（如安全降级、纯生成）</td>
+</tr>
+<tr>
+<td>指定函数名</td>
+<td>强制调用某个特定函数</td>
+<td>流程固定、只需填参的场景</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">用 required 兜底抽取</span></div><div class="co-body"><p>  当你其实只想『让模型把一段话结构化』（比如从邮件里抽出订单号），
+  用 <code>tool_choice: { type: 'function', function: { name: 'extract_order' } }</code>
+  比 prompt 里写『请输出 JSON』稳得多——模型被强制走工具 schema，解析零歧义。</p>
+</div></div><h3 id="2-3-strict-模式与-json-模式的边界">2.3 strict 模式与 JSON 模式的边界</h3>
+<p>OpenAI 等厂商提供 <code>strict: true</code> 的工具参数模式：模型输出会被约束为<strong>严格符合 JSON Schema</strong>（必填字段一定出现、枚举受限、不产出多余字段）。这能极大降低解析失败率，但要求你的 schema 满足：所有字段 <code>required</code>、无 <code>additionalProperties</code>、用 <code>enum</code>/<code>type</code> 而非自由文本。</p>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">strict 不是万能</span></div><div class="co-body"><p>  strict 只约束『结构』，不约束『语义正确性』。模型仍可能把城市名填成『火星』。
+  结构校验交给 strict/Zod，业务合理性校验（如城市是否在白名单）仍要你自己做。</p>
+</div></div><h2 id="3-工具怎么定义-json-schema">3. 工具怎么定义：JSON Schema</h2>
+<p>每个工具用一份 <strong>JSON Schema</strong> 描述『它能干嘛、要什么参数』。模型靠这份描述来决定是否调用、怎么填参。</p>
+<pre><code class="language-ts">// 一份工具定义 = 名字 + 描述 + 参数 schema
+const tools = [
+  {
+    type: 'function',
+    function: {
+      name: 'get_weather',
+      description: '查询某城市的当前天气', // 描述越清楚，模型越会用对
+      parameters: {
+        type: 'object',
+        properties: {
+          city: { type: 'string', description: '城市名，如 北京' },
+        },
+        required: ['city'],
+      },
+    },
+  },
+];
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">写好 description</span></div><div class="co-body"><p>  模型<strong>只看</strong> <code>description</code> 和参数描述来决策。把『什么时候该用这个工具、参数怎么填』
+  写清楚，能大幅减少误调用。这是提示工程里最容易忽略、却最划算的一环。
+  一个经验法则：工具描述回答『WHEN』，参数描述回答『HOW』。</p>
+</div></div><h2 id="4-完整可运行骨架">4. 完整可运行骨架</h2>
+<p>把下面存成 <code>tool-agent.ts</code>，在 M0 的环境基础上直接跑（已装 <code>openai</code> + <code>dotenv</code>）：</p>
+<pre><code class="language-ts">// tool-agent.ts  —— Agent 工具调用闭环（可运行骨架）
+import OpenAI from 'openai';
+import 'dotenv/config';
+
+const client = new OpenAI();
+
+// ① 定义工具（JSON Schema，见第 3 节）
+const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'get_weather',
+      description: '查询某城市的当前天气',
+      parameters: {
+        type: 'object',
+        properties: {
+          city: { type: 'string', description: '城市名，如 北京' },
+        },
+        required: ['city'],
+      },
+    },
+  },
+];
+
+// ② 工具的真实实现（这里用假数据，实际应调用天气 API）
+function getWeather(city: string): string {
+  return `${city}：晴，26°C，微风。`;
+}
+
+async function run(userInput: string) {
+  // 对话上下文：用户问题 + 模型回复 + 工具结果，全部堆在这里
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: 'user', content: userInput },
+  ];
+
+  // ③ 自主循环：最多转 5 圈，防止模型失控死循环
+  for (let step = 0; step &lt; 5; step++) {
+    const res = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages,
+      tools, // 关键：把工具列表交给模型
+    });
+    const msg = res.choices[0].message;
+
+    // 把模型这轮的输出（可能含 tool_calls）记入上下文，保持连贯
+    messages.push(msg);
+
+    // ④ 模型没要求调工具 → 说明它已经能直接回答，结束循环
+    if (!msg.tool_calls || msg.tool_calls.length === 0) {
+      console.log('最终回答：', msg.content);
+      return;
+    }
+
+    // ⑤ 逐个执行模型要求的工具调用，并把结果回填
+    for (const call of msg.tool_calls) {
+      const args = JSON.parse(call.function.arguments);
+      const result = getWeather(args.city); // 真实场景换成 API 调用
+      messages.push({
+        role: 'tool',
+        tool_call_id: call.id, // 必须回传，模型才能对应上这次调用
+        content: result,
+      });
+    }
+    // 循环继续：带上工具结果再问模型，看它还要不要继续
+  }
+}
+
+run('北京现在天气怎么样？');
+</code></pre><p>运行 <code>npx tsx tool-agent.ts</code>，你会看到：模型先要求调 <code>get_weather('北京')</code>，代码执行后把结果回填，模型再基于结果生成自然语言回答。</p>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">tool_call_id 不能丢</span></div><div class="co-body">  <code>role: 'tool'</code> 的消息**必须带 <code>tool_call_id</code>**，且要和模型返回的 <code>call.id</code> 对应。
+<p>  漏了会直接 400。这是新手最高频的报错之一。回填时务必原样回传。</p>
+</div></div><h2 id="5-参数校验-别轻信模型的输入">5. 参数校验：别轻信模型的输入</h2>
+<p>模型生成的 <code>arguments</code> 是字符串形式的 JSON，<strong>不保证合法</strong>（字段缺失、类型错、甚至瞎编）。生产环境一定要校验，再执行副作用操作（写库、发消息）。</p>
+<p>最省事的做法是用 <strong>Zod</strong> 定义 schema，并复用给工具定义（单一事实来源）：</p>
+<pre><code class="language-ts">import { z } from 'zod';
+import { zodToJsonSchema } from 'zod-to-json-schema';
+
+// 用 Zod 描述参数，单一事实来源：校验 + 生成 schema 都靠它
+const WeatherArgs = z.object({
+  city: z.string().min(1, '城市不能为空'),
+});
+
+// 把 Zod schema 转成模型要的 JSON Schema（避免手写两份、各写各的漂移）
+const parameters = zodToJsonSchema(WeatherArgs);
+
+// 执行前校验，非法直接拦截，避免脏数据进入真实系统
+const parsed = WeatherArgs.safeParse(JSON.parse(call.function.arguments));
+if (!parsed.success) {
+  // 关键：把错误作为 tool 结果回填，而不是抛异常中断
+  messages.push({
+    role: 'tool',
+    tool_call_id: call.id,
+    content: `参数错误：${parsed.error.message}`,
+  });
+  continue; // 把错误告诉模型，让它纠正后重试
+}
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">把错误还给它</span></div><div class="co-body"><p>  校验失败时，<strong>不要直接抛异常中断</strong>，而是把错误信息作为 <code>tool</code> 结果回填。
+  模型往往能据此自我纠正——这正是 Agent 『自主』的体现。把它当成一个『会犯错的协作者』，
+  你的职责是给它清晰的错误信号，而不是一棍子打死。</p>
+</div></div><h2 id="6-并行工具调用">6. 并行工具调用</h2>
+<code>tools</code> 是数组，模型一次可要求调用多个工具；<code>msg.tool_calls</code> 也是数组，逐个执行即可。只要各工具之间**无依赖**，可以并行 <code>Promise.all</code> 提速：<pre><code class="language-ts">// 多个无依赖工具并行执行，总耗时 ≈ 最慢那一个，而非全部相加
+const results = await Promise.all(
+  msg.tool_calls.map(async (call) =&gt; {
+    const args = JSON.parse(call.function.arguments);
+    const result = await executeTool(call.function.name, args); // 按名字分发
+    return { id: call.id, result };
+  })
+);
+for (const { id, result } of results) {
+  messages.push({ role: 'tool', tool_call_id: id, content: result });
+}
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">先判依赖，再决定并行</span></div><div class="co-body"><p>  并行的前提是『工具之间无数据依赖』。如果 toolB 需要 toolA 的返回（例如先
+  <code>search_order</code> 再 <code>refund_order(order_id)</code>），就必须串行——也就是让模型先走完 toolA、
+  回填后再发起 toolB。盲目 <code>Promise.all</code> 会把未定义的参数并发出去。</p>
+</div></div><h2 id="7-嵌套与依赖-让模型分步串工具">7. 嵌套与依赖：让模型分步串工具</h2>
+<p>当任务天然需要『先查、后办』，不要试图用一条工具定义表达所有逻辑，而是把工具拆细，让模型在循环里<strong>多轮串联</strong>：</p>
+<pre><code>用户：把小明上周的订单退掉
+  → 模型调 search_order(user='小明', range='上周')  → 你执行，回填 order_id=1024
+  → 模型调 refund_order(order_id=1024)            → 你执行，回填 成功
+  → 模型：已为小明退掉订单 1024
+</code></pre><p>这种『模型自己决定下一步调什么』的编排，比手写 <code>if/else</code> 流水线更灵活，也更能应对用户临时改口（『算了别退了，改地址』）。代价是轮数不可控——所以第 9 节的循环上限与超时必不可少。</p>
+<h2 id="8-错误重试与降级">8. 错误重试与降级</h2>
+<p>工具执行会失败：网络超时、上游 500、参数校验失败、配额耗尽。处理原则：<strong>可重试的错退避重试，不可重试的错降级</strong>。</p>
+<pre><code class="language-ts">// 带重试的工具执行：区分『可重试』与『致命』错误
+async function executeWithRetry(
+  name: string,
+  args: unknown,
+  max = 3
+): Promise&lt;{ ok: boolean; content: string }&gt; {
+  for (let i = 0; i &lt; max; i++) {
+    try {
+      const result = await invokeTool(name, args); // 真实工具调用
+      return { ok: true, content: result };
+    } catch (err: any) {
+      const retryable = err?.code === 'ECONNRESET' || err?.status &gt;= 500;
+      if (retryable &amp;&amp; i &lt; max - 1) {
+        await new Promise((r) =&gt; setTimeout(r, 2 ** i * 300)); // 指数退避
+        continue;
+      }
+      // 致命错误 / 重试耗尽 → 降级：返回友好占位，让模型继续而不是崩溃
+      return { ok: false, content: `工具 ${name} 执行失败，请告知用户稍后重试` };
+    }
+  }
+  return { ok: false, content: '工具重试次数耗尽' };
+}
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">降级而非崩溃</span></div><div class="co-body"><p>  真实系统里，工具挂了不该让整个 Agent 抛 500。把失败转成一段『tool 结果』回填，
+  让模型用自然语言向用户解释『这个功能暂时不可用』——可用性永远优先于『完美执行』。</p>
+</div></div><h2 id="9-工具太多怎么办-路由与选择">9. 工具太多怎么办：路由与选择</h2>
+<p>当工具数涨到几十个，全塞进 <code>tools</code> 会让 prompt 变长、模型选错率上升、token 成本飙升。三种解法：</p>
+<ul>
+<li><strong>静态分组</strong>：按业务域把工具拆成几组，先用小模型做意图路由，只把相关组的工具交给大模型；</li>
+<li><strong>检索式工具发现（RAG for tools）</strong>：把工具描述向量化，按用户问题召回 top-k 个最相关工具再注入；</li>
+<li><strong>分层 Agent</strong>：上层 Agent 只负责『选子 Agent/工具集』，下层才真正执行（见 M5 多 Agent 协作）。</li>
+</ul>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">工具描述就是你的检索入口</span></div><div class="co-body"><p>  既然工具描述会被模型（或你的检索器）用来匹配，写描述时多用『用户会怎么问』的近义词，
+  能同时提升模型直选命中率与检索召回率。一份好描述 = 用户措辞 + 功能边界 + 参数提示。</p>
+</div></div><h2 id="10-对比-function-calling-vs-其他方案">10. 对比：Function Calling vs 其他方案</h2>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>适用</th>
+<th>优点</th>
+<th>缺点</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Function Calling</td>
+<td>模型需『决定调什么、传什么参』</td>
+<td>原生支持、回填闭环清晰、strict 保结构</td>
+<td>依赖厂商实现、工具多时选错</td>
+</tr>
+<tr>
+<td>JSON 模式（response_format）</td>
+<td>只需『输出结构化数据』，无外部动作</td>
+<td>简单、纯生成、易解析</td>
+<td>模型不『触发动作』，需你后续手动 dispatch</td>
+</tr>
+<tr>
+<td>提示工程 + 正则</td>
+<td>极简、一次性任务</td>
+<td>零依赖</td>
+<td>不稳、易格式漂移、难维护</td>
+</tr>
+<tr>
+<td>微调（fine-tune）</td>
+<td>海量、固定模式的工具调用</td>
+<td>小模型也能干、延迟低</td>
+<td>训练成本高、更新工具要重训、不灵活</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">何时用 JSON 模式而非工具</span></div><div class="co-body"><p>  如果你只是想把『用户的话』变成『结构化字段』，并且<strong>下一步动作由你自己的代码决定</strong>
+  （不需要模型来选工具），用 <code>response_format: { type: 'json_schema' }</code> 更直接、更便宜。
+  Function Calling 的独有价值在于『模型在循环中自主决策下一步』。</p>
+</div></div><h2 id="11-常见坑">11. 常见坑</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">循环停不下来</span></div><div class="co-body"><p>  永远给循环设<strong>上限</strong>（如最多 5～10 轮）并加总超时。模型偶尔会反复调同一个工具，
+  没有上限就会烧钱卡死。建议同时限制『单轮最大 tool_calls 数』和『总步数』。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">别把工具结果当可信输入</span></div><div class="co-body"><p>  天气 API 可能超时、返回脏数据；更危险的是『提示注入』——网页/邮件内容里藏着
+  『忽略之前指令』的话。凡是有副作用的工具（发邮件、改库），执行前务必加护栏与确认。
+  工具返回的文本，在回填进 messages 前应做长度截断与必要的脱敏。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">成本与延迟</span></div><div class="co-body"><p>  每轮循环都是一次模型调用。工具越多、轮数越多，token 与延迟线性上升。
+  上线前评估：能否用更少工具、更短 prompt、更少轮数达成目标。
+  并行能压延迟，但并行 N 个工具 = N 次工具副作用，注意下游被瞬时打爆。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">参数解析失败没兜底</span></div><div class="co-body">  <code>JSON.parse(call.function.arguments)</code> 在模型输出残缺 JSON 时会抛异常。
+<p>  务必 <code>try/catch</code> 或 <code>safeParse</code>，把解析失败也当作『错误回填』让模型重试，而不是直接 500。</p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">严格模式变更导致旧调用失效</span></div><div class="co-body"><p>  给工具加了 <code>strict: true</code> 后，若你的 schema 含 <code>additionalProperties</code> 或非必填字段，
+  厂商会直接拒绝请求。上线前用『最小可用 schema + 全字段 required』验证一遍。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>Function Calling 是『模型建议、代码执行』的协作协议，靠四步闭环驱动。</li>
+<li><code>tool_choice</code> 决定决策权；<code>strict</code> 模式约束结构但不约束语义；参数校验必须自己做。</li>
+<li>无依赖工具用 <code>Promise.all</code> 并行；有依赖就让模型在多轮循环里分步串联。</li>
+<li>错误靠『退避重试 + 降级回填』消化，绝不因工具挂掉而让整个 Agent 崩溃。</li>
+<li>工具过多用路由/检索式发现收敛；对比 JSON 模式与微调，选对武器。</li>
+<li>红线：循环上限、参数解析兜底、<code>tool_call_id</code> 回传、别盲信工具结果、日志脱敏。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  工具会用了，下一个问题是：<strong>Agent 该按什么『思考策略』来组织这些工具调用？</strong>
+  这就是 <strong>M2 架构模式</strong>（ReAct、Plan-and-Execute、Reflexion）要解决的。</p>
+</div></div><h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>OpenAI Function Calling 官方文档（工具定义、<code>tool_choice</code>、<code>strict</code> 模式，以官方为准）</li>
+<li>Zod 与 <code>zod-to-json-schema</code> 文档：单一事实来源生成工具 schema</li>
+<li>Anthropic Tool Use / Google Gemini Function Calling 文档：不同厂商协议差异对比</li>
+<li>LangChain <code>bindTools</code> 与 <code>ToolNode</code>：框架层如何封装工具循环</li>
+<li>论文 <em>ReAct: Synergizing Reasoning and Acting in Language Models</em>（工具调用与推理交织的范式起点）</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <span></span>
+    <a class="art-pagerLink art-pagerRight" href="tool-cli.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">CLI 工具开发：从参数解析到发布</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

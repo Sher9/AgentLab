@@ -1,0 +1,479 @@
+---
+title: Kubernetes 部署 Agent 服务：Deployment、Service、HPA 与滚动更新
+description: 把 Docker 化的 Agent 服务搬上 K8s——讲透 Pod/Deployment/Service、ConfigMap/Secret 配置密钥分离、HPA 自动扩缩、就绪/存活探针、滚动更新与回滚，给出生产级可运行 YAML 骨架与踩坑。
+category: 部署运维
+order: 3
+difficulty: 进阶
+duration: 38 分钟
+tags: [Kubernetes, Deployment, Service, HPA, 滚动更新, 配置密钥, 探针]
+date: 2026-07-29
+---
+
+# Kubernetes 部署 Agent 服务：Deployment、Service、HPA 与滚动更新
+
+`deploy-docker` 让你把 Agent 服务打成不可变镜像、用 `docker-compose` 单机跑起来。但生产要的是**多副本、跨机器、故障自愈、按需扩缩、零停机发布**——这些 `compose` 给不了，得靠 Kubernetes（K8s）。
+
+这一篇把 K8s 部署 Agent 服务的核心对象讲透：用 `Deployment` 管副本与发布、`Service` 做服务发现与负载均衡、`ConfigMap`/`Secret` 把配置密钥从镜像剥离、`HPA` 按指标自动扩缩、用就绪/存活探针保流量只进健康实例、用滚动更新实现零停机发布。面向有经验的开发者，重骨架、重取舍、轻口水。
+
+## 1. 为什么 Agent 服务要上 K8s
+
+| 诉求 | compose 能做到吗 | K8s |
+|------|----------------|-----|
+| 多副本负载均衡 | 单机多容器，无跨机 | 原生多副本 + Service 负载均衡 |
+| 节点挂了自动迁移 | 否 | 调度器重排到健康节点 |
+| 流量高峰自动加副本 | 否 | HPA 按 CPU/自定义指标扩缩 |
+| 零停机滚动发布 | 否 | 滚动更新 / 金丝雀 |
+| 配置与密钥分离 | 弱（env_file） | ConfigMap / Secret 一等公民 |
+
+<Callout type="note" title="不是所有服务都该上 K8s">
+  如果你只有 1 个长期运行的实例、流量平稳、团队没运维 K8s 的人力，托管容器服务
+  （如 Cloud Run / ECS Fargate）更划算。K8s 的收益在『规模 + 弹性 + 多服务治理』，
+  代价是显著的认知与运维成本。先问『我真的需要调度器吗』。
+</Callout>
+
+## 2. 核心对象：Pod、Deployment、Service
+
+- **Pod**：K8s 最小调度单位，包含一个或多个共享网络/存储的容器。你的 Agent 容器通常独占一个 Pod。
+- **Deployment**：声明『我要几个 Pod 副本、用哪个镜像』，并负责创建/维持副本数、执行滚动更新、支持回滚。
+- **Service**：给一组动态 Pod 一个**稳定的虚拟 IP 和 DNS 名**，自动做负载均衡。Pod 死了 IP 变，但 Service 不变，调用方永远打 Service。
+
+```yaml
+# 三者的最小关系：Deployment 管 Pod，Service 暴露 Pod
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-svc
+spec:
+  replicas: 3                 # 要 3 个 Pod 副本
+  selector:
+    matchLabels:
+      app: agent-svc
+  template:                    # Pod 模板
+    metadata:
+      labels:
+        app: agent-svc
+    spec:
+      containers:
+        - name: agent
+          image: registry.example.com/agent-svc:v1   # 来自 deploy-docker 的镜像
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-svc
+spec:
+  selector:
+    app: agent-svc            # 把流量导向带这个 label 的 Pod
+  ports:
+    - port: 80
+      targetPort: 8080        # 转发到容器端口
+  type: ClusterIP             # 仅集群内可达（外网入口交给 Ingress）
+```
+
+<Callout type="tip" title="镜像用固定 tag 而非 latest">
+  Deployment 的 `image` 务必带版本（如 `v1` 或 commit SHA），绝不用 `latest`。
+  否则回滚时无法确定『上一版长啥样』，滚动更新也会因缓存出现『看着更新了实际没变』。
+</Callout>
+
+## 3. Deployment：滚动更新与回滚
+
+Deployment 的杀手锏是**声明式发布**。你改 `image: v2`，K8s 自动按策略逐批替换 Pod，期间服务不中断；出问题一条命令回滚。
+
+```yaml
+# Deployment 的发布控制参数
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1             # 更新时最多多起 1 个 Pod（控制突发资源）
+      maxUnavailable: 0       # 更新时最少保持全部副本可用（零停机）
+  template:
+    spec:
+      containers:
+        - name: agent
+          image: registry.example.com/agent-svc:v2
+          # 资源限制：K8s 调度与 HPA 的依据，务必填
+          resources:
+            requests:
+              cpu: "500m"      # 调度器按 request 找能放下的节点
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"    # 防止单 Pod 吃光节点内存
+```
+
+发布与回滚命令：
+
+```bash
+# 改镜像触发滚动更新
+kubectl set image deployment/agent-svc agent=registry.example.com/agent-svc:v2
+
+# 盯着滚动更新进度
+kubectl rollout status deployment/agent-svc
+
+# 出问题，一键回滚到上一版
+kubectl rollout undo deployment/agent-svc
+
+# 回滚到指定历史版本
+kubectl rollout undo deployment/agent-svc --to-revision=2
+```
+
+<Callout type="warn" title="没设资源 limit 会被节点拖垮">
+  不填 `resources.limits`，某个 Pod 内存泄漏会吃光节点，导致同节点上其他服务被驱逐。
+  `requests` 也必填——调度器靠它决定放哪个节点，全 0 会让一堆 Pod 挤在一台机器上。
+</Callout>
+
+## 4. Service 与对外暴露：ClusterIP / NodePort / LoadBalancer / Ingress
+
+Pod IP 是临时的，Service 给稳定入口。四种暴露方式由内到外：
+
+| 类型 | 可达范围 | 典型用途 |
+|------|----------|----------|
+| ClusterIP | 仅集群内 | 服务间互调（如 agent 调 redis） |
+| NodePort | 节点 IP + 固定端口 | 测试、无 LB 环境 |
+| LoadBalancer | 云厂商外部 IP | 简单对外暴露单服务 |
+| Ingress | 七层路由（域名/路径） | 多服务共用 80/443，按路径分流 |
+
+```yaml
+# Ingress：把 agent.example.com 路由到 Service（以官方文档为准，控制器差异大）
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agent-ingress
+spec:
+  rules:
+    - host: agent.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: agent-svc
+                port:
+                  number: 80
+```
+
+<Callout type="tip" title="对外只走 Ingress">
+  别给每个服务都挂 LoadBalancer（贵且难管）。统一用一个 Ingress 控制器（如 nginx-ingress），
+  按 `host`/`path` 把流量分到不同 Service。TLS 终止也集中在 Ingress 做。
+</Callout>
+
+## 5. 配置与密钥：ConfigMap / Secret
+
+把『会变的东西』（配置）和『绝不能进镜像的东西』（密钥）从镜像剥离，是 12-Factor 的硬要求。
+
+```yaml
+# ConfigMap：非敏感配置
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-config
+data:
+  LOG_LEVEL: "info"
+  REDIS_URL: "redis://redis:6379"
+  MAX_CONCURRENCY: "8"
+---
+# Secret：敏感信息（base64 编码，但非加密，需配合加密 provider）
+apiVersion: v1
+kind: Secret
+metadata:
+  name: agent-secrets
+type: Opaque
+stringData:                    # 用 stringData 写明文，K8s 自动 base64
+  OPENAI_API_KEY: "sk-xxxx"    # 真实环境走 sealed-secrets / external-secrets 从 Vault 注入
+```
+
+在 Deployment 里消费：
+
+```yaml
+spec:
+  template:
+    spec:
+      containers:
+        - name: agent
+          image: registry.example.com/agent-svc:v1
+          envFrom:
+            - configMapRef:
+                name: agent-config      # 整个 ConfigMap 注入为环境变量
+            - secretRef:
+                name: agent-secrets     # 整个 Secret 注入为环境变量
+```
+
+<Callout type="danger" title="Secret 不是加密保险箱">
+  K8s 原生 Secret 只是 base64（可逆），任何能 `kubectl get secret -o yaml` 的人都能解出。
+  生产必须用加密方案：Sealed Secrets / External Secrets Operator（对接 Vault / 云 KMS），
+  或启用 etcd 静态加密。密钥管理红线不可含糊。
+</Callout>
+
+## 6. 探针：就绪与存活
+
+K8s 靠探针决定『能不能收流量』『要不要重启』。Agent 服务必须配，否则流量会打进还没加载完模型的 Pod。
+
+```yaml
+containers:
+  - name: agent
+    image: registry.example.com/agent-svc:v1
+    ports:
+      - containerPort: 8080
+    # 就绪探针：通过才进流量。模型还在加载时返回非 200，K8s 就不转发
+    readinessProbe:
+      httpGet:
+        path: /health
+        port: 8080
+      initialDelaySeconds: 10
+      periodSeconds: 10
+    # 存活探针：失败就杀掉重启。用于从死锁中自救
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: 8080
+      initialDelaySeconds: 30
+      periodSeconds: 15
+      failureThreshold: 3
+```
+
+- **readinessProbe 失败** → 从 Service 后端摘掉，但 Pod 不重启（适合『启动慢/临时依赖抖』）；
+- **livenessProbe 失败** → 杀掉重启（适合『真死锁/内存泄漏』）。
+
+<Callout type="warn" title="就绪与存活别用同一个端点乱配">
+  常见错：liveness 探一个永远 200 的端点，结果进程死锁了 K8s 还以为它活着，不重启。
+  liveness 必须探『真实健康』（或干脆不配，靠 readiness）。
+  另外 initialDelay 要给模型冷启动留足，否则 Pod 一起步就被判死重启。
+</Callout>
+
+## 7. HPA：按指标自动扩缩
+
+流量有峰谷，人工调 `replicas` 不现实。`HPA（Horizontal Pod Autoscaler）` 按 CPU 或自定义指标（如队列长度、QPS）自动加减副本。
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: agent-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: agent-svc
+  minReplicas: 2             # 永不缩到 0（除非你确认可接受冷启动）
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60   # 平均 CPU 超 60% 就扩容
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300   # 缩容冷静期，避免抖动（thrashing）
+```
+
+<Callout type="tip" title="HPA 的前提是 resource request 填了">
+  HPA 基于 `resources.requests.cpu` 算利用率。你没填 request，HPA 无从算起会失效。
+  这也是为什么第 3 节强调 request/limit 必填——它同时是调度、limit、HPA 三者的地基。
+</Callout>
+
+<Callout type="warn" title="缩容抖动会误伤长任务">
+  Agent 常跑长任务（几十秒到几分钟）。HPA 缩容可能杀掉正在处理的 Pod（除非配
+  `terminationGracePeriodSeconds` + 优雅中止）。务必让服务在收到 SIGTERM 时跑完在途请求或发还队列。
+</Callout>
+
+## 8. 完整可运行骨架（端到端 YAML）
+
+把下面存成 `agent-k8s.yaml`，`kubectl apply -f agent-k8s.yaml` 即可拉起一个 3 副本、带探针、可 HPA、配置密钥分离的 Agent 服务（镜像名按你的 registry 改）。
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-config
+data:
+  LOG_LEVEL: "info"
+  REDIS_URL: "redis://redis:6379"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: agent-secrets
+type: Opaque
+stringData:
+  OPENAI_API_KEY: "sk-REPLACE-ME"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-svc
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: agent-svc
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: agent-svc
+    spec:
+      containers:
+        - name: agent
+          image: registry.example.com/agent-svc:v1
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: agent-config
+            - secretRef:
+                name: agent-secrets
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-svc
+spec:
+  selector:
+    app: agent-svc
+  ports:
+    - port: 80
+      targetPort: 8080
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: agent-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: agent-svc
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+```
+
+常用运维命令：
+
+```bash
+# 应用清单
+kubectl apply -f agent-k8s.yaml
+
+# 看 Pod 状态（Running / Ready 列）
+kubectl get pods
+
+# 看滚动更新进度，卡住就排查
+kubectl rollout status deployment/agent-svc
+
+# 进 Pod 排障（前提：基础镜像有 shell）
+kubectl exec -it <pod-name> -- sh
+
+# 看某个 Pod 的日志
+kubectl logs -f <pod-name>
+
+# 紧急扩容/缩容
+kubectl scale deployment/agent-svc --replicas=10
+```
+
+## 9. 对比：发布与扩缩的策略取舍
+
+| 维度 | K8s 原生 | 其他方案 |
+|------|----------|----------|
+| 多副本调度 | 调度器自动跨节点 | compose 仅单机 |
+| 发布 | 滚动更新 / 回滚内置 | 需外部脚本 |
+| 扩缩 | HPA 自动 + 指标 | 手动或外部 autoscaler |
+| 配置密钥 | ConfigMap/Secret 一等公民 | env_file 弱隔离 |
+| 学习成本 | 高 | 低 |
+
+<Callout type="note" title="YAML 是声明不是命令">
+  K8s 是『声明式』：你写『我要 3 个副本』，控制器不断把实际状态往声明状态拉。
+  这和 `docker run` 的『命令式』不同。改 YAML 后 `apply`，K8s 自己算 diff 决定怎么变。
+</Callout>
+
+## 10. 常见坑
+
+<Callout type="danger" title="没有 terminationGracePeriod 导致长任务被砍">
+  Pod 被删（缩容/更新）时 K8s 先发 SIGTERM，等 `terminationGracePeriodSeconds`（默认 30s）
+  再 SIGKILL。Agent 长任务若 30s 跑不完就被硬杀。调大该值，并让服务收到 SIGTERM 后
+  把在途任务还回队列 / 跑完再退。
+</Callout>
+
+<Callout type="warn" title="ConfigMap 改了 Pod 不重启">
+  改 ConfigMap 后，已运行的 Pod **不会**自动感知（除非挂载为文件且程序支持热加载）。
+  需要滚动重启：`kubectl rollout restart deployment/agent-svc`。别以为改了配置就生效。
+</Callout>
+
+<Callout type="warn" title="探针 initialDelay 太短致重启循环">
+  Agent 冷启动加载模型要几十秒，若 liveness 的 `initialDelaySeconds` 只有 5s，
+  Pod 还没就绪就被判死 → 杀掉 → 重启 → 又没就绪 → 死循环。按实测冷启动给足余量。
+</Callout>
+
+<Callout type="danger" title="Secret 明文进 git">
+  上面 YAML 里 `sk-REPLACE-ME` 只是占位。**真实密钥绝不能提交进 git**。
+  生产用 External Secrets Operator 从 Vault 注入，或用 Sealed Secrets（加密后提交也安全）。
+  把明文 Secret 推上 git 等于公开泄露。
+</Callout>
+
+<Callout type="warn" title="Pod 被调度到资源不足的节点">
+  没设 `resources.requests` 时，调度器以为 Pod 不要资源，把一堆 Pod 塞一台机器，
+  实际一跑就 OOM 互殴。requests 是调度依据，务必按真实占用填。
+</Callout>
+
+<Callout type="tip" title="用 kubectl diff 预览变更">
+  上线前 `kubectl diff -f agent-k8s.yaml` 看 K8s 会怎么改，确认不会误删/误缩再 apply，
+  尤其改 `replicas` 和 `strategy` 时。养成『先 diff 后 apply』的习惯。
+</Callout>
+
+## 小结
+
+- K8s 用 Deployment 管副本与发布、Service 做稳定入口与负载均衡、ConfigMap/Secret 剥离配置密钥。
+- 滚动更新 `maxSurge/maxUnavailable` 实现零停机；`rollout undo` 一键回滚。
+- 探针是流量安全的命门：readiness 控制『进不进流量』，liveness 控制『要不要重启』，都要探真实健康。
+- HPA 按 CPU/自定义指标扩缩，前提是 `resources.requests` 填了；缩容要给长任务留优雅退出时间。
+- 红线：镜像固定 tag、Secret 不进 git、requests/limits 必填、terminationGracePeriod 护长任务、先 diff 后 apply。
+
+<Callout type="note" title="下一步">
+  K8s 把 Agent 服务跑稳了。如果服务要吞 GPU 做模型推理、要显存优化与多卡，见 **deploy-gpu**；
+  要监控这些副本的指标/日志/链路，见 `deploy-monitor`。
+</Callout>
+
+## 延伸阅读 / 参考
+
+- Kubernetes 官方文档：Deployment（滚动更新/回滚）、Service、ConfigMap/Secret、HPA
+- Kubernetes 官方文档：Pod 生命周期与 Probes（readiness/liveness/startup）
+- External Secrets Operator / Sealed Secrets 文档：生产级密钥注入与加密提交
+- 12-Factor App：Config（配置外置）与 Backing Services（依赖当作附加资源）原则
+- 云厂商 Ingress / 负载均衡文档：按所用控制器（nginx-ingress、ALB Ingress 等）为准

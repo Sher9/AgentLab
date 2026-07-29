@@ -1,0 +1,175 @@
+---
+title: 高级推理技巧：自我一致性、ToT 与 Reflexion
+description: 在思维链之上进阶——自我一致性（多链投票）、思维树（分支搜索）、Reflexion（反思复盘）、元提示（让模型写提示），含原理、可运行骨架、对比与踩坑。
+category: Prompt工程
+order: 5
+difficulty: 高级
+duration: 22 分钟
+tags: [自我一致性, 思维树, Reflexion, 元提示, 高级推理]
+date: 2026-07-29
+---
+
+# 高级推理技巧：自我一致性、ToT 与 Reflexion
+
+CoT 让单条推理更准，但仍有随机性——同一题换次采样可能得出不同答案。本篇在 CoT 之上讲四种进阶技巧：**自我一致性（Self-Consistency）**用投票压随机性、**思维树（ToT）**做分支搜索、**Reflexion**让模型自我反思复盘、**元提示（Meta-Prompting）**让模型自己写提示。它们共同思路是『多条/多轮推理胜过单条』。
+
+## 1. 自我一致性（Self-Consistency, CoT-SC）
+
+### 1.1 原理
+
+对同一问题采样 **N 条独立的 CoT**（temperature 调高以拉开差异），每条得到各自答案，再对答案**多数投票**。直觉：正确推理往往殊途同归，错误推理则各错各的——所以『多数派』更可能是对的。
+
+```ts
+// self-consistency.ts —— 多条 CoT 投票（骨架）
+import OpenAI from 'openai';
+import 'dotenv/config';
+
+const client = new OpenAI();
+
+async function selfConsistency(question: string, n = 5): Promise<string> {
+  const answers: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const r = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      temperature: 0.7, // 刻意拉高，让 N 条链各不相同
+      messages: [{ role: 'user', content: `${question}\n请一步步推理，最后用「答案：」给出结果。` }],
+    });
+    const m = (r.choices[0].message.content ?? '').match(/答案[:：]\s*(.+)/);
+    if (m) answers.push(m[1].trim());
+  }
+  // 多数投票：统计出现次数最多的答案
+  const counter = new Map<string, number>();
+  for (const a of answers) counter.set(a, (counter.get(a) ?? 0) + 1);
+  return [...counter.entries()].sort((x, y) => y[1] - x[1])[0][0];
+}
+```
+
+<Callout type="tip" title="悖论题别投票">
+  当问题本身没有『唯一正确』答案（开放生成、主观评判），多数投票无意义，
+  反而把多样性压成平庸均值。CoT-SC 只在『有确定正解』的任务上收益明显。
+</Callout>
+
+### 1.2 对比
+
+| 维度 | 单条 CoT | 自我一致性 |
+|------|----------|------------|
+| 调用次数 | 1 | N（成本 N 倍） |
+| 准确率 | 基线 | 通常 +5～15% |
+| 适用 | 实时、低成本 | 离线、高准确率要求 |
+
+## 2. 思维树（Tree of Thoughts, ToT）
+
+CoT 是『一条线推到底』，ToT 是**在关键节点分叉成多条、对每步做评估、保留 promising 分支继续展开**，像下棋一样搜索。适合需要『探索多路径』的规划/博弈类难题。
+
+```
+问题 → 第1步候选[A,B,C] → 评估 → 保留 B,C
+  B → 展开 → 评估 → 保留 B2
+  C → 展开 → 评估 → 全弃
+最终沿 B2 路径得出答案
+```
+
+<Callout type="note" title="ToT 需要『评估器』">
+  ToT 的难点在于『怎么评估某步好不好』：可用模型自己打分（『这步离解决还有多远』），
+  或规则/外部校验。评估不准，搜索就被带偏。且 N 步 × M 分支 = 成本指数级，
+  生产要严控分支宽度与深度。ToT 不是默认选项，是『难题专用重武器』。
+</Callout>
+
+## 3. Reflexion：让模型反思复盘
+
+Reflexion 在 Agent 循环里加一个**反思步**：任务失败后，让模型读自己的轨迹，写一段『我哪错了、下次怎么改』的反思，存入记忆，下一轮带着反思重试。它是把『错误经验』变成可复用记忆的范式（与 m4 记忆系统呼应）。
+
+```ts
+// reflexion.ts —— 带反思步的循环（骨架）
+async function reflectLoop(task: string, maxTry = 3) {
+  let reflection = ''; // 反思记忆，跨轮累积
+  for (let t = 0; t < maxTry; t++) {
+    const r = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'user', content: `${task}\n历史反思：${reflection}` },
+      ],
+    });
+    const result = await execute(r.choices[0].message.content!);
+    if (result.ok) return result; // 成功即停
+    // 失败 → 让模型基于本次失败写反思，进入下一轮
+    const refl = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: `任务失败：${result.error}\n请复盘你哪步错了，下次如何避免。只写反思。` }],
+    });
+    reflection += '\n' + (refl.choices[0].message.content ?? '');
+  }
+}
+```
+
+<Callout type="warn" title="反思也可能自我欺骗">
+  模型写的反思未必正确——它可能把失败归咎于『外部原因』而回避自身逻辑错误。
+  反思记忆要可被人工审查，且配合外部校验（如单元测试、答案可验证）才可靠，
+  不能把模型的自我检讨当真理。
+</Callout>
+
+## 4. 元提示（Meta-Prompting）
+
+让模型**为自己或他人生成提示**：你描述任务，模型产出优化后的提示词；或给一个『元提示』让模型在子任务上自产子提示。常用于『提示自动优化』管线。
+
+```ts
+const meta = `你是一名提示工程专家。用户会给你一个粗糙任务描述，
+请把它改写成结构清晰、含角色/约束/输出格式的优质提示，只输出提示本身。`;
+const optimized = await client.chat.completions.create({
+  model: 'gpt-4o',
+  messages: [{ role: 'user', content: `${meta}\n\n粗糙任务：${rawTask}` }],
+});
+```
+
+<Callout type="tip" title="元提示用于提示调优闭环">
+  把『模型生成的提示』拿去跑评测，得分低的让模型再改，形成
+  『生成→评测→再生成』的自动调优闭环（类似 promptfoo 的优化模式）。
+  比人手调参快，但产出的提示是黑箱，上线前需人审可读性。
+</Callout>
+
+## 5. 四种技巧对比速查
+
+| 技巧 | 核心动作 | 成本 | 适用 |
+|------|----------|------|------|
+| 自我一致性 | 多链投票 | N 倍 | 有确定解、要高准 |
+| 思维树 ToT | 分支搜索 | 指数级 | 需探索多路径的难题 |
+| Reflexion | 失败反思复盘 | 多轮 | Agent、可重试任务 |
+| 元提示 | 模型写提示 | 1～2 倍 | 提示自动优化 |
+
+## 6. 常见坑
+
+<Callout type="danger" title="为不重要任务上重型技巧">
+  自我一致性/ToT 成本是单条的 N 倍甚至指数级。先做『准确率提升 vs 成本』
+  的盈亏测算：多数业务任务单条 CoT 已够，重型技巧留给『错一次代价高』的场景
+  （医疗、金融、关键决策）。别为 1% 提升烧 10 倍钱。
+</Callout>
+
+<Callout type="warn" title="投票治标不治本">
+  自我一致性掩盖而非消除模型的系统性偏见——若模型对某类题『系统性地』
+  走同一条错路，多数投票仍会投错。此时该换模型/改提示/加检索，而非加 N。
+</Callout>
+
+<Callout type="warn" title="ToT 成本失控">
+  ToT 的分支宽度 × 深度若不设上限，调用次数爆炸。务必限制最大节点数与
+  单步评估预算；并准备『超时回退到单条 CoT』的兜底路径。
+</Callout>
+
+<Callout type="note" title="反思记忆无限膨胀">
+  Reflexion 的 reflection 跨轮累积，久了撑爆上下文。要加容量上限（只留最近
+  K 条）或摘要压缩，否则越反思越慢、越贵。
+</Callout>
+
+## 小结
+
+- 自我一致性：N 条 CoT 投票，压随机性、提准，但成本 N 倍，仅适用于有确定解的任务。
+- 思维树 ToT：分支搜索 + 评估，适合需探索多路径的难题，依赖评估器质量且成本指数级。
+- Reflexion：失败→反思→重试，把错误经验变记忆，但反思可能自欺，需外部校验。
+- 元提示：让模型写/优化提示，可做自动调优闭环，产出需人审可读性。
+- 红线：重型技巧先做盈亏测算、投票不治系统性偏见、ToT 限容防爆炸、反思记忆要截断。
+
+## 延伸阅读 / 参考
+
+- Wang et al., *Self-Consistency Improves Chain of Thought Reasoning*（CoT-SC）
+- Yao et al., *Tree of Thoughts: Deliberate Problem Solving with LLMs*（ToT）
+- Shinn et al., *Reflexion: Language Agents with Verbal Reinforcement Learning*（反思范式）
+- *Meta-Prompting* 相关工作（让模型自生成提示）
+- promptfoo 文档（提示自动优化与评测闭环）

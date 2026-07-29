@@ -1,0 +1,363 @@
+---
+title: 架构模式：ReAct、Plan-and-Execute、Reflexion
+description: 从"会调工具"升级到"会思考"。掌握三种主流 Agent 架构模式的原理、适用场景、可运行骨架与取舍，避免一上来就堆代码。
+category: AI Agent
+order: 3
+difficulty: 进阶
+duration: 30 分钟
+tags: [架构模式, ReAct, Plan-and-Execute, Reflexion, 推理]
+date: 2026-07-29
+---
+
+# 架构模式：ReAct、Plan-and-Execute、Reflexion
+
+M1 里我们让 Agent "会动手"了——它能根据问题调用工具、回填结果、循环几轮。但很快你会遇到一个更根本的问题：
+
+> 当任务需要多步推理、工具之间还有依赖时，**下一步该干什么、先调哪个工具、什么时候该停下来**，由谁决定？
+
+M1 的骨架把决策权完全交给了模型（"你看着调"），这在简单任务上行得通。但任务一复杂，模型就会开始乱：绕圈、漏步骤、钻牛角尖。
+
+**架构模式**就是回答这个问题的一组"经典打法"：它们规定了 Agent 内部"思考—行动—观察"的运转节律，让你在动手前先想清楚策略。本篇讲三种最常用、也最值得先掌握的：
+
+- **ReAct**：边想边做，逐步推进（最通用）
+- **Plan-and-Execute**：先规划全局，再分步执行（最可控）
+- **Reflexion**：做完复盘，带着教训再来（最抗错）
+
+## 1. 为什么需要"模式"而不是无脑循环
+
+回看 M1 的闭环，它本质是一个**无结构的 while 循环**：
+
+```
+while (模型还要调工具) { 执行工具; 回填; }
+```
+
+这个循环有两个没说清楚的隐含假设：
+
+1. **模型自己知道"该先调谁"**——但如果第一步需要的信息得靠第二步的工具返回呢？无结构循环容易卡死。
+2. **模型不会跑偏**——实际上它经常在某一步反复横跳，或者走到死胡同还不知道回头。
+
+架构模式的价值，就是给你一套**可解释的运转节律 + 明确的停止条件**，让多步任务变得可预测、可调试。先选对模式，代码量反而更少。
+
+<Callout type="note" title="先想清楚，再写代码">
+  很多新手一上来就调框架、堆工具，结果 Agent 行为不可预测、无法排错。
+  正确顺序是：先判断任务属于哪类 → 选模式 → 再写骨架。本篇帮你建立这个"判断力"。
+</Callout>
+
+## 2. ReAct：边想边做（最通用）
+
+### 2.1 原理
+
+ReAct = **Re**asoning（推理）+ **Act**ing（行动）。它的核心节律是三步一循环：
+
+```
+Thought（思考）：这一步我该做什么、为什么
+Action（行动）：调用某个工具，并给出参数
+Observation（观察）：工具返回的结果
+  ↓ 回到 Thought，基于 Observation 决定下一步
+直到 Thought 判断"信息够了"，输出最终答案
+```
+
+关键点：**Thought 是显式的**——模型被要求把"我为什么这么想"写出来。这有两个好处：① 你能从日志里看到它的决策链路，方便排错；② 迫使模型更谨慎，减少瞎调工具。
+
+### 2.2 工程上怎么实现
+
+好消息：**M1 的 tool-calling 闭环，本质上就是工程版的 ReAct**。模型在 `tool_calls` 里给出的就是 Action，你回填的 `role:'tool'` 就是 Observation，循环继续就是 Thought。OpenAI 的 tool calling 已经把"Action 格式"结构化了，不需要你手写正则去解析 `Thought/Action` 文本。
+
+下面这个骨架把 M1 的循环加上**显式日志**，让你看清 ReAct 的每一步（单文件可运行，内联了一个最小天气工具）：
+
+```ts
+// react-agent.ts —— ReAct 节律的可运行骨架（基于 M1，加结构化日志）
+import OpenAI from 'openai';
+import 'dotenv/config';
+
+const client = new OpenAI();
+
+// 最小工具集：这里用假数据，真实场景换成天气 API
+const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'get_weather',
+      description: '查询某城市的当前天气',
+      parameters: {
+        type: 'object',
+        properties: { city: { type: 'string', description: '城市名，如 北京' } },
+        required: ['city'],
+      },
+    },
+  },
+];
+
+// 工具分发：按名字映射到具体实现
+function executeTool(name: string, args: Record<string, unknown>): string {
+  if (name === 'get_weather') return `${args.city}：晴，26°C，微风。`;
+  return `未知工具: ${name}`;
+}
+
+async function run(userInput: string) {
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    {
+      role: 'system',
+      // 关键提示：要求模型先想清楚再行动，并说明它会拿到工具结果
+      content:
+        '你是一个严谨的助手。遇到需要外部信息的问题，先思考再调用工具；' +
+        '拿到工具返回后，判断信息是否足够，足够则直接给出最终答案，不要再调用工具。',
+    },
+    { role: 'user', content: userInput },
+  ];
+
+  for (let step = 0; step < 6; step++) {
+    const res = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages,
+      tools,
+    });
+    const msg = res.choices[0].message;
+    messages.push(msg);
+
+    // 把"模型这一轮的意图"打印出来，就是 ReAct 的 Thought 可视化
+    console.log(`\n[Step ${step + 1}] 模型:`, msg.content ?? '(准备调用工具)');
+
+    if (!msg.tool_calls?.length) {
+      console.log('→ 结束，最终答案已生成');
+      return;
+    }
+
+    for (const call of msg.tool_calls) {
+      const args = JSON.parse(call.function.arguments);
+      const result = executeTool(call.function.name, args);
+      console.log(`  ↳ Action: ${call.function.name}(${JSON.stringify(args)})`);
+      console.log(`  ↳ Observation: ${result}`);
+      messages.push({ role: 'tool', tool_call_id: call.id, content: result });
+    }
+  }
+  console.log('→ 达到循环上限，强制结束');
+}
+
+run('北京现在天气怎么样？');
+```
+
+运行 `npx tsx react-agent.ts` 后，你会看到清晰的 `Thought → Action → Observation` 轨迹，排错时一眼定位卡在哪一步。
+
+### 2.3 何时用 / 何时慎用
+
+- ✅ 开放性问题、需要边探索边决策（如"帮我查一下 A 和 B 哪个更划算"）
+- ✅ 步骤数不确定、依赖运行时信息才能决定下一步
+- ⚠️ 长任务：轮数一多，早期 Thought 会被挤出上下文，模型"忘了"之前为啥这么干
+- ⚠️ 容易绕圈：没有明确停止信号时，可能反复调同一个工具
+
+<Callout type="tip" title="ReAct 的停止信号">
+  给系统提示加一句"信息足够时直接回答，不要继续调用工具"，能显著减少无效轮次。
+  同时保留循环上限（本例 6 轮）作为硬兜底。
+</Callout>
+
+## 3. Plan-and-Execute：先规划，再执行（最可控）
+
+### 3.1 原理
+
+与 ReAct 的"走一步看一步"相反，Plan-and-Execute 把任务拆成两个阶段：
+
+```
+① Plan 阶段：让模型一次性产出"完整步骤清单"（结构化，如 JSON 数组）
+② Execute 阶段：按顺序执行每一步，每步内部仍可用 ReAct/工具调用
+```
+
+它的信念是：**先把全局想清楚，执行才不会乱**。适合目标明确、可分解的任务（如"把这篇文档翻译成英文并生成摘要"）。
+
+### 3.2 骨架
+
+```ts
+// plan-execute.ts —— Plan-and-Execute 骨架
+import OpenAI from 'openai';
+import 'dotenv/config';
+import { z } from 'zod';
+
+const client = new OpenAI();
+
+// 用 Zod 锁定"计划"的结构，避免模型返回非预期格式
+const Plan = z.object({
+  steps: z.array(
+    z.object({
+      id: z.number(),
+      description: z.string(), // 这一步要做什么
+      tool: z.string().nullable(), // 需要哪个工具（可空=纯思考）
+      args: z.record(z.unknown()).nullable(),
+    })
+  ),
+});
+
+async function plan(goal: string) {
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: '把用户目标拆解成有序步骤，必要时使用工具。' },
+      { role: 'user', content: goal },
+      // response_format 强制模型输出 JSON，配合 Zod 校验
+      { role: 'system', content: '以 JSON 返回：{ steps: [{id, description, tool, args}] }' },
+    ],
+    response_format: { type: 'json_object' },
+  });
+  // 解析并校验，非法直接抛错，避免后续拿到烂计划
+  return Plan.parse(JSON.parse(res.choices[0].message.content!));
+}
+
+async function executeStep(step: z.infer<typeof Plan>['steps'][number]) {
+  if (!step.tool) return '（无需工具，已记录）';
+  // 真实场景：把 step.tool/step.args 交给你的工具分发器
+  return `执行 ${step.tool}(${JSON.stringify(step.args)}) 完成`;
+}
+
+async function run(goal: string) {
+  const p = await plan(goal);
+  console.log('计划：\n' + p.steps.map((s) => `${s.id}. ${s.description}`).join('\n'));
+  for (const step of p.steps) {
+    const out = await executeStep(step);
+    console.log(`执行 #${step.id} →`, out);
+  }
+}
+
+run('帮我查北京天气，并翻译成英文摘要');
+```
+
+### 3.3 何时用 / 何时慎用
+
+- ✅ 目标明确、可分解、要求可预测（批处理、流水线）
+- ✅ 需要把"计划"展示给用户确认后再执行（人审节点）
+- ⚠️ 计划僵化：某步失败，后续步骤可能整体失效，需要额外回退逻辑
+- ⚠️ 规划本身可能出错：垃圾计划 → 垃圾执行
+
+<Callout type="warn" title="计划不是圣旨">
+  真实任务常在第二步才发现第一步的假设是错的。Plan-and-Execute 要配套
+  "执行失败 → 局部重规划"的回路，否则一旦卡住就整条流水线报废。
+</Callout>
+
+## 4. Reflexion：做完复盘，带着教训再来（最抗错）
+
+### 4.1 原理
+
+Reflexion 在 ReAct 之外加了一个**反思循环**：每跑完一轮（trial），让模型评估"哪里做错了"，把反思写进**长期记忆**，下一轮把记忆带回来，避免重蹈覆辙。
+
+```
+Trial 1: ReAct 跑任务 → 得到结果
+  ↓
+Evaluate: 结果对吗？哪里卡住了？
+  ↓
+Reflect: 模型写一段"下次要注意什么" → 存入 memory
+  ↓
+Trial 2: 带着 memory 重新跑 → 通常更好
+  ↓ 直到通过或达到上限
+```
+
+适合**需要反复试错、对质量敏感**的场景（代码生成、复杂检索、博弈）。
+
+### 4.2 骨架
+
+```ts
+// reflexion.ts —— Reflexion 骨架（聚焦"反思"这一增量）
+import OpenAI from 'openai';
+import 'dotenv/config';
+
+const client = new OpenAI();
+
+async function runWithReflection(task: string, maxTrials = 3) {
+  let memory = ''; // 长期记忆：累积的反思
+
+  for (let trial = 1; trial <= maxTrials; trial++) {
+    // 关键：把上轮的反思注入 prompt，模型这轮会刻意避开旧坑
+    const answer = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: '完成任务。' + (memory ? `过往教训：${memory}` : '') },
+        { role: 'user', content: task },
+      ],
+    });
+    const result = answer.choices[0].message.content!;
+
+    // Evaluate：这里用简单规则；真实场景可接单测或评审模型
+    const passed = await evaluate(result, task);
+    if (passed) return result;
+
+    // Reflect：让模型自己总结失败原因，写进 memory 供下一轮使用
+    const reflect = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: '上一轮结果没通过。请简短说明失败原因和下一轮要注意的点。' },
+        { role: 'user', content: `任务：${task}\n上轮结果：${result}` },
+      ],
+    });
+    memory += `\n[Trial ${trial} 教训] ${reflect.choices[0].message.content}`;
+    console.log(`Trial ${trial} 未通过，已记录教训，重试…`);
+  }
+  throw new Error('达到最大重试次数仍未通过');
+}
+
+async function evaluate(result: string, _task: string): Promise<boolean> {
+  // 占位：真实项目里接单测 / 校验函数 / 评审模型
+  return result.length > 0;
+}
+
+runWithReflection('写一段 TypeScript 的防抖函数并自测通过');
+```
+
+### 4.3 何时用 / 何时慎用
+
+- ✅ 任务有"对/错"的可验证标准（能 evaluate）
+- ✅ 一次性跑对很难，但试几次能明显变好
+- ⚠️ 成本高：每轮都是多次模型调用，且可能要跑好几 trial
+- ⚠️ 反思可能写错方向，需要 evaluate 本身靠谱
+
+## 5. 三者对比速查
+
+| 维度 | ReAct | Plan-and-Execute | Reflexion |
+|------|-------|------------------|-----------|
+| 核心节律 | 想一步做一步 | 先全规划再执行 | 做→复盘→重做 |
+| 可控性 | 中 | 高（计划可见） | 中（靠记忆纠偏） |
+| 上下文压力 | 高（轮次多） | 低（计划一次性） | 高（多 trial） |
+| 成本 | 中 | 低-中 | 高 |
+| 抗错能力 | 弱 | 中 | 强 |
+| 典型场景 | 开放探索 | 流水线/批处理 | 代码生成、复杂检索 |
+
+## 6. 怎么选：一张决策图
+
+```
+任务目标明确且可分解？
+├─ 是 → 需要可预测/可展示计划？ → Plan-and-Execute
+│       └─ 否，但能试错变好？   → Reflexion
+└─ 否（开放探索、步骤依赖运行时信息）
+        └─ ReAct（默认起点）
+```
+
+实战中**模式可以组合**：比如用 Plan-and-Execute 出计划，每个 step 内部用 ReAct 调工具，整体再套一层 Reflexion 做质量兜底。主流框架（见 M3）本质就是让你把这些"节点+边"拼起来。
+
+<Callout type="note" title="别过度设计">
+  新手最容易犯的错：任务明明一个 ReAct 循环就能搞定，却先上 Plan-and-Execute + Reflexion，
+  结果复杂度爆炸、成本翻倍。先用最简单能跑通的，遇到瓶颈再加模式。
+</Callout>
+
+## 7. 常见坑
+
+<Callout type="danger" title="循环/重试无上限">
+  任何模式都要有硬上限（轮数、trial 数）。Reflexion 的 memory 也会无限增长，
+  记得截断或只保留最近 N 条教训。
+</Callout>
+
+<Callout type="warn" title="把 Thought 当可信事实">
+  模型写的 Thought 是"它以为的推理"，不代表真实。涉及关键决策，
+  仍要以工具返回（Observation）为准，而非模型自己说的"我认为"。
+</Callout>
+
+<Callout type="warn" title="Plan 与执行环境不一致">
+  Plan-and-Execute 里，规划时模型看不到真实工具返回，计划常基于错误假设。
+  务必在执行阶段捕获异常并触发"局部重规划"，不要 blindly 继续执行。
+</Callout>
+
+## 小结
+
+- 架构模式规定 Agent "思考—行动"的节律，让多步任务可预测、可调试。
+- **ReAct**：边想边做，通用但易绕圈；**Plan-and-Execute**：先规划再执行，可控但易僵化；**Reflexion**：复盘纠偏，抗错但贵。
+- M1 的 tool-calling 闭环就是工程版 ReAct；模式可组合。
+- 先选最简单能跑通的，遇到瓶颈再加复杂度。
+
+<Callout type="note" title="下一步">
+  选定模式后，你大概率会想用现成框架而不是手写循环——**M3 主流框架**对比原生 SDK、LangChain、LlamaIndex、AutoGen、CrewAI，帮你选型不踩坑。
+</Callout>

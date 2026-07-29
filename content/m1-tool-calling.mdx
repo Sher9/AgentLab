@@ -1,0 +1,370 @@
+---
+title: 工具调用：让 Agent 能『动手』
+description: 深入 Function Calling 的协议本质、四步闭环、Zod 校验、并行与嵌套调用、错误重试与降级，并对比 JSON 模式与微调方案，给出生产级可运行骨架。
+category: 工具开发
+order: 1
+difficulty: 入门
+duration: 30 分钟
+tags: [工具调用, Function Calling, 实战, Zod, 重试]
+date: 2026-07-29
+---
+
+# 工具调用：让 Agent 能『动手』
+
+M0 里我们跑通了『模型说一句话』。但真正的 Agent 必须能**作用于真实世界**：查天气、读订单、跑一段代码……这些事模型自己干不了，得靠**工具（Tool）**。
+
+这一篇把 Function Calling 讲透：协议本质、四步闭环、参数校验、并行与嵌套、错误重试与降级，并和 JSON 模式、微调做对比。重点始终是——给你**能跑、能上生产的骨架**。
+
+## 1. 为什么需要工具
+
+LLM 的知识来自训练数据，有两个硬限制：
+
+- **时效性**：不知道训练截止之后的事（比如『现在北京天气』）；
+- **行动力**：不能真正执行操作（发请求、写文件、查库）。
+
+工具就是补上这两块的接口：模型负责『决定调什么、传什么参数』，你的代码负责『真去执行』。换句话说，工具把 LLM 从『只能说话』变成『能办事』。
+
+<Callout type="note" title="关键认知">
+  模型**永远不会自己执行**工具。它只是在回复里『建议』调用某个工具并给出参数；
+  真正执行、并把结果送回去的，是你的程序。这是一个**协作协议**，不是魔法。
+  任何『Agent 自动执行了 XXX』的说法，背后都是一段在循环里执行工具、回填结果的代码。
+</Callout>
+
+## 2. Function Calling 的协议本质
+
+### 2.1 四步闭环
+
+整件事就是下面这个循环，记住它，后面所有 Agent 框架（LangChain、AutoGen、CrewAI）都是它的变体：
+
+```
+① 你带着 tools 把用户问题发给模型
+② 模型返回：要么直接回答，要么带上 tool_calls（要调哪个工具、参数是什么）
+③ 你执行这些工具，拿到结果
+④ 把结果以 role:"tool" 回填进 messages，回到 ①
+   → 直到模型不再要求调工具，输出最终答案
+```
+
+### 2.2 tool_choice：谁来决定要不要调工具
+
+`client.chat.completions.create` 支持 `tool_choice` 参数，控制『调用决策权』在哪：
+
+| 取值 | 含义 | 典型场景 |
+|------|------|----------|
+| `auto`（默认） | 模型自己决定调不调、调哪个 | 通用 Agent，让模型自由发挥 |
+| `required` | 强制本轮必须返回一个 tool_call | 你确定这一步一定要走工具（如强制结构化抽取） |
+| `none` | 禁止调用工具，纯聊天 | 想临时关掉工具能力（如安全降级、纯生成） |
+| 指定函数名 | 强制调用某个特定函数 | 流程固定、只需填参的场景 |
+
+<Callout type="tip" title="用 required 兜底抽取">
+  当你其实只想『让模型把一段话结构化』（比如从邮件里抽出订单号），
+  用 `tool_choice: { type: 'function', function: { name: 'extract_order' } }`
+  比 prompt 里写『请输出 JSON』稳得多——模型被强制走工具 schema，解析零歧义。
+</Callout>
+
+### 2.3 strict 模式与 JSON 模式的边界
+
+OpenAI 等厂商提供 `strict: true` 的工具参数模式：模型输出会被约束为**严格符合 JSON Schema**（必填字段一定出现、枚举受限、不产出多余字段）。这能极大降低解析失败率，但要求你的 schema 满足：所有字段 `required`、无 `additionalProperties`、用 `enum`/`type` 而非自由文本。
+
+<Callout type="warn" title="strict 不是万能">
+  strict 只约束『结构』，不约束『语义正确性』。模型仍可能把城市名填成『火星』。
+  结构校验交给 strict/Zod，业务合理性校验（如城市是否在白名单）仍要你自己做。
+</Callout>
+
+## 3. 工具怎么定义：JSON Schema
+
+每个工具用一份 **JSON Schema** 描述『它能干嘛、要什么参数』。模型靠这份描述来决定是否调用、怎么填参。
+
+```ts
+// 一份工具定义 = 名字 + 描述 + 参数 schema
+const tools = [
+  {
+    type: 'function',
+    function: {
+      name: 'get_weather',
+      description: '查询某城市的当前天气', // 描述越清楚，模型越会用对
+      parameters: {
+        type: 'object',
+        properties: {
+          city: { type: 'string', description: '城市名，如 北京' },
+        },
+        required: ['city'],
+      },
+    },
+  },
+];
+```
+
+<Callout type="tip" title="写好 description">
+  模型**只看** `description` 和参数描述来决策。把『什么时候该用这个工具、参数怎么填』
+  写清楚，能大幅减少误调用。这是提示工程里最容易忽略、却最划算的一环。
+  一个经验法则：工具描述回答『WHEN』，参数描述回答『HOW』。
+</Callout>
+
+## 4. 完整可运行骨架
+
+把下面存成 `tool-agent.ts`，在 M0 的环境基础上直接跑（已装 `openai` + `dotenv`）：
+
+```ts
+// tool-agent.ts  —— Agent 工具调用闭环（可运行骨架）
+import OpenAI from 'openai';
+import 'dotenv/config';
+
+const client = new OpenAI();
+
+// ① 定义工具（JSON Schema，见第 3 节）
+const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'get_weather',
+      description: '查询某城市的当前天气',
+      parameters: {
+        type: 'object',
+        properties: {
+          city: { type: 'string', description: '城市名，如 北京' },
+        },
+        required: ['city'],
+      },
+    },
+  },
+];
+
+// ② 工具的真实实现（这里用假数据，实际应调用天气 API）
+function getWeather(city: string): string {
+  return `${city}：晴，26°C，微风。`;
+}
+
+async function run(userInput: string) {
+  // 对话上下文：用户问题 + 模型回复 + 工具结果，全部堆在这里
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: 'user', content: userInput },
+  ];
+
+  // ③ 自主循环：最多转 5 圈，防止模型失控死循环
+  for (let step = 0; step < 5; step++) {
+    const res = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages,
+      tools, // 关键：把工具列表交给模型
+    });
+    const msg = res.choices[0].message;
+
+    // 把模型这轮的输出（可能含 tool_calls）记入上下文，保持连贯
+    messages.push(msg);
+
+    // ④ 模型没要求调工具 → 说明它已经能直接回答，结束循环
+    if (!msg.tool_calls || msg.tool_calls.length === 0) {
+      console.log('最终回答：', msg.content);
+      return;
+    }
+
+    // ⑤ 逐个执行模型要求的工具调用，并把结果回填
+    for (const call of msg.tool_calls) {
+      const args = JSON.parse(call.function.arguments);
+      const result = getWeather(args.city); // 真实场景换成 API 调用
+      messages.push({
+        role: 'tool',
+        tool_call_id: call.id, // 必须回传，模型才能对应上这次调用
+        content: result,
+      });
+    }
+    // 循环继续：带上工具结果再问模型，看它还要不要继续
+  }
+}
+
+run('北京现在天气怎么样？');
+```
+
+运行 `npx tsx tool-agent.ts`，你会看到：模型先要求调 `get_weather('北京')`，代码执行后把结果回填，模型再基于结果生成自然语言回答。
+
+<Callout type="warn" title="tool_call_id 不能丢">
+  `role: 'tool'` 的消息**必须带 `tool_call_id`**，且要和模型返回的 `call.id` 对应。
+  漏了会直接 400。这是新手最高频的报错之一。回填时务必原样回传。
+</Callout>
+
+## 5. 参数校验：别轻信模型的输入
+
+模型生成的 `arguments` 是字符串形式的 JSON，**不保证合法**（字段缺失、类型错、甚至瞎编）。生产环境一定要校验，再执行副作用操作（写库、发消息）。
+
+最省事的做法是用 **Zod** 定义 schema，并复用给工具定义（单一事实来源）：
+
+```ts
+import { z } from 'zod';
+import { zodToJsonSchema } from 'zod-to-json-schema';
+
+// 用 Zod 描述参数，单一事实来源：校验 + 生成 schema 都靠它
+const WeatherArgs = z.object({
+  city: z.string().min(1, '城市不能为空'),
+});
+
+// 把 Zod schema 转成模型要的 JSON Schema（避免手写两份、各写各的漂移）
+const parameters = zodToJsonSchema(WeatherArgs);
+
+// 执行前校验，非法直接拦截，避免脏数据进入真实系统
+const parsed = WeatherArgs.safeParse(JSON.parse(call.function.arguments));
+if (!parsed.success) {
+  // 关键：把错误作为 tool 结果回填，而不是抛异常中断
+  messages.push({
+    role: 'tool',
+    tool_call_id: call.id,
+    content: `参数错误：${parsed.error.message}`,
+  });
+  continue; // 把错误告诉模型，让它纠正后重试
+}
+```
+
+<Callout type="note" title="把错误还给它">
+  校验失败时，**不要直接抛异常中断**，而是把错误信息作为 `tool` 结果回填。
+  模型往往能据此自我纠正——这正是 Agent 『自主』的体现。把它当成一个『会犯错的协作者』，
+  你的职责是给它清晰的错误信号，而不是一棍子打死。
+</Callout>
+
+## 6. 并行工具调用
+
+`tools` 是数组，模型一次可要求调用多个工具；`msg.tool_calls` 也是数组，逐个执行即可。只要各工具之间**无依赖**，可以并行 `Promise.all` 提速：
+
+```ts
+// 多个无依赖工具并行执行，总耗时 ≈ 最慢那一个，而非全部相加
+const results = await Promise.all(
+  msg.tool_calls.map(async (call) => {
+    const args = JSON.parse(call.function.arguments);
+    const result = await executeTool(call.function.name, args); // 按名字分发
+    return { id: call.id, result };
+  })
+);
+for (const { id, result } of results) {
+  messages.push({ role: 'tool', tool_call_id: id, content: result });
+}
+```
+
+<Callout type="tip" title="先判依赖，再决定并行">
+  并行的前提是『工具之间无数据依赖』。如果 toolB 需要 toolA 的返回（例如先
+  `search_order` 再 `refund_order(order_id)`），就必须串行——也就是让模型先走完 toolA、
+  回填后再发起 toolB。盲目 `Promise.all` 会把未定义的参数并发出去。
+</Callout>
+
+## 7. 嵌套与依赖：让模型分步串工具
+
+当任务天然需要『先查、后办』，不要试图用一条工具定义表达所有逻辑，而是把工具拆细，让模型在循环里**多轮串联**：
+
+```
+用户：把小明上周的订单退掉
+  → 模型调 search_order(user='小明', range='上周')  → 你执行，回填 order_id=1024
+  → 模型调 refund_order(order_id=1024)            → 你执行，回填 成功
+  → 模型：已为小明退掉订单 1024
+```
+
+这种『模型自己决定下一步调什么』的编排，比手写 `if/else` 流水线更灵活，也更能应对用户临时改口（『算了别退了，改地址』）。代价是轮数不可控——所以第 9 节的循环上限与超时必不可少。
+
+## 8. 错误重试与降级
+
+工具执行会失败：网络超时、上游 500、参数校验失败、配额耗尽。处理原则：**可重试的错退避重试，不可重试的错降级**。
+
+```ts
+// 带重试的工具执行：区分『可重试』与『致命』错误
+async function executeWithRetry(
+  name: string,
+  args: unknown,
+  max = 3
+): Promise<{ ok: boolean; content: string }> {
+  for (let i = 0; i < max; i++) {
+    try {
+      const result = await invokeTool(name, args); // 真实工具调用
+      return { ok: true, content: result };
+    } catch (err: any) {
+      const retryable = err?.code === 'ECONNRESET' || err?.status >= 500;
+      if (retryable && i < max - 1) {
+        await new Promise((r) => setTimeout(r, 2 ** i * 300)); // 指数退避
+        continue;
+      }
+      // 致命错误 / 重试耗尽 → 降级：返回友好占位，让模型继续而不是崩溃
+      return { ok: false, content: `工具 ${name} 执行失败，请告知用户稍后重试` };
+    }
+  }
+  return { ok: false, content: '工具重试次数耗尽' };
+}
+```
+
+<Callout type="warn" title="降级而非崩溃">
+  真实系统里，工具挂了不该让整个 Agent 抛 500。把失败转成一段『tool 结果』回填，
+  让模型用自然语言向用户解释『这个功能暂时不可用』——可用性永远优先于『完美执行』。
+</Callout>
+
+## 9. 工具太多怎么办：路由与选择
+
+当工具数涨到几十个，全塞进 `tools` 会让 prompt 变长、模型选错率上升、token 成本飙升。三种解法：
+
+- **静态分组**：按业务域把工具拆成几组，先用小模型做意图路由，只把相关组的工具交给大模型；
+- **检索式工具发现（RAG for tools）**：把工具描述向量化，按用户问题召回 top-k 个最相关工具再注入；
+- **分层 Agent**：上层 Agent 只负责『选子 Agent/工具集』，下层才真正执行（见 M5 多 Agent 协作）。
+
+<Callout type="tip" title="工具描述就是你的检索入口">
+  既然工具描述会被模型（或你的检索器）用来匹配，写描述时多用『用户会怎么问』的近义词，
+  能同时提升模型直选命中率与检索召回率。一份好描述 = 用户措辞 + 功能边界 + 参数提示。
+</Callout>
+
+## 10. 对比：Function Calling vs 其他方案
+
+| 方案 | 适用 | 优点 | 缺点 |
+|------|------|------|------|
+| Function Calling | 模型需『决定调什么、传什么参』 | 原生支持、回填闭环清晰、strict 保结构 | 依赖厂商实现、工具多时选错 |
+| JSON 模式（response_format） | 只需『输出结构化数据』，无外部动作 | 简单、纯生成、易解析 | 模型不『触发动作』，需你后续手动 dispatch |
+| 提示工程 + 正则 | 极简、一次性任务 | 零依赖 | 不稳、易格式漂移、难维护 |
+| 微调（fine-tune） | 海量、固定模式的工具调用 | 小模型也能干、延迟低 | 训练成本高、更新工具要重训、不灵活 |
+
+<Callout type="note" title="何时用 JSON 模式而非工具">
+  如果你只是想把『用户的话』变成『结构化字段』，并且**下一步动作由你自己的代码决定**
+  （不需要模型来选工具），用 `response_format: { type: 'json_schema' }` 更直接、更便宜。
+  Function Calling 的独有价值在于『模型在循环中自主决策下一步』。
+</Callout>
+
+## 11. 常见坑
+
+<Callout type="danger" title="循环停不下来">
+  永远给循环设**上限**（如最多 5～10 轮）并加总超时。模型偶尔会反复调同一个工具，
+  没有上限就会烧钱卡死。建议同时限制『单轮最大 tool_calls 数』和『总步数』。
+</Callout>
+
+<Callout type="warn" title="别把工具结果当可信输入">
+  天气 API 可能超时、返回脏数据；更危险的是『提示注入』——网页/邮件内容里藏着
+  『忽略之前指令』的话。凡是有副作用的工具（发邮件、改库），执行前务必加护栏与确认。
+  工具返回的文本，在回填进 messages 前应做长度截断与必要的脱敏。
+</Callout>
+
+<Callout type="warn" title="成本与延迟">
+  每轮循环都是一次模型调用。工具越多、轮数越多，token 与延迟线性上升。
+  上线前评估：能否用更少工具、更短 prompt、更少轮数达成目标。
+  并行能压延迟，但并行 N 个工具 = N 次工具副作用，注意下游被瞬时打爆。
+</Callout>
+
+<Callout type="warn" title="参数解析失败没兜底">
+  `JSON.parse(call.function.arguments)` 在模型输出残缺 JSON 时会抛异常。
+  务必 `try/catch` 或 `safeParse`，把解析失败也当作『错误回填』让模型重试，而不是直接 500。
+</Callout>
+
+<Callout type="danger" title="严格模式变更导致旧调用失效">
+  给工具加了 `strict: true` 后，若你的 schema 含 `additionalProperties` 或非必填字段，
+  厂商会直接拒绝请求。上线前用『最小可用 schema + 全字段 required』验证一遍。
+</Callout>
+
+## 小结
+
+- Function Calling 是『模型建议、代码执行』的协作协议，靠四步闭环驱动。
+- `tool_choice` 决定决策权；`strict` 模式约束结构但不约束语义；参数校验必须自己做。
+- 无依赖工具用 `Promise.all` 并行；有依赖就让模型在多轮循环里分步串联。
+- 错误靠『退避重试 + 降级回填』消化，绝不因工具挂掉而让整个 Agent 崩溃。
+- 工具过多用路由/检索式发现收敛；对比 JSON 模式与微调，选对武器。
+- 红线：循环上限、参数解析兜底、`tool_call_id` 回传、别盲信工具结果、日志脱敏。
+
+<Callout type="note" title="下一步">
+  工具会用了，下一个问题是：**Agent 该按什么『思考策略』来组织这些工具调用？**
+  这就是 **M2 架构模式**（ReAct、Plan-and-Execute、Reflexion）要解决的。
+</Callout>
+
+## 延伸阅读 / 参考
+
+- OpenAI Function Calling 官方文档（工具定义、`tool_choice`、`strict` 模式，以官方为准）
+- Zod 与 `zod-to-json-schema` 文档：单一事实来源生成工具 schema
+- Anthropic Tool Use / Google Gemini Function Calling 文档：不同厂商协议差异对比
+- LangChain `bindTools` 与 `ToolNode`：框架层如何封装工具循环
+- 论文 *ReAct: Synergizing Reasoning and Acting in Language Models*（工具调用与推理交织的范式起点）

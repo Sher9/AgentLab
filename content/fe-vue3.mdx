@@ -1,0 +1,372 @@
+---
+title: Vue3 组合式 API
+description: 深入 Vue3 组合式 API：setup 与响应式本质、ref/reactive 取舍、响应式原理、组合式函数与 Pinia，配可运行骨架与踩坑清单。
+category: 前端工程
+order: 1
+difficulty: 进阶
+duration: 35 分钟
+tags: [Vue3, 组合式API, 响应式, Pinia]
+date: 2026-07-29
+---
+
+# Vue3 组合式 API
+
+Vue3 最大的变化不是性能（虽然 Proxy 重写确实更快），而是 **组合式 API（Composition API）** 带来的代码组织方式变革。它让你按「逻辑关注点」而非「选项类型」组织代码，并在复用层面替代了饱受诟病的 mixins。
+
+本篇面向有经验的开发者：不只讲用法，更讲清楚**响应式到底怎么运作**、**ref 与 reactive 何时该用哪个**、**组合式函数怎么写才不踩坑**，以及和 Pinia、React Hooks 的对比。
+
+## 1. 为什么需要组合式 API
+
+Options API 把代码切成 `data / methods / computed / watch` 等选项块。一个组件的「关注点」被拆散到多个选项里，一个功能相关的逻辑散布在文件各处——组件一大，`methods` 里几十个函数，你很难一眼看出「哪几个函数 + 哪几个 data 属于同一件事」。
+
+组合式 API 用「函数」把同一关注点的逻辑聚到一起：
+
+```ts
+// 关注点：鼠标位置追踪，所有相关逻辑在一个函数里闭合
+export function useMouse() {
+  const x = ref(0);
+  const y = ref(0);
+  function update(e: MouseEvent) {
+    x.value = e.pageX;
+    y.value = e.pageY;
+  }
+  onMounted(() => window.addEventListener('mousemove', update));
+  onUnmounted(() => window.removeEventListener('mousemove', update));
+  return { x, y };
+}
+```
+
+<Callout type="note" title="核心认知">
+  组合式 API 不是「新语法糖」，而是把 Vue 的内部能力（响应式、生命周期、依赖注入）
+  以函数形式暴露出来。Options API 仍在，且底层就是组合式 API 的封装。
+</Callout>
+
+## 2. 入口：setup 与 script setup
+
+两种写法。**推荐 `<script setup>`**，它是编译时语法糖，更少样板：
+
+```vue
+<!-- Counter.vue —— script setup 写法（编译期展开，无显式 export default） -->
+<script setup lang="ts">
+import { ref } from 'vue';
+
+// 顶层声明的变量/函数自动暴露给模板，无需 return
+const count = ref(0);
+function inc() {
+  count.value++; // 脚本里访问 ref 必须 .value
+}
+</script>
+
+<template>
+  <!-- 模板里自动解包，直接写 count 而非 count.value -->
+  <button @click="inc">点了 {{ count }} 次</button>
+</template>
+```
+
+普通 `setup()` 选项写法（适合需要更精细控制返回或接收 `props/context` 时）：
+
+```ts
+import { defineComponent, ref } from 'vue';
+
+export default defineComponent({
+  setup(props, ctx) {
+    const count = ref(0);
+    return { count }; // 必须显式 return 才会进模板
+  },
+});
+```
+
+<Callout type="tip" title="优先 script setup">
+  99% 场景用 `<script setup>`。它编译后模板绑定直接引用闭包变量，性能更好、类型推导更顺、
+  代码更短。仅当你需要 `inheritAttrs: false`、自定义 `render` 或显式控制 `expose` 时，
+  才退回普通 `setup` 或配合 `defineExpose`。
+</Callout>
+
+## 3. 响应式基础：ref 与 reactive
+
+两者都制造响应式数据，区别在于「包装目标」与「使用方式」。
+
+### 3.1 ref：任意类型的响应式包装
+
+`ref` 把**任何值**包成一个带 `.value` 的对象。基本类型（number/string/boolean）只能用 `ref`，因为原始值无法被 Proxy 代理。
+
+```ts
+import { ref } from 'vue';
+
+const count = ref(0);     // 基本类型 → 只能 ref
+const user = ref({ name: '小明' }); // 对象也能 ref，但此时内部仍是 reactive 思路
+console.log(count.value); // 脚本里读/写都走 .value
+```
+
+### 3.2 reactive：对象/数组的深层代理
+
+`reactive` 只对**对象/数组**生效，直接返回代理对象，访问属性无需 `.value`：
+
+```ts
+import { reactive } from 'vue';
+
+const state = reactive({ count: 0, user: { name: '小明' } });
+state.count++;            // 直接改属性，模板自动更新
+state.user.name = '小红'; // 深层也是响应式的
+```
+
+### 3.3 怎么选（实战经验）
+
+| 维度 | ref | reactive |
+|------|-----|----------|
+| 适用类型 | 任意（含基本类型） | 仅对象/数组 |
+| 访问方式 | 脚本里 `.value`，模板里自动解包 | 直接 `.属性`，模板里也直接 |
+| 解构/传递 | 解构后仍保持响应（仍是 ref 对象） | 解构会丢失响应性（拿到裸值） |
+| 重新赋值 | `count.value = 新值` 安全 | `state = 新对象` 会断掉响应（引用变了） |
+
+<Callout type="warn" title="reactive 解构陷阱">
+  `const { count } = reactive({ count: 0 })` 拿到的是普通数字，**失去响应性**。
+  若必须解构，用 `toRefs(state)` 转成一组 ref 再解构；或直接用 `ref` 起步更省心。
+</Callout>
+
+<Callout type="tip" title="统一建议">
+  团队约定：状态用 `ref` 起步（哪怕对象也 `ref({...})`），模板里自动解包，
+  脚本里统一 `.value`，心智负担最小。需要「整块表单对象」时再用 `reactive`，
+  且**绝不整体重新赋值**，只改属性。
+</Callout>
+
+## 4. 响应式原理：Proxy + 依赖收集
+
+理解原理能让你少踩 80% 的坑。Vue3 用 `Proxy` 代理对象，核心三步：**track（收集依赖）→ 触发副作用 → trigger（派发更新）**。
+
+### 4.1 一个最小响应式实现（伪代码骨架）
+
+下面用几十行还原 Vue 响应式核心，帮助建立直觉。**真实实现以官方源码为准，此骨架仅为讲清机制**：
+
+```ts
+// reactive-core.ts —— 最小响应式原理演示（非 Vue 源码，思路骨架）
+type EffectFn = () => void;
+const targetMap = new WeakMap<object, Map<string, Set<EffectFn>>>();
+let activeEffect: EffectFn | null = null;
+
+// 读取时：把当前副作用函数收集到该对象的该属性下
+function track(target: object, key: string) {
+  if (!activeEffect) return;
+  let depsMap = targetMap.get(target);
+  if (!depsMap) targetMap.set(target, (depsMap = new Map()));
+  let dep = depsMap.get(key);
+  if (!dep) depsMap.set(key, (dep = new Set()));
+  dep.add(activeEffect);
+}
+
+// 写入时：触发该属性下所有收集的副作用函数（重新执行 → 重新渲染）
+function trigger(target: object, key: string) {
+  targetMap.get(target)?.get(key)?.forEach((fn) => fn());
+}
+
+// 用 Proxy 拦截 get/set，串起 track/trigger
+function reactive<T extends object>(obj: T): T {
+  return new Proxy(obj, {
+    get(target, key: string, recv) {
+      track(target, key);                 // 读 → 收集依赖
+      return Reflect.get(target, key, recv);
+    },
+    set(target, key: string, value, recv) {
+      const ok = Reflect.set(target, key, value, recv);
+      trigger(target, key);               // 写 → 通知更新
+      return ok;
+    },
+  });
+}
+
+// 副作用容器：包裹「渲染」这类需要随依赖变化重跑的函数
+function effect(fn: EffectFn) {
+  activeEffect = fn;
+  fn();                      // 先跑一次（期间读到的属性会被 track）
+  activeEffect = null;
+}
+```
+
+要点：**依赖是在「副作用函数执行期间」被自动收集的**，所以你改了哪个属性，只有真正读过它的地方才会更新——这就是细粒度更新、且无需依赖「虚拟 DOM diff 全部」的原因（虽然 Vue 仍用 VDOM 做批量更新）。
+
+<Callout type="note" title="为什么用 Proxy 而非 Object.defineProperty">
+  Vue2 用 `Object.defineProperty`，无法监听新增/删除属性、数组索引变化，必须 `$set`。
+  Proxy 天然拦截「任意属性增删改、数组 push/pop」，且是惰性递归（访问深层才代理深层），
+  不需要初始化时递归遍历整棵树。
+</Callout>
+
+### 4.2 一个反直觉的坑：不在 effect 里读就不更新
+
+```ts
+const state = reactive({ count: 0 });
+// 下面这行在 effect 之外读取，不会被 track
+console.log(state.count);
+setTimeout(() => { state.count = 5; }, 1000); // 这个赋值没有收集到任何副作用
+```
+
+组件模板渲染本身运行在一个 `effect` 里，所以模板里用到的属性都会被自动收集——这也是为什么「模板里用到的才更新」。
+
+## 5. 计算属性与侦听器
+
+```ts
+import { ref, computed, watch, watchEffect } from 'vue';
+
+const price = ref(10);
+const qty = ref(2);
+// computed：基于其他响应式派生的「缓存值」，依赖不变不重算
+const total = computed(() => price.value * qty.value);
+
+// watch：显式监听源，拿到新旧值，适合副作用（请求/持久化）
+watch(total, (newVal, oldVal) => {
+  console.log(`总价从 ${oldVal} 变 ${newVal}`);
+});
+
+// watchEffect：立即执行 + 自动收集依赖，依赖变就重跑（类似 React 的 useEffect 自动依赖）
+watchEffect(() => {
+  console.log(`当前总价 ${total.value}`); // 读了 total → 自动追踪
+});
+```
+
+| 能力 | computed | watch | watchEffect |
+|------|----------|-------|-------------|
+| 返回值 | 有（可当响应式值用） | 无 | 无 |
+| 立即执行 | 懒（被读才算） | 否（除非 immediate） | 是 |
+| 依赖声明 | 函数内自动收集 | 显式指定源 | 函数内自动收集 |
+| 拿旧值 | 不支持 | 支持 | 不支持 |
+| 典型用途 | 派生数据 | 监听变化做副作用 | 初始化即需跑的副作用 |
+
+<Callout type="warn" title="别在 computed 里做副作用">
+  `computed` 的 getter 应当**纯函数**：不改状态、不发请求、不打日志。
+  副作用（调接口、写 localStorage）放进 `watch` / `watchEffect`。
+  否则依赖被多次读取时副作用会重复触发，难以排查。
+</Callout>
+
+## 6. 组合式函数（Composables）
+
+组合式函数 = 以 `use` 开头的、封装「有状态逻辑」的函数，是 Vue3 复用单元。
+
+```ts
+// useCounter.ts —— 可复用的计数器逻辑（带状态）
+import { ref, onUnmounted } from 'vue';
+
+export function useCounter(initial = 0) {
+  const count = ref(initial);
+  const inc = () => count.value++;
+  const dec = () => count.value--;
+  return { count, inc, dec };
+}
+
+// useFetch.ts —— 异步数据加载组合式函数（含加载/错误态）
+import { ref } from 'vue';
+export function useFetch<T>(url: string) {
+  const data = ref<T | null>(null);
+  const error = ref<Error | null>(null);
+  const loading = ref(true);
+
+  fetch(url)
+    .then((r) => r.json())
+    .then((d) => (data.value = d))
+    .catch((e) => (error.value = e))
+    .finally(() => (loading.value = false));
+
+  return { data, error, loading };
+}
+```
+
+<Callout type="tip" title="组合式函数三原则">
+  1. 命名 `useXxx`，返回响应式状态 + 方法；
+  2. 内部用到的生命周期钩子（onMounted 等）只对「当前调用它的组件」生效；
+  3. 不要直接 `return` 裸的 reactive 解构值，优先 `ref` 或 `toRefs`，保证调用方拿到的是响应式引用。
+</Callout>
+
+## 7. 状态管理：Pinia
+
+大型应用里跨组件共享的状态，交给 **Pinia**（Vuex 的官方继任者，更轻、对 TS 更友好）。
+
+```ts
+// stores/counter.ts —— 定义一个 store
+import { defineStore } from 'pinia';
+import { ref, computed } from 'vue';
+
+export const useCounterStore = defineStore('counter', () => {
+  // 组合式写法（setup store）：和组件里一样用 ref/computed
+  const count = ref(0);
+  const double = computed(() => count.value * 2);
+  function increment() {
+    count.value++;
+  }
+  return { count, double, increment };
+});
+```
+
+```vue
+<!-- 在组件里使用 -->
+<script setup lang="ts">
+import { useCounterStore } from '@/stores/counter';
+const store = useCounterStore();
+</script>
+<template>
+  <p>{{ store.count }} / 双倍 {{ store.double }}</p>
+  <button @click="store.increment()">+1</button>
+</template>
+```
+
+<Callout type="note" title="Pinia vs 直接 provide/inject">
+  父子/就近状态用 `provide/inject` 即可；**真正跨模块、需要_devtools 时间旅行、持久化、
+  严格单向流** 的全局状态才上 Pinia。不要所有状态都塞进 Pinia，那会退化成另一个全局大对象。
+</Callout>
+
+## 8. 对比：组合式 API vs Options API vs React Hooks
+
+| 对比项 | Vue 组合式 API | Vue Options API | React Hooks |
+|--------|----------------|-----------------|-------------|
+| 逻辑复用 | 组合式函数（类型友好） | mixins（来源不清、易冲突） | 自定义 Hook |
+| 代码组织 | 按关注点聚合 | 按选项类型拆分 | 按关注点（函数内） |
+| this 绑定 | 无 this | 依赖 this | 无 this |
+| 依赖声明 | watch/watchEffect 自动或显式 | 隐式（选项系统） | 手动写依赖数组 |
+| 心智负担 | 中（需理解 ref/.value） | 低 | 中（闭包/过期值坑） |
+
+<Callout type="warn" title="Vue 组合式函数不是 React Hooks">
+  二者形似但不同：Vue 的 `setup` 只执行**一次**（不像 Hooks 每次渲染都跑），
+  依赖收集在「同步执行期」完成，所以没有 React 那种「依赖数组漏写导致过期闭包」的经典坑。
+  但代价是：响应式写在 `watchEffect` 里必须**同步**读取依赖，异步回调里读的不会被收集。
+</Callout>
+
+## 9. 常见坑与最佳实践
+
+<Callout type="danger" title="解构丢失响应性">
+  `const { count } = store` 或 `const { x } = reactive(...)` 都会拿到裸值，不再是响应式的。
+  组件里用 `storeToRefs(store)` 取状态、用 `toRefs(reactiveObj)` 取属性。
+</Callout>
+
+<Callout type="warn" title="ref 在模板/setup 里忘记 .value">
+  脚本里访问 ref 必须 `.value`，模板里自动解包（但 `v-if="count"` 走的是解包后的值）。
+  嵌套在 `reactive` 里的 ref 也会被自动解包——这是双刃剑，建议团队统一用顶层 ref 避免混淆。
+</Callout>
+
+<Callout type="warn" title="异步回调里读响应式不触发收集">
+  `watchEffect` 里若 `await` 之后才读响应式属性，依赖收集已结束，不会追踪。
+  需要追踪的读操作放在 await 之前，或显式用 `watch` 指定源。
+</Callout>
+
+<Callout type="tip" title="大型项目约定">
+  统一 `ref` 起步；组合式函数放 `composables/` 并以 `use` 开头；
+  store 放 `stores/`；模板里尽量用「短表达式」，复杂派生进 `computed`，
+  不要在模板写复杂逻辑（难调试、不能复用）。
+</Callout>
+
+## 小结
+
+- 组合式 API 按「关注点」聚合逻辑，组合式函数（useXxx）是复用单元，取代 mixins。
+- `ref` 包任意类型（脚本里 `.value`），`reactive` 包对象（直接 `.属性`，忌整体重赋值/解构）。
+- 响应式 = Proxy 拦截 + 依赖收集（track）+ 派发更新（trigger），依赖在副作用同步执行期自动收集。
+- `computed` 派生缓存值（纯函数）、`watch/watchEffect` 做副作用；Pinia 管真正全局的跨模块状态。
+- 红线：别解构丢响应性、别在 computed 写副作用、异步里读依赖要小心。
+
+<Callout type="note" title="下一步">
+  Vue 解决「视图与状态」，React 解决同类问题但心智模型不同。下一篇
+  **fe-react（React Hooks 实战）** 对照看，能更快吃透两者差异与选型。
+</Callout>
+
+## 延伸阅读 / 参考
+
+- Vue3 官方文档 · 组合式 API：https://cn.vuejs.org/guide/extras/composition-api-faq.html
+- Vue3 响应式原理（reactive 源码）：https://cn.vuejs.org/api/reactivity-core.html
+- Pinia 官方文档：https://pinia.vuejs.org/
+- 组合式函数最佳实践：https://cn.vuejs.org/guide/reusability/composables.html
+- `<script setup>` 语法糖说明：https://cn.vuejs.org/api/sfc-script-setup.html

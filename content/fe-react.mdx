@@ -1,0 +1,370 @@
+---
+title: React Hooks 实战
+description: 吃透 React Hooks：useState/useEffect 机制、依赖数组陷阱、自定义 Hook、并发特性（useTransition/useDeferredValue）与状态管理选型，配可运行骨架。
+category: 前端工程
+order: 2
+difficulty: 进阶
+duration: 38 分钟
+tags: [React, Hooks, 并发渲染, 状态管理]
+date: 2026-07-29
+---
+
+# React Hooks 实战
+
+React 从 16.8 引入 Hooks，彻底改变了函数组件的写法：**让函数组件拥有状态与生命周期能力，并取代 class 组件**。但对有经验的开发者来说，Hooks 真正的难点不在 API，而在**渲染模型与闭包**：为什么 `useEffect` 拿到的是旧值？为什么状态更新没生效？并发特性又解决了什么？
+
+本篇从机制讲到实战，配可运行骨架、依赖陷阱、自定义 Hook、并发特性与状态管理选型。
+
+## 1. 心智模型：每次渲染都是独立的闭包
+
+理解 Hooks 的第一性原理：**函数组件每次渲染，都是一次函数调用，拿到的是那一次的 props/state 快照**。Hooks 不是「跨渲染持久化的变量」，而是 React 在内部按「调用顺序」把状态挂到你这次渲染上的机制。
+
+```tsx
+function Counter() {
+  const [count, setCount] = useState(0);
+  // 每次渲染：count 是「这次」的快照；setCount 是稳定的调度函数
+  function handle() {
+    setCount(count + 1); // 这里的 count 是闭包捕获的当前值
+  }
+  return <button onClick={handle}>{count}</button>;
+}
+```
+
+<Callout type="note" title="核心认知">
+  Hooks 的状态不保存在函数里，而保存在 React 内部（按 fiber + 调用顺序索引）。
+  函数每次重跑只是「重新读取」当前的状态快照。这就是为什么「闭包里的旧值」问题频发。
+</Callout>
+
+## 2. useState：状态与批量更新
+
+```tsx
+import { useState } from 'react';
+
+function Form() {
+  const [name, setName] = useState(''); // 数组解构：[当前值, 更新函数]
+  // 函数式更新：依赖「上一次状态」时用回调，避免闭包旧值
+  const [list, setList] = useState<string[]>([]);
+  function add() {
+    setList((prev) => [...prev, name]); // prev 永远是 React 内部最新值
+  }
+  return <input value={name} onChange={(e) => setName(e.target.value)} />;
+}
+```
+
+<Callout type="tip" title="优先函数式更新">
+  当新状态依赖旧状态时（自增、累加、push），永远写 `setX(prev => ...)`。
+  直接 `setX(x + 1)` 在并发/快速点击场景下可能基于过期快照计算，丢更新。
+</Callout>
+
+React 18 起，**事件处理函数内的多次 setState 自动批处理**（合并成一次渲染）。但 `setTimeout` / `Promise` 里的更新在 React 17 及之前不批处理，18 起统一批处理。需要刻意「打破批处理」时用 `flushSync`（极少用）。
+
+## 3. useEffect：副作用与依赖数组
+
+`useEffect(fn, deps)`：渲染后（commit 后）执行 `fn`，`deps` 决定何时重跑，`fn` 可返回清理函数。
+
+```tsx
+import { useState, useEffect } from 'react';
+
+function UserProfile({ userId }: { userId: string }) {
+  const [user, setUser] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false; // 防止卸载后 setState（竞态）
+    fetch(`/api/users/${userId}`)
+      .then((r) => r.json())
+      .then((d) => { if (!cancelled) setUser(d); });
+
+    // 清理函数：下次 effect 重跑前 / 组件卸载前执行
+    return () => { cancelled = true; };
+  }, [userId]); // 依赖：userId 变才重新拉取，空数组 = 仅挂载时跑一次
+}
+```
+
+### 3.1 依赖数组的三档
+
+| deps | 行为 | 典型用途 |
+|------|------|----------|
+| `[a, b]` | a 或 b 变化才重跑 | 依赖具体状态/属性的副作用 |
+| `[]` | 仅挂载时跑一次 | 初始化、订阅（注意闭包旧值） |
+| 省略 deps | 每次渲染后都跑 | 极少用，等于放进 render 的副作用 |
+
+<Callout type="danger" title="依赖数组漏写 = 过期闭包">
+  若 effect 里读了 `count` 却没放进 deps，effect 只在初次跑，读到的是 `count=0` 的快照，
+  后续 `count` 变了 effect 不会重跑 → 经典「旧值 bug」。eslint 的
+  `react-hooks/exhaustive-deps` 规则就是帮你抓这个，别轻易 `// eslint-disable`。
+</Callout>
+
+<Callout type="warn" title="无限循环">
+  `useEffect` 里 setState，且 setState 的值又进了 deps → 每次渲染触发 effect → 再渲染…
+  破法：只在值「真正变化」时 setState，或把 setState 移出 deps（用函数式更新 + 正确依赖）。
+</Callout>
+
+## 4. useRef：跨渲染持有可变值
+
+`useRef` 返回一个**可变、跨渲染稳定**的对象 `.current`，改它**不触发重渲染**。
+
+```tsx
+import { useRef, useEffect } from 'react';
+
+function Timer() {
+  const timerId = useRef<number>(); // 存定时器 id，不引发渲染
+  const renderCount = useRef(0);
+
+  useEffect(() => {
+    timerId.current = window.setInterval(() => {
+      renderCount.current++; // 改 ref 不重渲染
+    }, 1000);
+    return () => clearInterval(timerId.current);
+  }, []);
+
+  // 常见用法：拿到 DOM 节点
+  const inputRef = useRef<HTMLInputElement>(null);
+  // <input ref={inputRef} />  然后 inputRef.current?.focus()
+}
+```
+
+<Callout type="tip" title="useRef vs useState">
+  需要「DOM 引用 / 定时器 id / 上次渲染值」这类**不需要驱动 UI 重新渲染**的容器时用 useRef。
+  需要「变化要反映到界面」时必须 useState。二者常被混用，记住：ref 改了视图不动。
+</Callout>
+
+## 5. useMemo / useCallback：性能优化
+
+```tsx
+import { useMemo, useCallback } from 'react';
+
+function Expensive({ items, onSelect }: { items: any[]; onSelect: (id: number) => void }) {
+  // 重计算：仅 items 变才重算（依赖数组）
+  const sorted = useMemo(() => items.slice().sort((a, b) => a.v - b.v), [items]);
+  // 函数记忆：onSelect 身份稳定，避免子组件无谓重渲染
+  const handle = useCallback((id: number) => onSelect(id), [onSelect]);
+
+  return <List data={sorted} onPick={handle} />;
+}
+```
+
+<Callout type="warn" title="别过早优化">
+  `useMemo/useCallback` 有自身成本（比较 deps、分配内存）。只有确认「重计算很贵」
+  或「需要稳定引用传给 memo 子组件」时才用。乱加反而拖慢。
+</Callout>
+
+## 6. 自定义 Hook：复用状态逻辑
+
+自定义 Hook 把「有状态逻辑」抽成函数，是 React 复用单元（类比 Vue 的 composables）。
+
+```tsx
+// useDebounce.ts —— 防抖值
+import { useState, useEffect } from 'react';
+export function useDebounce<T>(value: T, delay = 300): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const id = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(id); // 值频繁变时不断重置定时器
+  }, [value, delay]);
+  return debounced;
+}
+
+// useLocalStorage.ts —— 持久化状态
+import { useState, useEffect } from 'react';
+export function useLocalStorage(key: string, init: string) {
+  const [val, setVal] = useState(() => localStorage.getItem(key) ?? init);
+  useEffect(() => { localStorage.setItem(key, val); }, [key, val]);
+  return [val, setVal] as const;
+}
+```
+
+<Callout type="note" title="命名与规则">
+  自定义 Hook 必须 `use` 开头，且内部只能调用其他 Hook（遵循 Hooks 规则：
+  不在条件/循环里调用 Hook）。这样 React 才能按调用顺序正确关联状态。
+</Callout>
+
+## 7. 并发特性：useTransition 与 useDeferredValue
+
+React 18 引入并发渲染，解决「一次更新卡住整个界面」的问题。核心概念：把更新分成**紧急（用户输入）**与**过渡（非阻塞）**两类。
+
+```tsx
+import { useState, useTransition, useDeferredValue } from 'react';
+
+function Search() {
+  const [query, setQuery] = useState('');
+  const [list, setList] = useState([]);
+  const [isPending, startTransition] = useTransition(); // 标记过渡更新
+
+  function onChange(e: React.ChangeEvent<HTMLInputElement>) {
+    setQuery(e.target.value); // 紧急：输入框立刻响应
+    startTransition(() => {
+      // 过渡：重渲染列表可被打断，不阻塞输入
+      setList(filterBigList(e.target.value));
+    });
+  }
+
+  const deferredQuery = useDeferredValue(query); // 把值「延迟」到空闲再更新
+  return (
+    <>
+      <input value={query} onChange={onChange} />
+      <ul style={{ opacity: isPending ? 0.5 : 1 }}>
+        {list.map((x) => <li key={x.id}>{x.name}</li>)}
+      </ul>
+    </>
+  );
+}
+```
+
+| 能力 | useTransition | useDeferredValue |
+|------|--------------|------------------|
+| 用途 | 把「一段状态更新」标记为非紧急 | 把「一个值」延迟到渲染空闲 |
+| 是否可感知 pending | 是（`isPending`） | 否（自动在后台过渡） |
+| 适用 | 主动包裹更新逻辑 | 被动接收一个会变慢的值 |
+
+<Callout type="tip" title="何时上并发特性">
+  列表上千条、输入即筛选、切换 Tab 卡顿这类「用户操作要秒回，但后续渲染很重」场景，
+  用 `useTransition`/`useDeferredValue` 让紧急交互优先、重渲染可被打断。
+  普通小页面用不上，别为了用而用。
+</Callout>
+
+## 8. 状态管理选型
+
+内置 Hooks 适合局部状态；跨组件/全局状态需要外部方案。
+
+| 方案 | 适用规模 | 特点 |
+|------|----------|------|
+| useState/useContext | 中小、低频更新 | 简单，但 context 一变全部消费组件重渲染 |
+| Zustand | 中大型 | 极简、无 Provider 嵌套、按需订阅、性能好 |
+| Redux Toolkit | 大型/复杂流 | 可预测、devtools 强、样板稍多、适合强规范团队 |
+| Jotai/Recoil | 原子化 | 细粒度原子状态，天然避免不必要的重渲染 |
+
+```tsx
+// Zustand 最小骨架（思路示意，API 以官方文档为准）
+import { create } from 'zustand';
+const useStore = create((set) => ({
+  count: 0,
+  inc: () => set((s) => ({ count: s.count + 1 })),
+}));
+// 组件里：const count = useStore((s) => s.count); 仅订阅 count，其他不变不重渲染
+```
+
+<Callout type="warn" title="别用 Context 当全局 store">
+  `useContext` 适合「主题/用户身份」这类低频变化数据。把一个高频变动的全局状态放进
+  Context，每次更新会让**所有消费组件**重渲染，性能炸裂。高频全局态用 Zustand/Redux 的
+  细粒度订阅。
+</Callout>
+
+## 9. 复杂状态：useReducer
+
+当单个 `useState` 的状态逻辑变复杂（多字段、多种「事件」改变它），用 `useReducer` 把「状态 + 动作」收敛成纯函数，可读性远超一堆 `setX`。
+
+```tsx
+import { useReducer } from 'react';
+
+type State = { count: number; step: number };
+type Action = { type: 'inc' } | { type: 'dec' } | { type: 'setStep'; step: number };
+
+// reducer：纯函数，(旧状态, 动作) → 新状态；所有变更集中在此，易测试
+function reducer(state: State, action: Action): State {
+  switch (action.type) {
+    case 'inc': return { ...state, count: state.count + state.step };
+    case 'dec': return { ...state, count: state.count - state.step };
+    case 'setStep': return { ...state, step: action.step };
+    default: return state;
+  }
+}
+
+function Stepper() {
+  const [state, dispatch] = useReducer(reducer, { count: 0, step: 1 });
+  return (
+    <>
+      <button onClick={() => dispatch({ type: 'dec' })}>-</button>
+      <span>{state.count}</span>
+      <button onClick={() => dispatch({ type: 'inc' })}>+</button>
+      <input
+        type="number"
+        value={state.step}
+        onChange={(e) => dispatch({ type: 'setStep', step: +e.target.value })}
+      />
+    </>
+  );
+}
+```
+
+<Callout type="tip" title="useReducer vs useState">
+  经验法则：状态是「多个相互关联字段」或「变更逻辑有多种分支」→ useReducer；
+  单一独立值 → useState。useReducer 也更易配合状态机思想，避免散落各处的 setState 竞态。
+</Callout>
+
+## 10. 跨组件通信：useContext
+
+当状态需要跨多层组件共享（主题、当前用户），用 `createContext` + `useContext` 避免 props 透传（prop drilling）。
+
+```tsx
+import { createContext, useContext, useState } from 'react';
+
+// 1. 定义 context（放默认结构，类型即契约）
+const ThemeContext = createContext<{ dark: boolean; toggle: () => void }>({
+  dark: false,
+  toggle: () => {},
+});
+
+function App() {
+  const [dark, setDark] = useState(false);
+  return (
+    // 2. Provider 在顶层把值注入，其下任意深度组件都能取
+    <ThemeContext.Provider value={{ dark, toggle: () => setDark((d) => !d) }}>
+      <Toolbar />
+    </ThemeContext.Provider>
+  );
+}
+
+function Toolbar() {
+  const { dark, toggle } = useContext(ThemeContext); // 3. 任意层直接取，无需 props
+  return <button onClick={toggle}>{dark ? '暗色' : '亮色'}</button>;
+}
+```
+
+<Callout type="warn" title="Context 的重新渲染范围">
+  Provider 的 `value` 每次渲染若产生新引用（如内联对象 `{ dark, toggle }`），所有消费组件都会重渲染。
+  用 `useMemo` 稳定 value，或把高频变的值拆成独立 Context，缩小受影响范围。
+</Callout>
+
+## 11. 常见坑与最佳实践
+
+<Callout type="danger" title="过期闭包">
+  `setTimeout` / 事件监听器里读到的 state 是定义时的快照。需要最新值就用
+  函数式更新 `setX(prev => ...)`，或把值放进 ref，或把依赖写全。
+</Callout>
+
+<Callout type="warn" title="在 render 阶段写副作用">
+  组件函数体（render）里不要直接 `fetch`、改全局、setState（会触发重渲染循环）。
+  副作用一律进 `useEffect`。strict 模式下 effect 会跑两次（开发期），清理函数必须写对。
+</Callout>
+
+<Callout type="warn" title="对象/数组做依赖比对引用">
+  `useEffect(() => {...}, [obj])` 中 `obj` 每次渲染是新引用（如 `{a:1}` 字面量），
+  会误判「变了」导致 effect 每次重跑。要么用原始值做依赖，要么 `useMemo` 稳定引用，
+  或把比较值拆成基本类型。
+</Callout>
+
+<Callout type="tip" title="严格模式双调用">
+  React 18 `StrictMode` 开发期会故意双调用 render 与 effect（挂载-卸载-挂载），
+  用于暴露不纯逻辑。生产不双调用。确保 effect 清理函数能安全重复执行。
+</Callout>
+
+## 小结
+
+- Hooks 状态存在 React 内部、按调用顺序关联；每次渲染是独立闭包快照。
+- `useState` 优先函数式更新；`useEffect` 依赖数组写全（否则过期闭包）；清理函数防泄漏/竞态。
+- `useRef` 跨渲染持有可变值不触发渲染；`useMemo/useCallback` 仅在高成本/稳定引用时加。
+- 自定义 Hook（`use` 开头）复用逻辑；并发特性 `useTransition/useDeferredValue` 解卡顿。
+- 红线：别用 Context 当高频全局 store、别在 render 写副作用、别漏依赖、别在 effect 里无脑 setState 引发循环。
+
+<Callout type="note" title="下一步">
+  React 是纯客户端视图库；当它需要「服务端渲染、路由、流式、缓存」时，
+  就到了 **fe-nextjs（Next.js App Router）** 的领域。
+</Callout>
+
+## 延伸阅读 / 参考
+
+- React 官方文档 · Hooks 参考：https://react.dev/reference/react
+- 你可能不需要 Effect：https://react.dev/learn/you-might-not-need-an-effect
+- 并发特性 useTransition：https://react.dev/reference/react/useTransition
+- Zustand 文档：https://github.com/pmndrs/zustand
+- Redux Toolkit 文档：https://redux-toolkit.js.org/

@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>asyncio 异步编程：事件循环、协程与并发原语 · AgentLab</title>
+  <meta name="description" content="理解 asyncio 的事件循环与协程模型，掌握 async/await、Task 调度、并发原语（锁/队列/信号量），并学会和同步/CPU 密集库安全互操作，避开最常见的异步坑。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="asyncio 异步编程：事件循环、协程与并发原语 · AgentLab"/>
+  <meta property="og:description" content="理解 asyncio 的事件循环与协程模型，掌握 async/await、Task 调度、并发原语（锁/队列/信号量），并学会和同步/CPU 密集库安全互操作，避开最常见的异步坑。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#python">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🐍</span>
+        <span class="art-moduleName">Python</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">40 分钟</span>
+      </div>
+      <h1 class="art-title">asyncio 异步编程：事件循环、协程与并发原语</h1>
+      <p class="art-desc">理解 asyncio 的事件循环与协程模型，掌握 async/await、Task 调度、并发原语（锁/队列/信号量），并学会和同步/CPU 密集库安全互操作，避开最常见的异步坑。</p>
+      <div class="art-tags"><span class="art-tag">#asyncio</span><span class="art-tag">#异步</span><span class="art-tag">#协程</span><span class="art-tag">#并发</span><span class="art-tag">#事件循环</span></div>
+    </div>
+    <div class="prose"><h1>asyncio 异步编程：事件循环、协程与并发原语</h1>
+<p>很多 Python 开发者对 <code>async/await</code> 的认知停留在「加个 <code>await</code> 就能并发」。结果一上线就踩坑：事件循环被阻塞、死锁、协程没被调度、<code>asyncio.run</code> 嵌套报错……</p>
+<p>这一篇不堆概念，而是把 asyncio 的<strong>运行模型</strong>讲透：事件循环到底在干什么、<code>async/await</code> 改变了什么、协程和 Task 的区别、有哪些并发原语，以及<strong>最关键的——异步代码怎么和同步/CPU 密集库安全地共存</strong>。最后给一个能直接跑的并发抓取骨架。</p>
+<h2 id="1-为什么需要-asyncio-它解决的是-io-并发-不是-cpu-并行">1. 为什么需要 asyncio：它解决的是 IO 并发，不是 CPU 并行</h2>
+<p>先理清一个最常被混淆的点：<strong>asyncio 是并发（concurrency），不是并行（parallelism）</strong>。</p>
+<ul>
+<li>传统多线程：靠操作系统在多个线程间切换，遇到 IO 等待时让出 CPU；但线程切换有开销，且受 GIL 限制，CPU 密集任务并不能真正并行。</li>
+<li><code>asyncio</code>：在**单线程**内用一个**事件循环（event loop）** 调度大量协程。当某个协程遇到 <code>await</code>（IO 等待）时，它主动让出控制权，事件循环立刻切去跑别的协程。</li>
+</ul>
+<p>所以它真正的价值场景是：<strong>海量「在等 IO」的任务</strong>（网络请求、数据库查询、文件读写）。一个进程就能轻松hold住成千上万个「正在等待」的连接，而线程方案开几千个线程就内存爆炸了。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">关键认知</span></div><div class="co-body"><p>  asyncio 解决的问题是『单线程内，用协作式调度榨干 IO 等待时间』。它<strong>不会</strong>让你的
+  纯计算变快——CPU 密集活儿请交给多进程。选错模型，asyncio 反而比同步还慢。</p>
+</div></div><h2 id="2-事件循环-asyncio-的发动机">2. 事件循环：asyncio 的发动机</h2>
+<p>事件循环是一个无限循环，负责：</p>
+<ol>
+<li>维护一个「就绪队列」和「等待 IO 的协程集合」；</li>
+<li>当一个协程 <code>await</code> 一个 IO 操作时，把它挂起，转去执行别的可运行协程；</li>
+<li>IO 完成时（由底层 selector 通知），把对应协程重新放回就绪队列。</li>
+</ol>
+<p>你平时几乎不直接碰事件循环，但要知道它的存在，因为<strong>所有协程都必须在同一个事件循环里运行</strong>这件事，是后面所有坑的根源。</p>
+<pre><code class="language-python">import asyncio
+
+# asyncio.run 会：创建一个新事件循环 → 在其中运行 main 协程 → 结束后关闭循环
+async def main():
+    print("hello")
+    await asyncio.sleep(1)   # 主动让出控制权，1 秒后由循环重新唤醒
+    print("world")
+
+asyncio.run(main())
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">别在同一个进程里跑多个事件循环</span></div><div class="co-body">  <code>asyncio.run()</code> 每次都会新建并关闭一个循环。在一个已经运行着循环的环境里
+<p>  （比如 FastAPI/uvicorn 内部、Jupyter notebook、pytest-asyncio 测试）再调 <code>asyncio.run</code>，
+  会抛 <code>RuntimeError: This event loop is already running</code>。这种场景要用 <code>loop.create_task</code>，
+  或交给你所在框架的循环来管理。</p>
+</div></div><h2 id="3-async-await-到底在改什么">3. async / await 到底在改什么</h2>
+<code>async def</code> 定义的是**协程函数**，调用它不会执行函数体，而是返回一个**协程对象（coroutine）**——一个「可暂停、可恢复」的计算。真正的执行发生在它被 <code>await</code> 或被放进事件循环时。<pre><code class="language-python">async def fetch(x):
+    await asyncio.sleep(0.1)   # 模拟 IO
+    return x * 2
+
+# 下面这行只是「造了个协程对象」，函数体一行都没跑
+coro = fetch(10)
+
+# 只有 await / 放进循环，函数体才会真正执行
+result = await coro   # result == 20
+</code></pre><p>要点：</p>
+<ul>
+<li><code>await</code> 只能在 <code>async def</code> 里用；它后面跟的必须是一个**可等待对象（awaitable）**：协程、Task、或实现了 <code>__await__</code> 的对象。</li>
+<li><code>await</code> 的含义是：『我要等这个结果，等的时候请把控制权交还给事件循环』。</li>
+<li>忘了 <code>await</code> 是最常见的低级错误：你拿到的是一个协程对象而不是它的值，且函数体根本没执行。</li>
+</ul>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">await 前忘了 await</span></div><div class="co-body"><p>  写成 <code>result = fetch(10)</code> 而不是 <code>result = await fetch(10)</code>，你拿到的只是协程对象，
+  代码不会报错但<strong>函数体从未运行</strong>，返回/副作用全是空的。这是新手最高频 bug，
+  且因为没异常，极难排查。代码审查时重点盯这类漏写的 <code>await</code>。</p>
+</div></div><h2 id="4-协程-vs-task-为什么需要-asyncio-create_task">4. 协程 vs Task：为什么需要 <code>asyncio.create_task</code></h2>
+<p>协程对象本身<strong>不会</strong>被并发调度——它只是一个待执行的计算。要真正「让它在后台跑」，必须包装成 <code>Task</code> 交给事件循环。</p>
+<code>asyncio.create_task(coro)</code> 做两件事：<ol>
+<li>把协程包成 Task（事件循环里的调度单元）；</li>
+<li>立即把它排入循环，<strong>不等它跑完就返回 Task 对象</strong>。</li>
+</ol>
+<pre><code class="language-python">async def worker(name, delay):
+    await asyncio.sleep(delay)
+    print(f"{name} 完成")
+    return name
+
+async def main():
+    # 注意：create_task 立刻调度，不阻塞；两个 worker 从这一刻起「同时」在跑
+    t1 = asyncio.create_task(worker("A", 1))
+    t2 = asyncio.create_task(worker("B", 1))
+
+    # 这里才真正等待它们结束（谁先完成无所谓，await 收集结果）
+    r1 = await t1
+    r2 = await t2
+    print(r1, r2)
+</code></pre><p>对比三种「等待多个协程」的写法：</p>
+<table>
+<thead>
+<tr>
+<th>写法</th>
+<th>行为</th>
+<th>适用</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>await coro1; await coro2</code></td>
+<td>串行：等完一个再开始下一个</td>
+<td>有严格先后依赖</td>
+</tr>
+<tr>
+<td><code>asyncio.gather(c1, c2)</code></td>
+<td>并发：同时启动，收集全部结果（顺序与输入一致）</td>
+<td>一组独立任务</td>
+</tr>
+<tr>
+<td><code>asyncio.TaskGroup([c1,c2])</code></td>
+<td>并发：任一失败则取消其余，异常聚合</td>
+<td>需要「全有或全无」语义（Py3.11+）</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">gather 的 return_exceptions</span></div><div class="co-body">  <code>asyncio.gather(c1, c2, return_exceptions=True)</code> 不会因单个任务失败而中断其余，
+<p>  而是把异常对象当结果返回。需要「容错地跑完所有任务」时用它，再逐个检查哪些是异常。</p>
+</div></div><h2 id="5-并发原语-在协程之间做同步">5. 并发原语：在协程之间做同步</h2>
+<p>异步世界里<strong>不能用普通线程锁</strong>。因为协程是「协作式」切换，一个没 <code>await</code> 的代码段会一直占着循环，线程锁的阻塞语义在单线程下会死锁。asyncio 提供了一套<strong>异步安全</strong>的原语，全部基于 <code>await</code>。</p>
+<h3 id="5-1-asyncio-lock-保护共享资源">5.1 <code>asyncio.Lock</code> —— 保护共享资源</h3>
+<pre><code class="language-python">lock = asyncio.Lock()
+counter = 0
+
+async def inc():
+    global counter
+    async with lock:          # 异步上下文管理器，等价于 await lock.acquire()
+        tmp = counter
+        await asyncio.sleep(0)  # 让出控制权，模拟中途被切走
+        counter = tmp + 1       # 因为锁保护，不会读到过期值
+</code></pre><h3 id="5-2-asyncio-semaphore-限流">5.2 <code>asyncio.Semaphore</code> —— 限流</h3>
+<p>并发抓取时不能无脑开一万条连接打爆对方服务器，用信号量限制并发度：</p>
+<pre><code class="language-python">sem = asyncio.Semaphore(10)   # 最多 10 个协程同时进入
+
+async def fetch(url):
+    async with sem:           # 超过 10 个就在这里排队等待
+        return await http_get(url)
+</code></pre><h3 id="5-3-asyncio-queue-生产者-消费者">5.3 <code>asyncio.Queue</code> —— 生产者/消费者</h3>
+<p>经典模式：生产者往队列塞任务，多个消费者协程 concurrently 取走处理。</p>
+<pre><code class="language-python">queue: asyncio.Queue = asyncio.Queue()
+
+async def producer(items):
+    for it in items:
+        await queue.put(it)        # 队列满时自动 await 等待
+    await queue.put(None)          # 哨兵：通知消费者结束
+
+async def consumer():
+    while True:
+        item = await queue.get()
+        if item is None:
+            queue.task_done()
+            break
+        await process(item)
+        queue.task_done()
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">别用 threading.Lock 代替 asyncio.Lock</span></div><div class="co-body"><p>  在协程里用标准库的 <code>threading.Lock</code> 会<strong>阻塞整个事件循环</strong>——因为 <code>lock.acquire()</code> 是
+  同步阻塞调用，它不会把控制权交还循环。结果：所有协程卡死。异步场景一律用
+  <code>asyncio.*</code> 系列原语。</p>
+</div></div><h2 id="6-和同步-cpu-密集库互操作-最容易翻车的地方">6. 和同步/CPU 密集库互操作（最容易翻车的地方）</h2>
+<p>现实项目里你几乎不可能只写纯异步代码。以下几种混合场景是工程常态：</p>
+<h3 id="6-1-调用同步阻塞库-如-requests-time-sleep">6.1 调用同步阻塞库（如 <code>requests</code>、<code>time.sleep</code>）</h3>
+<p>在协程里直接调这些，会<strong>卡住整个事件循环</strong>：</p>
+<pre><code class="language-python">async def bad():
+    time.sleep(2)        # 灾难：整个循环被这 2 秒完全冻结
+    return requests.get(url).text  # requests 也是同步阻塞
+</code></pre><p>正确做法：<strong>用官方提供的异步替代品</strong>（<code>httpx.AsyncClient</code> 替代 <code>requests</code>，<code>aiofiles</code> 替代文件 IO）。如果只有同步库可用，把它丢到线程池，避免阻塞循环：</p>
+<pre><code class="language-python">import asyncio, requests
+
+async def good():
+    # run_in_executor 把同步函数丢到默认线程池执行，await 等待结果，循环不被阻塞
+    loop = asyncio.get_running_loop()
+    resp = await loop.run_in_executor(None, lambda: requests.get(url))
+    return resp.text
+</code></pre><h3 id="6-2-cpu-密集计算-如-pandas-numpy-图片处理">6.2 CPU 密集计算（如 pandas、numpy、图片处理）</h3>
+<p>CPU 密集活儿会占满 GIL，同样冻结循环。应丢到<strong>进程池</strong>：</p>
+<pre><code class="language-python">async def heavy():
+    loop = asyncio.get_running_loop()
+    # run_in_executor 传 ProcessPoolExecutor，真并行，绕开 GIL
+    result = await loop.run_in_executor(
+        ProcessPoolExecutor(), cpu_bound_func, data
+    )
+    return result
+</code></pre><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">async 不能拯救 CPU 密集任务</span></div><div class="co-body"><p>  把纯计算写进 <code>async def</code> 然后 <code>await</code>，<strong>不会变快分毫</strong>——计算期间循环无法切走。
+  凡是耗时计算，必须用 <code>run_in_executor</code> + 进程池，或拆分用 <code>await asyncio.sleep(0)</code>
+  主动让权（仅适合可分段的逻辑）。</p>
+</div></div><h3 id="6-3-混用模型对比">6.3 混用模型对比</h3>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>错误做法</th>
+<th>正确做法</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>同步网络库</td>
+<td>协程里直接 <code>requests.get</code></td>
+<td><code>httpx.AsyncClient</code> 或线程池 <code>run_in_executor</code></td>
+</tr>
+<tr>
+<td>同步文件 IO</td>
+<td>协程里直接 <code>open().read()</code></td>
+<td><code>aiofiles</code> 或线程池</td>
+</tr>
+<tr>
+<td>CPU 密集</td>
+<td>写进 <code>async def</code> 直接算</td>
+<td>进程池 <code>run_in_executor</code></td>
+</tr>
+<tr>
+<td>标准锁</td>
+<td><code>threading.Lock</code></td>
+<td><code>asyncio.Lock/Semaphore/Event</code></td>
+</tr>
+</tbody></table>
+<h2 id="7-超时-取消与错误处理">7. 超时、取消与错误处理</h2>
+<h3 id="7-1-超时控制">7.1 超时控制</h3>
+<p>对任何外部 IO 都必须设超时，否则一个慢响应能挂起整条链路：</p>
+<pre><code class="language-python">async def with_timeout():
+    try:
+        # wait_for 包裹任意可等待对象，超时抛 TimeoutError
+        return await asyncio.wait_for(fetch(url), timeout=3.0)
+    except asyncio.TimeoutError:
+        return None   # 超时降级处理
+</code></pre><h3 id="7-2-取消-task">7.2 取消 Task</h3>
+<code>task.cancel()</code> 会在协程当前 <code>await</code> 处注入 <code>CancelledError</code>。协程应当处理它做清理，或显式忽略（不推荐）：<pre><code class="language-python">task = asyncio.create_task(long_job())
+await asyncio.sleep(1)
+task.cancel()                 # 请求取消
+try:
+    await task
+except asyncio.CancelledError:
+    print("任务被取消了，做清理")
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">cancel 要在 await 处才生效</span></div><div class="co-body">  <code>task.cancel()</code> 不是立刻杀掉协程，而是等它下次 <code>await</code> 时抛 <code>CancelledError</code>。
+<p>  如果协程里有一段<strong>没有 await</strong> 的长计算，取消会一直等到那段跑完才响应。
+  长循环里记得周期性 <code>await asyncio.sleep(0)</code> 让出可取消点。</p>
+</div></div><h2 id="8-完整可运行骨架-并发抓取">8. 完整可运行骨架：并发抓取</h2>
+<p>把下面存成 <code>scrape.py</code>，<code>pip install httpx</code> 后 <code>python scrape.py</code> 即可运行——它并发抓取多个 URL，用信号量限流、带超时与失败容错。</p>
+<pre><code class="language-python"># scrape.py —— asyncio 并发抓取骨架（可直接运行）
+import asyncio
+import time
+import httpx
+
+# 目标 URL 列表（演示用，可换成你自己的）
+URLS = [
+    "https://example.com",
+    "https://httpbin.org/delay/1",
+    "https://httpbin.org/status/404",
+    "https://httpbin.org/get",
+]
+
+# 信号量：最多同时发 3 个请求，避免打爆目标或本地端口耗尽
+sem = asyncio.Semaphore(3)
+
+async def fetch(client: httpx.AsyncClient, url: str) -&gt; tuple[str, str]:
+    async with sem:                      # 超过并发上限就在此排队
+        try:
+            # wait_for 包裹请求，5 秒超时；timeout 了直接走 except
+            resp = await asyncio.wait_for(client.get(url), timeout=5.0)
+            # 404 也视为「成功拿到响应」，这里仅记状态码
+            return url, f"HTTP {resp.status_code}, {len(resp.text)} bytes"
+        except asyncio.TimeoutError:
+            return url, "超时"
+        except httpx.HTTPError as e:
+            return url, f"请求错误：{type(e).__name__}"
+
+async def main():
+    start = time.perf_counter()
+    # 复用同一个 AsyncClient（连接池），比每条请求新建 client 高效得多
+    async with httpx.AsyncClient() as client:
+        # gather 并发启动所有 fetch；任一失败不影响其余（异常被各自捕获）
+        results = await asyncio.gather(
+            *(fetch(client, u) for u in URLS)
+        )
+    # 汇总输出
+    for url, info in results:
+        print(f"{url} -&gt; {info}")
+    print(f"总耗时 {time.perf_counter() - start:.2f}s（并发远小于串行之和）")
+
+if __name__ == "__main__":
+    asyncio.run(main())   # 仅在不处于已有循环的环境时这样启动
+</code></pre><p>运行验证：串行抓这 4 个（含一个 1 秒延迟）至少 1 秒以上，并发下总耗时接近最慢的那个请求，而非累加——这就是 asyncio 的价值。</p>
+<h2 id="9-常见坑速查">9. 常见坑速查</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">在协程里调同步阻塞函数</span></div><div class="co-body">  <code>time.sleep</code>、<code>requests.get</code>、未异步化的 DB 驱动会冻结整个事件循环，所有并发请求一起被拖死。
+<p>  一律换异步库，或 <code>run_in_executor</code> 丢线程/进程池。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">漏写 await</span></div><div class="co-body"><p>  拿到协程对象却没 <code>await</code>，函数体不执行且无异常，副作用全空。代码审查重点排查。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">在运行中的循环里再 asyncio.run</span></div><div class="co-body"><p>  FastAPI/uvicorn/Jupyter 内部已有循环，再调 <code>asyncio.run</code> 直接 RuntimeError。
+  用 <code>asyncio.create_task</code> 交给当前循环，或由框架调度。</p>
+</div></div><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">混用线程锁与异步锁</span></div><div class="co-body"><p>  协程内用 <code>threading.Lock</code> 会死锁（同步阻塞无法让权）；必须用 <code>asyncio.Lock</code> 等异步原语。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">gather 不收集异常默认会冒泡取消其余</span></div><div class="co-body"><p>  默认 <code>gather</code> 任一任务抛异常，其余会被取消且异常立即向上冒。需要「跑完所有」时加
+  <code>return_exceptions=True</code>，再逐个判断结果类型。</p>
+</div></div><h2 id="10-适用-vs-不适用">10. 适用 vs 不适用</h2>
+<p><strong>适合 asyncio：</strong></p>
+<ul>
+<li>大量网络 IO（爬虫、API 聚合、网关、WebSocket 服务）；</li>
+<li>高并发连接但单次逻辑不重的服务（聊天、推送）；</li>
+<li>单进程内管理成千上万个「等待中」的任务。</li>
+</ul>
+<p><strong>不适合 asyncio：</strong></p>
+<ul>
+<li>CPU 密集计算（用多进程/进程池）；</li>
+<li>算法/数值计算为主（numpy 本身释放 GIL，直接用多进程即可）；</li>
+<li>团队异步经验不足、依赖大量未异步化的同步库——强行上 asyncio 维护成本陡增。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">决策口诀</span></div><div class="co-body"><p>  IO 多、等待长、连接多 → asyncio；计算重、库同步、人不会 → 多进程/线程。
+  二者不互斥：asyncio 内部用 <code>run_in_executor</code> 调用进程池，是常见的混合架构。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>asyncio 是<strong>单线程协作式并发</strong>，靠事件循环在 <code>await</code> 处切换协程，专治「海量 IO 等待」场景。</li>
+<li><code>async def</code> 返回协程对象，必须 <code>await</code> 或交给循环才执行；漏写 <code>await</code> 是最高频无声 bug。</li>
+<li>协程本身不并发，需 <code>create_task</code> 包成 Task；多任务用 <code>gather</code>（独立）或 <code>TaskGroup</code>（全有或全无）。</li>
+<li>并发同步用 <code>asyncio.Lock/Semaphore/Queue</code>，<strong>绝不用</strong> <code>threading.*</code> 锁。</li>
+<li>和同步库/CPU 密集活互操作，用 <code>loop.run_in_executor</code>（线程池 / 进程池），否则会冻结循环。</li>
+<li>超时用 <code>wait_for</code>、取消用 <code>cancel()</code>（在 <code>await</code> 处生效）；生产代码每条外部 IO 都要限速 + 超时 + 容错。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  异步写出来的服务怎么工程化交付（依赖管理、测试、Lint、打包）？见 Python 分类的
+  《Python 工程化》。而用 FastAPI 把异步视图暴露成 HTTP 接口，见《FastAPI 实战》。</p>
+</div></div><h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>Python 官方文档 <code>asyncio</code> 章节：<a href="https://docs.python.org/3/library/asyncio.html">https://docs.python.org/3/library/asyncio.html</a></li>
+<li><code>httpx</code> 异步客户端（替代 requests 的标准选择）：https://www.python-httpx.org/async/</li>
+<li>Real Python《Async IO in Python》：<a href="https://realpython.com/async-io-python/">https://realpython.com/async-io-python/</a></li>
+<li><code>asyncio.Semaphore</code> / <code>Queue</code> / <code>Lock</code> API 参考（同上官方文档子页）</li>
+<li><code>aiofiles</code> 异步文件 IO：https://github.com/Tinche/aiofiles</li>
+<li>PEP 3156（asyncio 设计动机）：<a href="https://peps.python.org/pep-3156/">https://peps.python.org/pep-3156/</a></li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="python-engineering.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">Python 工程化：测试、Lint、打包、日志与配置</span></a>
+    <a class="art-pagerLink art-pagerRight" href="python-data.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">pandas / numpy 数据处理实战</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

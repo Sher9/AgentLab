@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>监控与日志：指标、链路、日志与 LLM 专属监控 · AgentLab</title>
+  <meta name="description" content="掌握可观测性的三支柱（指标/链路/日志）在 Agent 服务上的落地，聚焦 LLM 专属监控（token 成本、延迟、质量、工具调用成功率），并给出可运行骨架与告警踩坑。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="监控与日志：指标、链路、日志与 LLM 专属监控 · AgentLab"/>
+  <meta property="og:description" content="掌握可观测性的三支柱（指标/链路/日志）在 Agent 服务上的落地，聚焦 LLM 专属监控（token 成本、延迟、质量、工具调用成功率），并给出可运行骨架与告警踩坑。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#deploy">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🚀</span>
+        <span class="art-moduleName">部署运维</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">24 分钟</span>
+      </div>
+      <h1 class="art-title">监控与日志：指标、链路、日志与 LLM 专属监控</h1>
+      <p class="art-desc">掌握可观测性的三支柱（指标/链路/日志）在 Agent 服务上的落地，聚焦 LLM 专属监控（token 成本、延迟、质量、工具调用成功率），并给出可运行骨架与告警踩坑。</p>
+      <div class="art-tags"><span class="art-tag">#可观测性</span><span class="art-tag">#监控</span><span class="art-tag">#日志</span><span class="art-tag">#链路追踪</span><span class="art-tag">#LLM监控</span><span class="art-tag">#成本</span></div>
+    </div>
+    <div class="prose"><h1>监控与日志：指标、链路、日志与 LLM 专属监控</h1>
+<p>Agent 服务上线后，你迟早会面对这类问题：『为什么这波请求变慢了』『这个用户这个月烧了多少 token』『模型是不是开始乱答了』。传统 Web 监控只盯 QPS/延迟/错误率，对 LLM 应用远远不够——你得额外盯住<strong>成本、生成质量、工具调用成败</strong>。这一篇把可观测性三支柱讲清，并重点落到 LLM 专属指标上。</p>
+<h2 id="1-可观测性三支柱">1. 可观测性三支柱</h2>
+<table>
+<thead>
+<tr>
+<th>支柱</th>
+<th>回答的问题</th>
+<th>典型载体</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Metrics（指标）</td>
+<td>系统整体健康与趋势（量化）</td>
+<td>Prometheus、CloudWatch</td>
+</tr>
+<tr>
+<td>Tracing（链路）</td>
+<td>一次请求内部经历了什么（定位）</td>
+<td>OpenTelemetry、Jaeger</td>
+</tr>
+<tr>
+<td>Logging（日志）</td>
+<td>当时到底发生了什么（排查）</td>
+<td>结构化日志、Loki/ELK</td>
+</tr>
+</tbody></table>
+<p>三者互补：指标发现『异常』，链路定位『哪一步慢』，日志还原『具体错了什么』。Agent 场景三者都要，且都需带 <code>user_id</code>/<code>session_id</code>/<code>trace_id</code> 维度以便下钻。</p>
+<h2 id="2-指标-从-red-到-llm-指标">2. 指标：从 RED 到 LLM 指标</h2>
+<p>通用服务看 RED（Rate 请求率、Errors 错误率、Duration 延迟）。Agent 还要加一组 <strong>LLM 专属指标</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>含义</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>llm_tokens_total</code></td>
+<td>累计 token 数（区分 prompt/completion）</td>
+<td>成本核算、异常暴涨告警</td>
+</tr>
+<tr>
+<td><code>llm_cost_usd</code></td>
+<td>估算花费</td>
+<td>预算控制、按用户/租户分摊</td>
+</tr>
+<tr>
+<td><code>llm_latency_seconds</code></td>
+<td>单次模型调用延迟</td>
+<td>定位慢模型/慢链路</td>
+</tr>
+<tr>
+<td><code>agent_tool_calls_total</code></td>
+<td>工具调用次数与成功率</td>
+<td>发现坏工具、循环失控</td>
+</tr>
+<tr>
+<td><code>agent_quality_score</code></td>
+<td>质量分（人工/LLM-as-judge）</td>
+<td>监控退化、回归</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">成本指标是 LLM 应用的第一公民</span></div><div class="co-body"><p>  在传统服务里成本是『机器账单』，运维月底才看；在 LLM 应用里，token 是
+  <strong>按调用实时燃烧</strong>的。把 <code>llm_tokens_total</code> 与 <code>llm_cost_usd</code> 做成实时面板，
+  并按 user/tenant/feature 拆维度，否则一次坏循环能几小时烧掉一个月预算。</p>
+</div></div><h2 id="3-可运行骨架-埋点-结构化日志">3. 可运行骨架：埋点 + 结构化日志</h2>
+<p>下面用 Python 演示：用 <code>prometheus_client</code> 暴露指标，用标准 <code>logging</code> 打结构化日志（JSON），并在一次 Agent 调用里记录 token 与延迟。库名与接口以官方为准，骨架聚焦思路。</p>
+<pre><code class="language-python"># monitor_agent.py —— Agent 调用的指标埋点与结构化日志（骨架）
+import logging, time, json
+from prometheus_client import Counter, Histogram, start_http_server
+
+# 1) 定义指标（全局单例，Prometheus 会来拉这些）
+TOKENS = Counter("llm_tokens_total", "累计 token 数",
+                 ["kind", "model"])          # kind=prompt/completion
+COST = Counter("llm_cost_usd", "估算花费(美元)", ["model"])
+CALL_LAT = Histogram("llm_latency_seconds", "模型调用延迟", ["model"])
+TOOL_OK = Counter("agent_tool_calls_total", "工具调用数",
+                  ["name", "status"])        # status=ok/fail
+
+# 2) 结构化日志：一行一个 JSON，方便 Loki/ELK 检索与按字段过滤
+logging.basicConfig(level=logging.INFO,
+                    format='%(message)s')     # 我们直接输出 JSON 字符串
+log = logging.getLogger("agent")
+
+def record_llm(model, prompt_tok, completion_tok, price_per_1k):
+    # 把 token 换算成钱，按各自厂商单价；这里仅为示意
+    TOKENS.labels(kind="prompt", model=model).inc(prompt_tok)
+    TOKENS.labels(kind="completion", model=model).inc(completion_tok)
+    usd = (prompt_tok + completion_tok) / 1000 * price_per_1k
+    COST.labels(model=model).inc(usd)
+    return usd
+
+def call_llm(model, prompt, price_per_1k):
+    start = time.time()
+    # —— 真实模型调用在这里；骨架不编造具体 SDK ——
+    prompt_tok, completion_tok = 120, 80
+    result = f"[模型对『{prompt}』的回复]"
+    # 记录延迟（Histogram 自带 _count/_sum/_bucket）
+    CALL_LAT.labels(model=model).observe(time.time() - start)
+    usd = record_llm(model, prompt_tok, completion_tok, price_per_1k)
+    # 结构化日志：字段可被检索，带 trace/user 维度
+    log.info(json.dumps({
+        "event": "llm_call", "model": model, "prompt_tok": prompt_tok,
+        "completion_tok": completion_tok, "cost_usd": round(usd, 6),
+        "latency_ms": int((time.time() - start) * 1000),
+        "trace_id": "req-abc", "user_id": "u_001",
+    }, ensure_ascii=False))
+    return result
+
+if __name__ == "__main__":
+    start_http_server(8000)        # Prometheus 来 http://:8000/metrics 拉数据
+    print("metrics on :8000/metrics")
+    call_llm("gpt-4o-mini", "你好", price_per_1k=0.002)
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">日志里别打密钥与 PII</span></div><div class="co-body"><p>  结构化日志很方便，但很容易顺手把 <code>messages</code> 全打进去——里面可能有用户隐私、
+  甚至你注入的系统密钥。生产日志只打『必要字段 + 哈希后的 user_id』，
+  正文内容脱敏或仅存 ID 供审计回溯。这是合规红线。</p>
+</div></div><h2 id="4-链路追踪-把-agent-多步串成一条-trace">4. 链路追踪：把 Agent 多步串成一条 Trace</h2>
+<p>Agent 一次请求往往经历『路由 → 模型调用 → 工具执行 → 再模型 → 生成』多步。用 OpenTelemetry 给每一步建 <code>Span</code>，父 <code>trace_id</code> 贯穿，就能在 Jaeger 里看到完整瀑布图，定位『到底是模型慢还是某个工具慢』。</p>
+<pre><code class="language-python"># trace_agent.py —— 用 OpenTelemetry 给 Agent 步骤建 Span（骨架思路）
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import ConsoleSpanExporter, BatchSpanProcessor
+
+trace.set_tracer_provider(TracerProvider())
+trace.get_tracer_provider().add_span_processor(
+    BatchSpanProcessor(ConsoleSpanExporter()))   # 真实环境换成 OTLP 导出到后端
+tracer = trace.get_tracer("agent")
+
+def run_step(name, fn):
+    with tracer.start_as_current_span(name) as span:
+        # 把业务属性挂到 span，便于检索与告警
+        span.set_attribute("agent.step", name)
+        return fn()
+
+# 用法：每一步都包一层，trace_id 自动沿调用链传递
+run_step("llm_call", lambda: call_llm("gpt-4o-mini", "你好", 0.002))
+run_step("tool_refund", lambda: None)   # 真实场景执行具体工具
+</code></pre><h2 id="5-告警-传统-vs-llm-专属">5. 告警：传统 vs LLM 专属</h2>
+<table>
+<thead>
+<tr>
+<th>告警项</th>
+<th>阈值思路</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>错误率突增</td>
+<td>5xx &gt; 1% 持续 5 分钟</td>
+</tr>
+<tr>
+<td>P99 延迟</td>
+<td>&gt; 正常基线 2 倍</td>
+</tr>
+<tr>
+<td>token 成本</td>
+<td>单用户/单小时花费超预算</td>
+</tr>
+<tr>
+<td>工具成功率</td>
+<td>某工具失败率 &gt; 10%</td>
+</tr>
+<tr>
+<td>质量退化</td>
+<td>LLM-as-judge 均分周环比下降 &gt; 5%</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">成本告警要快于错误告警</span></div><div class="co-body"><p>  一次失控的工具循环能在分钟级烧掉大额 token。给『单用户单位时间花费』
+  设比『错误率』更灵敏的告警（如 1 分钟维度），并配套硬限流/熔断兜底，
+  否则等人工发现时账单已经炸了。</p>
+</div></div><h2 id="6-对比-传统监控-vs-llm-监控">6. 对比：传统监控 vs LLM 监控</h2>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>传统监控</th>
+<th>LLM 应用监控</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>核心成本</td>
+<td>机器/实例</td>
+<td>token（按调用实时燃烧）</td>
+</tr>
+<tr>
+<td>关键延迟</td>
+<td>网络/DB</td>
+<td>模型推理 + 工具往返</td>
+</tr>
+<tr>
+<td>质量信号</td>
+<td>状态码/异常</td>
+<td>生成质量、幻觉率、工具成败</td>
+</tr>
+<tr>
+<td>失败可解释</td>
+<td>堆栈清晰</td>
+<td>需 trace + 日志还原 prompt</td>
+</tr>
+</tbody></table>
+<h2 id="7-踩坑">7. 踩坑</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">指标维度基数爆炸</span></div><div class="co-body"><p>  给 Counter 加了 <code>user_id</code> 当 label 且用户量巨大，Prometheus 会为每个值建一条时间序列，
+  内存被撑爆。高基数维度（user_id、session_id）只放日志/链路，不放指标 label；
+  指标 label 只用低基数维度（model、tool_name、status）。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">只监控不告警等于没监控</span></div><div class="co-body"><p>  面板做得再漂亮，没人看也发现不了故障。把『成本异常、工具失败率、质量退化』
+  接进真实告警渠道（钉钉/企微/Slack/电话），并定期演练告警真的会响。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">质量监控要靠 judge，不能只看延迟</span></div><div class="co-body"><p>  Agent 『答得快、零报错』不代表答得对。引入 LLM-as-judge 或抽检打分，
+  监控『质量分』趋势，否则模型/提示一退化，你只能等用户投诉才发现。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>可观测性三支柱：指标看趋势、链路定位置、日志看细节；三者都带 user/trace 维度才能下钻。</li>
+<li>LLM 应用把 <code>token 成本、模型延迟、工具成功率、质量分</code>列为第一公民指标，按 user/tenant 拆维度。</li>
+<li>用 <code>prometheus_client</code> 埋点、<code>logging</code> 打结构化日志、OpenTelemetry 串链路；日志务必脱敏。</li>
+<li>告警要覆盖成本与质量，且比传统错误告警更灵敏；高基数维度别进指标 label，防基数爆炸。</li>
+<li>监控质量要靠 judge/抽检，不能只看状态码与延迟。</li>
+</ul>
+<h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>Prometheus / <code>prometheus_client</code> 官方文档：指标类型、Exporter、高基数风险</li>
+<li>OpenTelemetry 官方文档：Span/Context 传播、OTLP 导出，跨函数与队列串联</li>
+<li><em>Google SRE Book</em> 的监控与告警章节：RED 方法论、有效告警设计</li>
+<li><em>LLM-as-a-Judge</em> 相关实践：用模型评模型的质量分监控思路</li>
+<li>Grafana + Loki + Tempo：指标/日志/链路一体化看板搭建指南</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="deploy-gpu.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">GPU 推理服务：模型服务化、批处理、显存优化与多卡</span></a>
+    <a class="art-pagerLink art-pagerRight" href="deploy-scale.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">弹性伸缩：并发模型、任务队列、限流与成本弹性</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

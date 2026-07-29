@@ -1,0 +1,191 @@
+---
+title: Prompt 调优：系统化迭代而非灵感式瞎改
+description: 把 Prompt 优化从『拍脑袋』变成可度量、可回滚的工程：系统化迭代闭环、A/B 对照、版本管理与踩坑清单，并给出可运行对比骨架。
+category: 评估调优
+order: 5
+difficulty: 进阶
+duration: 18 分钟
+tags: [Prompt, 调优, A/B, 版本管理, 评估]
+date: 2026-07-29
+---
+
+# Prompt 调优：系统化迭代而非灵感式瞎改
+
+很多人调 Prompt 的状态是：改一句 → 跑一个例子觉得变好了 → 提交。这本质是**单样本过拟合**，上线后大概率翻车。这一篇讲如何把 Prompt 调优变成**有基线、有对照、可回滚**的工程活动。
+
+## 1. 为什么需要系统化
+
+Prompt 是 LLM 应用的『代码』，但它没有编译器报错、没有类型检查。任意改动都可能：
+
+- 在某条样本上变好，却在整集上变差（单样本过拟合）；
+- 修了一个边界问题，却破坏了核心场景（副作用）；
+- 几个人各改一版，无法判断谁更好（无对照）。
+
+系统化调优的核心思想是：**每次只改一个变量，用评测集量化前后差异**。把『我觉得』换成『数据显示』。
+
+<Callout type="note" title="Prompt 是概率代码的参数">
+  把 Prompt 当成模型的一个『超参数』来理解：调它必须像调超参一样——
+  固定其余一切，只动一处，看指标。同时改三段，你永远不知道哪段有效。
+</Callout>
+
+## 2. 系统化迭代闭环
+
+```
+① 锁定当前 Prompt + 基线指标（来自评测集，见 eval-dataset）
+② 提出一个明确假设：『把指令改成 X，会让边界用例通过率上升』
+③ 只改这一处，跑评测集，得到新指标
+④ 对比：Δ 是否显著、是否伤害了其他分桶
+⑤ 有效 → 提交新版本并刷新基线；无效 → 回滚，换假设
+```
+
+每一步都依赖一份稳定的评测集（评测集的构建见 `eval-dataset`）。没有评测集，这个闭环无处落脚。
+
+<Callout type="tip" title="假设要可证伪">
+  好的迭代从『可证伪的假设』开始，而不是『我再润色一下』。
+  『润色』无法度量，『加入示例后边界用例 +10%』可以。
+  只做能证伪的改动，才能累积可信的经验。
+</Callout>
+
+## 3. 可运行的 A/B 对比骨架
+
+把两个版本的 Prompt 对同一批样本各跑一遍，自动算差异：
+
+```ts
+// prompt-ab.ts —— 两个 Prompt 版本对照评测（可运行骨架）
+import OpenAI from 'openai';
+import 'dotenv/config';
+import { dataset } from './dataset.ts';
+
+const client = new OpenAI();
+
+// 两个待对照的 Prompt 版本（一次只让它们不同）
+const PROMPT_A = '你是一个简洁的客服助手，只回答用户问题。';
+const PROMPT_B = '你是一个简洁的客服助手。回答前先复述用户意图，再给结论。';
+
+async function run(prompt: string, input: string): Promise<string> {
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: prompt },
+      { role: 'user', content: input },
+    ],
+  });
+  return res.choices[0].message.content ?? '';
+}
+
+// 硬性闸门判定（复用评测集的 mustContain）
+function hardPass(output: string, must: string[]): boolean {
+  return must.every((k) => output.includes(k));
+}
+
+async function evalVersion(name: string, prompt: string) {
+  let pass = 0;
+  for (const c of dataset) {
+    const out = await run(prompt, c.input);
+    if (hardPass(out, c.mustContain)) pass++;
+  }
+  const rate = (pass / dataset.length) * 100;
+  console.log(`${name} 通过率：${rate.toFixed(1)}%`);
+  return rate;
+}
+
+async function main() {
+  const a = await evalVersion('A(原版)', PROMPT_A);
+  const b = await evalVersion('B(新版)', PROMPT_B);
+  console.log(`Δ = ${(b - a).toFixed(1)}%`); // 正=变好，负=退化
+}
+
+main();
+```
+
+运行：`npx tsx prompt-ab.ts`。真实场景用 LLM-as-judge 做软评分，逻辑同构。
+
+<Callout type="warn" title="温度要为 0 才有可比性">
+  A/B 对比时把 `temperature` 设为 0（或固定种子）。否则两次结果差异可能来自随机性，
+  而非 Prompt 本身。对照实验的第一原则是：除被改的变量外，其余全部冻结。
+</Callout>
+
+## 4. 版本管理：Prompt 也是代码
+
+Prompt 必须进版本控制，并附带『为什么这么写』：
+
+- 每个版本一个文件或一条记录：`prompt/v1.txt`、`prompt/v2.txt`；
+- 提交信息写清：改动点 + 评测 Δ（如『v2：加意图复述，边界用例 +8%』）；
+- 保留回滚能力：某次改动上线后指标异常，一键切回上一版。
+
+推荐结构：
+
+```yaml
+# prompt/registry.yaml —— Prompt 版本清单（示意）
+versions:
+  - id: v1
+    file: v1.txt
+    baselinePassRate: 82.5
+    note: 初始版
+  - id: v2
+    file: v2.txt
+    baselinePassRate: 90.0
+    note: 加意图复述，边界用例 +8%（基于 eval-dataset 评测）
+```
+
+<Callout type="tip" title="Prompt 和代码一起评审">
+  Prompt 改动应走和代码一样的 PR 流程，附评测 Δ。别在线上直接改 system prompt 又不记录——
+  那是事故之源。谁、何时、为何改了 Prompt，必须可追溯。
+</Callout>
+
+## 5. 系统化 vs 灵感式对比
+
+| 维度 | 灵感式瞎改 | 系统化迭代 |
+|------|------------|------------|
+| 改动方式 | 一次改多处 | 一次一变量 |
+| 判断依据 | 单样本体感 | 评测集 Δ |
+| 对照 | 无 | A/B 固定基线 |
+| 回滚 | 靠记忆 | 版本化一键切 |
+| 风险 | 隐性退化 | 可量化守护 |
+
+<Callout type="note" title="小改动也要过评测">
+  哪怕只是『改个措辞』，只要上了生产就得过评测。措辞微调在长尾样本上可能翻车，
+  评测集就是你的安全网。别因为改动小就跳过闭环。
+</Callout>
+
+## 6. 常见坑
+
+<Callout type="danger" title="单样本过拟合">
+  只拿自己能想到的两三个例子验证，『觉得好了』就提交。上线后长尾全崩。
+  任何改动必须用评测集全量（或分层抽样）验证，至少覆盖边界/回归用例。
+</Callout>
+
+<Callout type="warn" title="同时改多个变量">
+  一次改了角色设定、加了示例、又调了格式。结果变好却不知是哪段起作用，
+  下次想叠加改进时无据可依。严格遵守『一次一变量』。
+</Callout>
+
+<Callout type="warn" title="温度不为 0 导致对照无效">
+  见第 3 节：随机性会污染 A/B 结论。对照实验冻结一切非改动变量。
+</Callout>
+
+<Callout type="danger" title="线上直接改 Prompt 不记录">
+  在控制台手改 system prompt 救火，事后忘了。下次部署把旧 prompt 覆盖回去，问题复发。
+  Prompt 一律走版本库 + PR，线上紧急改也要事后补提交。
+</Callout>
+
+<Callout type="warn" title="只看总量忽略分桶">
+  新版总体 +3%，但『代码类问题』分桶 -15%。靠总量会漏掉结构性退化。
+  始终按 `tags` 分桶看 Δ。
+</Callout>
+
+## 小结
+
+- Prompt 是概率代码的参数，调优必须像调超参：一次一变量、用评测集量化。
+- 系统化闭环：锁基线 → 提可证伪假设 → 单点改 → 跑评测 → 看 Δ → 提交/回滚。
+- A/B 对比冻结温度等无关变量；版本化 Prompt 并附评测 Δ，支持一键回滚。
+- 与 eval-dataset 强绑定：没有稳定评测集，系统化迭代无处落地。
+- 红线：防单样本过拟合、防多变量齐改、防线上裸改、分桶看 Δ。
+
+## 延伸阅读 / 参考
+
+- OpenAI Prompt Engineering 指南：系统化构造与迭代思路
+- Anthropic Prompt Engineering 文档：角色/结构/示例的最佳实践
+- 《A Systematic Approach to Prompt Optimization》类论文：自动 Prompt 搜索
+- eval-dataset 篇：评测集构建与回归基线（本分类前置依赖）
+- 特征开关（Feature Flag）文档：Prompt 版本的线上灰度与回滚实现

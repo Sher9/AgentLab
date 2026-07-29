@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Vue3 组合式 API · AgentLab</title>
+  <meta name="description" content="深入 Vue3 组合式 API：setup 与响应式本质、ref/reactive 取舍、响应式原理、组合式函数与 Pinia，配可运行骨架与踩坑清单。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="Vue3 组合式 API · AgentLab"/>
+  <meta property="og:description" content="深入 Vue3 组合式 API：setup 与响应式本质、ref/reactive 取舍、响应式原理、组合式函数与 Pinia，配可运行骨架与踩坑清单。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#frontend">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🎨</span>
+        <span class="art-moduleName">前端工程</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">35 分钟</span>
+      </div>
+      <h1 class="art-title">Vue3 组合式 API</h1>
+      <p class="art-desc">深入 Vue3 组合式 API：setup 与响应式本质、ref/reactive 取舍、响应式原理、组合式函数与 Pinia，配可运行骨架与踩坑清单。</p>
+      <div class="art-tags"><span class="art-tag">#Vue3</span><span class="art-tag">#组合式API</span><span class="art-tag">#响应式</span><span class="art-tag">#Pinia</span></div>
+    </div>
+    <div class="prose"><h1>Vue3 组合式 API</h1>
+<p>Vue3 最大的变化不是性能（虽然 Proxy 重写确实更快），而是 <strong>组合式 API（Composition API）</strong> 带来的代码组织方式变革。它让你按「逻辑关注点」而非「选项类型」组织代码，并在复用层面替代了饱受诟病的 mixins。</p>
+<p>本篇面向有经验的开发者：不只讲用法，更讲清楚<strong>响应式到底怎么运作</strong>、<strong>ref 与 reactive 何时该用哪个</strong>、<strong>组合式函数怎么写才不踩坑</strong>，以及和 Pinia、React Hooks 的对比。</p>
+<h2 id="1-为什么需要组合式-api">1. 为什么需要组合式 API</h2>
+<p>Options API 把代码切成 <code>data / methods / computed / watch</code> 等选项块。一个组件的「关注点」被拆散到多个选项里，一个功能相关的逻辑散布在文件各处——组件一大，<code>methods</code> 里几十个函数，你很难一眼看出「哪几个函数 + 哪几个 data 属于同一件事」。</p>
+<p>组合式 API 用「函数」把同一关注点的逻辑聚到一起：</p>
+<pre><code class="language-ts">// 关注点：鼠标位置追踪，所有相关逻辑在一个函数里闭合
+export function useMouse() {
+  const x = ref(0);
+  const y = ref(0);
+  function update(e: MouseEvent) {
+    x.value = e.pageX;
+    y.value = e.pageY;
+  }
+  onMounted(() =&gt; window.addEventListener('mousemove', update));
+  onUnmounted(() =&gt; window.removeEventListener('mousemove', update));
+  return { x, y };
+}
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">核心认知</span></div><div class="co-body"><p>  组合式 API 不是「新语法糖」，而是把 Vue 的内部能力（响应式、生命周期、依赖注入）
+  以函数形式暴露出来。Options API 仍在，且底层就是组合式 API 的封装。</p>
+</div></div><h2 id="2-入口-setup-与-script-setup">2. 入口：setup 与 script setup</h2>
+<p>两种写法。<strong>推荐 <code>&lt;script setup&gt;</code></strong>，它是编译时语法糖，更少样板：</p>
+<pre><code class="language-vue">&lt;!-- Counter.vue —— script setup 写法（编译期展开，无显式 export default） --&gt;
+&lt;script setup lang="ts"&gt;
+import { ref } from 'vue';
+
+// 顶层声明的变量/函数自动暴露给模板，无需 return
+const count = ref(0);
+function inc() {
+  count.value++; // 脚本里访问 ref 必须 .value
+}
+&lt;/script&gt;
+
+&lt;template&gt;
+  &lt;!-- 模板里自动解包，直接写 count 而非 count.value --&gt;
+  &lt;button @click="inc"&gt;点了 {{ count }} 次&lt;/button&gt;
+&lt;/template&gt;
+</code></pre><p>普通 <code>setup()</code> 选项写法（适合需要更精细控制返回或接收 <code>props/context</code> 时）：</p>
+<pre><code class="language-ts">import { defineComponent, ref } from 'vue';
+
+export default defineComponent({
+  setup(props, ctx) {
+    const count = ref(0);
+    return { count }; // 必须显式 return 才会进模板
+  },
+});
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">优先 script setup</span></div><div class="co-body"><p>  99% 场景用 <code>&lt;script setup&gt;</code>。它编译后模板绑定直接引用闭包变量，性能更好、类型推导更顺、
+  代码更短。仅当你需要 <code>inheritAttrs: false</code>、自定义 <code>render</code> 或显式控制 <code>expose</code> 时，
+  才退回普通 <code>setup</code> 或配合 <code>defineExpose</code>。</p>
+</div></div><h2 id="3-响应式基础-ref-与-reactive">3. 响应式基础：ref 与 reactive</h2>
+<p>两者都制造响应式数据，区别在于「包装目标」与「使用方式」。</p>
+<h3 id="3-1-ref-任意类型的响应式包装">3.1 ref：任意类型的响应式包装</h3>
+<code>ref</code> 把**任何值**包成一个带 <code>.value</code> 的对象。基本类型（number/string/boolean）只能用 <code>ref</code>，因为原始值无法被 Proxy 代理。<pre><code class="language-ts">import { ref } from 'vue';
+
+const count = ref(0);     // 基本类型 → 只能 ref
+const user = ref({ name: '小明' }); // 对象也能 ref，但此时内部仍是 reactive 思路
+console.log(count.value); // 脚本里读/写都走 .value
+</code></pre><h3 id="3-2-reactive-对象-数组的深层代理">3.2 reactive：对象/数组的深层代理</h3>
+<code>reactive</code> 只对**对象/数组**生效，直接返回代理对象，访问属性无需 <code>.value</code>：<pre><code class="language-ts">import { reactive } from 'vue';
+
+const state = reactive({ count: 0, user: { name: '小明' } });
+state.count++;            // 直接改属性，模板自动更新
+state.user.name = '小红'; // 深层也是响应式的
+</code></pre><h3 id="3-3-怎么选-实战经验">3.3 怎么选（实战经验）</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>ref</th>
+<th>reactive</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>适用类型</td>
+<td>任意（含基本类型）</td>
+<td>仅对象/数组</td>
+</tr>
+<tr>
+<td>访问方式</td>
+<td>脚本里 <code>.value</code>，模板里自动解包</td>
+<td>直接 <code>.属性</code>，模板里也直接</td>
+</tr>
+<tr>
+<td>解构/传递</td>
+<td>解构后仍保持响应（仍是 ref 对象）</td>
+<td>解构会丢失响应性（拿到裸值）</td>
+</tr>
+<tr>
+<td>重新赋值</td>
+<td><code>count.value = 新值</code> 安全</td>
+<td><code>state = 新对象</code> 会断掉响应（引用变了）</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">reactive 解构陷阱</span></div><div class="co-body">  <code>const { count } = reactive({ count: 0 })</code> 拿到的是普通数字，**失去响应性**。
+<p>  若必须解构，用 <code>toRefs(state)</code> 转成一组 ref 再解构；或直接用 <code>ref</code> 起步更省心。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">统一建议</span></div><div class="co-body"><p>  团队约定：状态用 <code>ref</code> 起步（哪怕对象也 <code>ref({...})</code>），模板里自动解包，
+  脚本里统一 <code>.value</code>，心智负担最小。需要「整块表单对象」时再用 <code>reactive</code>，
+  且<strong>绝不整体重新赋值</strong>，只改属性。</p>
+</div></div><h2 id="4-响应式原理-proxy-依赖收集">4. 响应式原理：Proxy + 依赖收集</h2>
+<p>理解原理能让你少踩 80% 的坑。Vue3 用 <code>Proxy</code> 代理对象，核心三步：<strong>track（收集依赖）→ 触发副作用 → trigger（派发更新）</strong>。</p>
+<h3 id="4-1-一个最小响应式实现-伪代码骨架">4.1 一个最小响应式实现（伪代码骨架）</h3>
+<p>下面用几十行还原 Vue 响应式核心，帮助建立直觉。<strong>真实实现以官方源码为准，此骨架仅为讲清机制</strong>：</p>
+<pre><code class="language-ts">// reactive-core.ts —— 最小响应式原理演示（非 Vue 源码，思路骨架）
+type EffectFn = () =&gt; void;
+const targetMap = new WeakMap&lt;object, Map&lt;string, Set&lt;EffectFn&gt;&gt;&gt;();
+let activeEffect: EffectFn | null = null;
+
+// 读取时：把当前副作用函数收集到该对象的该属性下
+function track(target: object, key: string) {
+  if (!activeEffect) return;
+  let depsMap = targetMap.get(target);
+  if (!depsMap) targetMap.set(target, (depsMap = new Map()));
+  let dep = depsMap.get(key);
+  if (!dep) depsMap.set(key, (dep = new Set()));
+  dep.add(activeEffect);
+}
+
+// 写入时：触发该属性下所有收集的副作用函数（重新执行 → 重新渲染）
+function trigger(target: object, key: string) {
+  targetMap.get(target)?.get(key)?.forEach((fn) =&gt; fn());
+}
+
+// 用 Proxy 拦截 get/set，串起 track/trigger
+function reactive&lt;T extends object&gt;(obj: T): T {
+  return new Proxy(obj, {
+    get(target, key: string, recv) {
+      track(target, key);                 // 读 → 收集依赖
+      return Reflect.get(target, key, recv);
+    },
+    set(target, key: string, value, recv) {
+      const ok = Reflect.set(target, key, value, recv);
+      trigger(target, key);               // 写 → 通知更新
+      return ok;
+    },
+  });
+}
+
+// 副作用容器：包裹「渲染」这类需要随依赖变化重跑的函数
+function effect(fn: EffectFn) {
+  activeEffect = fn;
+  fn();                      // 先跑一次（期间读到的属性会被 track）
+  activeEffect = null;
+}
+</code></pre><p>要点：<strong>依赖是在「副作用函数执行期间」被自动收集的</strong>，所以你改了哪个属性，只有真正读过它的地方才会更新——这就是细粒度更新、且无需依赖「虚拟 DOM diff 全部」的原因（虽然 Vue 仍用 VDOM 做批量更新）。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">为什么用 Proxy 而非 Object.defineProperty</span></div><div class="co-body"><p>  Vue2 用 <code>Object.defineProperty</code>，无法监听新增/删除属性、数组索引变化，必须 <code>$set</code>。
+  Proxy 天然拦截「任意属性增删改、数组 push/pop」，且是惰性递归（访问深层才代理深层），
+  不需要初始化时递归遍历整棵树。</p>
+</div></div><h3 id="4-2-一个反直觉的坑-不在-effect-里读就不更新">4.2 一个反直觉的坑：不在 effect 里读就不更新</h3>
+<pre><code class="language-ts">const state = reactive({ count: 0 });
+// 下面这行在 effect 之外读取，不会被 track
+console.log(state.count);
+setTimeout(() =&gt; { state.count = 5; }, 1000); // 这个赋值没有收集到任何副作用
+</code></pre><p>组件模板渲染本身运行在一个 <code>effect</code> 里，所以模板里用到的属性都会被自动收集——这也是为什么「模板里用到的才更新」。</p>
+<h2 id="5-计算属性与侦听器">5. 计算属性与侦听器</h2>
+<pre><code class="language-ts">import { ref, computed, watch, watchEffect } from 'vue';
+
+const price = ref(10);
+const qty = ref(2);
+// computed：基于其他响应式派生的「缓存值」，依赖不变不重算
+const total = computed(() =&gt; price.value * qty.value);
+
+// watch：显式监听源，拿到新旧值，适合副作用（请求/持久化）
+watch(total, (newVal, oldVal) =&gt; {
+  console.log(`总价从 ${oldVal} 变 ${newVal}`);
+});
+
+// watchEffect：立即执行 + 自动收集依赖，依赖变就重跑（类似 React 的 useEffect 自动依赖）
+watchEffect(() =&gt; {
+  console.log(`当前总价 ${total.value}`); // 读了 total → 自动追踪
+});
+</code></pre><table>
+<thead>
+<tr>
+<th>能力</th>
+<th>computed</th>
+<th>watch</th>
+<th>watchEffect</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>返回值</td>
+<td>有（可当响应式值用）</td>
+<td>无</td>
+<td>无</td>
+</tr>
+<tr>
+<td>立即执行</td>
+<td>懒（被读才算）</td>
+<td>否（除非 immediate）</td>
+<td>是</td>
+</tr>
+<tr>
+<td>依赖声明</td>
+<td>函数内自动收集</td>
+<td>显式指定源</td>
+<td>函数内自动收集</td>
+</tr>
+<tr>
+<td>拿旧值</td>
+<td>不支持</td>
+<td>支持</td>
+<td>不支持</td>
+</tr>
+<tr>
+<td>典型用途</td>
+<td>派生数据</td>
+<td>监听变化做副作用</td>
+<td>初始化即需跑的副作用</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">别在 computed 里做副作用</span></div><div class="co-body">  <code>computed</code> 的 getter 应当**纯函数**：不改状态、不发请求、不打日志。
+<p>  副作用（调接口、写 localStorage）放进 <code>watch</code> / <code>watchEffect</code>。
+  否则依赖被多次读取时副作用会重复触发，难以排查。</p>
+</div></div><h2 id="6-组合式函数-composables">6. 组合式函数（Composables）</h2>
+<p>组合式函数 = 以 <code>use</code> 开头的、封装「有状态逻辑」的函数，是 Vue3 复用单元。</p>
+<pre><code class="language-ts">// useCounter.ts —— 可复用的计数器逻辑（带状态）
+import { ref, onUnmounted } from 'vue';
+
+export function useCounter(initial = 0) {
+  const count = ref(initial);
+  const inc = () =&gt; count.value++;
+  const dec = () =&gt; count.value--;
+  return { count, inc, dec };
+}
+
+// useFetch.ts —— 异步数据加载组合式函数（含加载/错误态）
+import { ref } from 'vue';
+export function useFetch&lt;T&gt;(url: string) {
+  const data = ref&lt;T | null&gt;(null);
+  const error = ref&lt;Error | null&gt;(null);
+  const loading = ref(true);
+
+  fetch(url)
+    .then((r) =&gt; r.json())
+    .then((d) =&gt; (data.value = d))
+    .catch((e) =&gt; (error.value = e))
+    .finally(() =&gt; (loading.value = false));
+
+  return { data, error, loading };
+}
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">组合式函数三原则</span></div><div class="co-body"><ol>
+<li>命名 <code>useXxx</code>，返回响应式状态 + 方法；</li>
+<li>内部用到的生命周期钩子（onMounted 等）只对「当前调用它的组件」生效；</li>
+<li>不要直接 <code>return</code> 裸的 reactive 解构值，优先 <code>ref</code> 或 <code>toRefs</code>，保证调用方拿到的是响应式引用。</li>
+</ol>
+</div></div><h2 id="7-状态管理-pinia">7. 状态管理：Pinia</h2>
+<p>大型应用里跨组件共享的状态，交给 <strong>Pinia</strong>（Vuex 的官方继任者，更轻、对 TS 更友好）。</p>
+<pre><code class="language-ts">// stores/counter.ts —— 定义一个 store
+import { defineStore } from 'pinia';
+import { ref, computed } from 'vue';
+
+export const useCounterStore = defineStore('counter', () =&gt; {
+  // 组合式写法（setup store）：和组件里一样用 ref/computed
+  const count = ref(0);
+  const double = computed(() =&gt; count.value * 2);
+  function increment() {
+    count.value++;
+  }
+  return { count, double, increment };
+});
+</code></pre><pre><code class="language-vue">&lt;!-- 在组件里使用 --&gt;
+&lt;script setup lang="ts"&gt;
+import { useCounterStore } from '@/stores/counter';
+const store = useCounterStore();
+&lt;/script&gt;
+&lt;template&gt;
+  &lt;p&gt;{{ store.count }} / 双倍 {{ store.double }}&lt;/p&gt;
+  &lt;button @click="store.increment()"&gt;+1&lt;/button&gt;
+&lt;/template&gt;
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">Pinia vs 直接 provide/inject</span></div><div class="co-body"><p>  父子/就近状态用 <code>provide/inject</code> 即可；<strong>真正跨模块、需要_devtools 时间旅行、持久化、
+  严格单向流</strong> 的全局状态才上 Pinia。不要所有状态都塞进 Pinia，那会退化成另一个全局大对象。</p>
+</div></div><h2 id="8-对比-组合式-api-vs-options-api-vs-react-hooks">8. 对比：组合式 API vs Options API vs React Hooks</h2>
+<table>
+<thead>
+<tr>
+<th>对比项</th>
+<th>Vue 组合式 API</th>
+<th>Vue Options API</th>
+<th>React Hooks</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>逻辑复用</td>
+<td>组合式函数（类型友好）</td>
+<td>mixins（来源不清、易冲突）</td>
+<td>自定义 Hook</td>
+</tr>
+<tr>
+<td>代码组织</td>
+<td>按关注点聚合</td>
+<td>按选项类型拆分</td>
+<td>按关注点（函数内）</td>
+</tr>
+<tr>
+<td>this 绑定</td>
+<td>无 this</td>
+<td>依赖 this</td>
+<td>无 this</td>
+</tr>
+<tr>
+<td>依赖声明</td>
+<td>watch/watchEffect 自动或显式</td>
+<td>隐式（选项系统）</td>
+<td>手动写依赖数组</td>
+</tr>
+<tr>
+<td>心智负担</td>
+<td>中（需理解 ref/.value）</td>
+<td>低</td>
+<td>中（闭包/过期值坑）</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">Vue 组合式函数不是 React Hooks</span></div><div class="co-body"><p>  二者形似但不同：Vue 的 <code>setup</code> 只执行<strong>一次</strong>（不像 Hooks 每次渲染都跑），
+  依赖收集在「同步执行期」完成，所以没有 React 那种「依赖数组漏写导致过期闭包」的经典坑。
+  但代价是：响应式写在 <code>watchEffect</code> 里必须<strong>同步</strong>读取依赖，异步回调里读的不会被收集。</p>
+</div></div><h2 id="9-常见坑与最佳实践">9. 常见坑与最佳实践</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">解构丢失响应性</span></div><div class="co-body">  <code>const { count } = store</code> 或 <code>const { x } = reactive(...)</code> 都会拿到裸值，不再是响应式的。
+<p>  组件里用 <code>storeToRefs(store)</code> 取状态、用 <code>toRefs(reactiveObj)</code> 取属性。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">ref 在模板/setup 里忘记 .value</span></div><div class="co-body"><p>  脚本里访问 ref 必须 <code>.value</code>，模板里自动解包（但 <code>v-if="count"</code> 走的是解包后的值）。
+  嵌套在 <code>reactive</code> 里的 ref 也会被自动解包——这是双刃剑，建议团队统一用顶层 ref 避免混淆。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">异步回调里读响应式不触发收集</span></div><div class="co-body">  <code>watchEffect</code> 里若 <code>await</code> 之后才读响应式属性，依赖收集已结束，不会追踪。
+<p>  需要追踪的读操作放在 await 之前，或显式用 <code>watch</code> 指定源。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">大型项目约定</span></div><div class="co-body"><p>  统一 <code>ref</code> 起步；组合式函数放 <code>composables/</code> 并以 <code>use</code> 开头；
+  store 放 <code>stores/</code>；模板里尽量用「短表达式」，复杂派生进 <code>computed</code>，
+  不要在模板写复杂逻辑（难调试、不能复用）。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>组合式 API 按「关注点」聚合逻辑，组合式函数（useXxx）是复用单元，取代 mixins。</li>
+<li><code>ref</code> 包任意类型（脚本里 <code>.value</code>），<code>reactive</code> 包对象（直接 <code>.属性</code>，忌整体重赋值/解构）。</li>
+<li>响应式 = Proxy 拦截 + 依赖收集（track）+ 派发更新（trigger），依赖在副作用同步执行期自动收集。</li>
+<li><code>computed</code> 派生缓存值（纯函数）、<code>watch/watchEffect</code> 做副作用；Pinia 管真正全局的跨模块状态。</li>
+<li>红线：别解构丢响应性、别在 computed 写副作用、异步里读依赖要小心。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  Vue 解决「视图与状态」，React 解决同类问题但心智模型不同。下一篇
+  <strong>fe-react（React Hooks 实战）</strong> 对照看，能更快吃透两者差异与选型。</p>
+</div></div><h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>Vue3 官方文档 · 组合式 API：<a href="https://cn.vuejs.org/guide/extras/composition-api-faq.html">https://cn.vuejs.org/guide/extras/composition-api-faq.html</a></li>
+<li>Vue3 响应式原理（reactive 源码）：<a href="https://cn.vuejs.org/api/reactivity-core.html">https://cn.vuejs.org/api/reactivity-core.html</a></li>
+<li>Pinia 官方文档：<a href="https://pinia.vuejs.org/">https://pinia.vuejs.org/</a></li>
+<li>组合式函数最佳实践：<a href="https://cn.vuejs.org/guide/reusability/composables.html">https://cn.vuejs.org/guide/reusability/composables.html</a></li>
+<li><code>&lt;script setup&gt;</code> 语法糖说明：https://cn.vuejs.org/api/sfc-script-setup.html</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <span></span>
+    <a class="art-pagerLink art-pagerRight" href="fe-react.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">React Hooks 实战</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

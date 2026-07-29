@@ -1,0 +1,351 @@
+---
+title: 推理部署与量化：把模型跑起来还跑得稳
+description: 从推理服务架构与 KV Cache 讲起，对比 vLLM/TGI/Ollama/llama.cpp 与云 API，拆解 INT4/8 量化与连续批处理原理，给出 OpenAI 兼容本地部署可运行骨架与量化伪代码，并点出上线踩坑。
+category: LLM大模型
+order: 6
+difficulty: 高级
+duration: 45 分钟
+tags: [推理部署, 量化, vLLM, TGI, 批处理, 吞吐, 本地部署]
+date: 2026-07-29
+---
+
+# 推理部署与量化：把模型跑起来还跑得稳
+
+训练/微调出模型只是上半场。**推理部署（Inference Serving）** 决定用户实际体验：延迟多低、每秒能接多少请求、一张卡能撑多大模型。这一篇面向有工程经验的开发者，讲清架构、方案选型、量化与吞吐优化的原理，并给你能跑的本地部署骨架。
+
+<Callout type="note" title="本篇两条代码线">
+  ① **OpenAI 兼容部署**：vLLM / TGI / Ollama 都暴露 OpenAI 风格接口，用我们惯用的 Node SDK（配 baseURL）+ Zod 直接调用；
+  ② **量化/训练侧**：GPTQ/AWQ/GGUF 用思路+伪代码+注释呈现，API 易变，以官方文档为准。
+</Callout>
+
+## 1. 推理服务在解决什么
+
+一个朴素想法：把模型 load 进显存，来一个请求 forward 一次。但生产环境有三个硬指标互相拉扯：
+
+- **吞吐（throughput）**：单位时间处理多少 token / 请求。成本的地基。
+- **延迟（latency）**：单请求从发到收要多久。用户体验的地基。
+- **成本（cost）**：每张卡能 Serve 多大模型、多少并发。钱的地基。
+
+裸 `model.generate()` 在并发下既慢又费卡。现代推理引擎（vLLM、TGI）的核心贡献，就是把『一次一个请求』变成『一批请求高效共享显存与算力』。
+
+## 2. 推理架构与 KV Cache
+
+一次推理的完整链路：
+
+```
+请求 → Tokenizer 编码 → 模型前向（逐 token 自回归）
+     → 每生成一个 token 都要『看前面所有 token』→ KV Cache 缓存历史键值
+     → 采样 → Detokenizer 解码 → 返回
+```
+
+**KV Cache 是推理性能的关键**：自回归生成时，第 t 个 token 要计算 attention，需用到前 t-1 个 token 的 Key/Value。这些 KV 矩阵若每次重算，复杂度 O(n²)；缓存后每步只算新 token 的 KV 并追加，复杂度降到 O(n)。代价是显存——KV Cache 随上下文长度线性增长。
+
+<Callout type="warn" title="KV Cache 吃显存">
+  长上下文 + 高并发时，KV Cache 占用的显存可能超过模型权重本身。
+  显存不够会 OOM。量化权重省的是『权重显存』，而 KV Cache 优化（如 PagedAttention）省的是『缓存显存』，两者正交。
+</Callout>
+
+## 3. 部署方案对比
+
+| 方案 | 定位 | 量化 | 连续批处理 | 适合 |
+|------|------|------|-----------|------|
+| **vLLM** | 高吞吐服务 | 支持（AWQ/GPTQ） | ✅ PagedAttention | 服务端高并发、需要 OpenAI API |
+| **TGI** | 高吞吐服务 | ✅ | ✅ | HuggingFace 生态、企业部署 |
+| **Ollama** | 本地/桌面 | ✅ (GGUF) | 基础 | 开发机、单机快速起模型 |
+| **llama.cpp** | 本地/CPU | ✅ GGUF | 基础 | 边缘、CPU、低资源 |
+| **云 API（OpenAI 等）** | 托管 | 厂商内部 | 厂商负责 | 不想运维、弹性伸缩 |
+
+<Callout type="tip" title="选型口诀">
+  要最高吞吐 + OpenAI 接口 → vLLM。要快速本地试 → Ollama。要 CPU/边缘跑 → llama.cpp。
+  不想管 GPU → 直接云 API（见第 6 节用 SDK 调）。需要『自己掌控权重与数据』才来自建。
+</Callout>
+
+## 4. 量化：用精度换显存与速度
+
+**量化（Quantization）** 把模型权重从 FP16（16 位浮点）压到 INT8 / INT4（8/4 位整数）。显存近似减半 / 减到 1/4，速度提升，代价是极少量精度损失。主流方法：
+
+- **GPTQ**：训练后量化（PTQ），逐层校准，4bit 下质量好。产出的权重仍走 GPU 推理。
+- **AWQ**：激活感知权重量化，保护『重要权重』少量化，4bit 质量常优于 GPTQ。
+- **GGUF**（llama.cpp）：把模型转成量化格式，可在 CPU/低显存跑，便携性强。
+
+<Callout type="note" title="量化的两种时机">
+  ① **权重量化（PTQ）**：训练完再压，不动训练，最常用；
+  ② **量化感知训练（QAT）**：训练中模拟量化误差，质量更好但成本高。
+  绝大多数团队用 PTQ（GPTQ/AWQ）即可，QAT 仅在对精度极敏感时考虑。
+</Callout>
+
+### 4.1 量化原理伪代码
+
+量化本质是『浮点 → 整数 + 缩放因子』的线性映射，推理时反量化计算：
+
+```python
+# quant_basic.py —— 线性量化思路骨架（以官方文档为准，非生产代码）
+import torch
+
+def quantize_int4(w: torch.Tensor):
+    # ① 找该张量的动态范围 [min, max]
+    qmin, qmax = -8, 7          # 4bit 有符号整数范围：-8..7
+    scale = w.abs().max() / 8   # 缩放因子：把浮点范围压到整数范围
+    # ② 量化：round(w / scale) 截断到整数；反量化：q * scale
+    q = (w / scale).round().clamp(qmin, qmax)
+    return q, scale             # 存整数权重 + 一个 scale，省下大量显存
+
+def dequantize(q: torch.Tensor, scale: float):
+    return q * scale            # 推理前还原（或算子内融合，免显式还原）
+
+# 真实 GPTQ/AWQ 会做『按通道校准 + 重要权重保护』，远复杂于此，详见官方实现
+```
+
+<Callout type="warn" title="4bit 不是免费午餐">
+  INT4 在『数值敏感』任务（精确算术、特定格式输出）上偶发掉点。上线关键链路前，
+  务必用你的真实评测集做 4bit vs 8bit vs FP16 的对照，别盲信厂商标称。
+</Callout>
+
+## 5. 批处理与吞吐优化
+
+### 5.1 静态批处理 vs 连续批处理
+
+朴素做法：等凑满一个 batch 再一起算（静态批处理）。缺点明显——短请求被迫等最长请求，GPU 常空闲。
+
+**连续批处理（Continuous Batching）** 是 vLLM/TGI 的杀手锏：不按『请求』组批，而按『每个 step 新生成的 token』组批。哪个请求先生成完就立刻腾出位置给新请求，GPU 利用率大幅拉高。
+
+### 5.2 PagedAttention
+
+vLLM 把 KV Cache 像操作系统『虚拟内存分页』一样管理：每个序列的 KV 分成固定大小的『页』，按需分配、可共享（如同一系统提示被多请求复用）。彻底解决了 KV Cache 碎片和预留浪费，是 vLLM 高吞吐的根因。
+
+<Callout type="tip" title="吞吐优化清单">
+  - 开启连续批处理（默认开）；
+  - 用 PagedAttention 类引擎减少 KV 碎片；
+  - 合适 max_num_seqs / max_model_len，别无脑拉满（显存会被 KV 撑爆）；
+  - 长系统提示用『前缀缓存（prefix cache）』复用，避免每请求重算；
+  - 输出 token 数设上限，防个别请求无限生成拖垮整体。
+</Callout>
+
+### 5.3 多卡与分布式推理
+
+单卡显存放不下大模型（或想更高吞吐）时，要把模型切到多卡。两种方式：
+
+- **张量并行（Tensor Parallelism, TP）**：把每一层的权重矩阵按列/行切到多卡，每层前向需卡间通信。适合单机多卡，延迟低但通信密集。
+- **流水线并行（Pipeline Parallelism, PP）**：把不同层放到不同卡，请求像流水一样过卡。通信少但会有『气泡』（某些卡空闲）。
+
+```bash
+# vLLM 张量并行示例：4 卡共同承载一个大模型（以官方文档为准）
+python -m vllm.entrypoints.openai.api_server \
+  --model meta-llama/Llama-3-70B-Instruct \
+  --tensor-parallel-size 4 \
+  --port 8000
+```
+
+<Callout type="note" title="TP 还是 PP">
+  单机多卡优先 TP（通信走 NVLink，快）；跨机多卡才上 PP + TP 组合。
+  TP 度数最好等于 GPU 数且卡间带宽高，否则通信会成为瓶颈。具体切分策略以部署框架文档为准。
+</Callout>
+
+### 5.4 前缀缓存：别重复算系统提示
+
+很多请求共用同一段系统提示（如『你是 XX 助手，规则是…』）。**前缀缓存（Prefix Caching）** 让这段 KV 在请求间复用，不必每请求重算——长系统提示场景能省下可观延迟与算力。
+
+```bash
+# vLLM 开启自动前缀缓存（以官方文档为准）
+python -m vllm.entrypoints.openai.api_server \
+  --model meta-llama/Llama-3-8B-Instruct \
+  --enable-prefix-caching
+```
+
+<Callout type="tip" title="让缓存命中率更高">
+  把『固定不变的内容』放系统提示前部、把『易变内容』（用户问题）放后部，
+  前缀才更容易被多个请求共享。频繁变系统提示会让缓存失效，等于白开。
+</Callout>
+
+## 6. OpenAI 兼容本地部署：可运行骨架
+
+vLLM 启动后会暴露一个**与 OpenAI 完全兼容**的 HTTP 接口。于是你之前写的所有 OpenAI SDK 代码，只需改 `baseURL` 就能指向本地模型——零改业务代码。
+
+先起服务（命令行，非 Node）：
+
+```bash
+# 用 vLLM 拉起一个 OpenAI 兼容服务（以官方文档为准，参数易变）
+# 需先 pip install vllm，并确认模型权重/量化文件就位
+python -m vllm.entrypoints.openai.api_server \
+  --model meta-llama/Llama-3-8B-Instruct \
+  --quantization awq \          # 若权重是 AWQ 量化版
+  --tensor-parallel-size 1 \
+  --port 8000
+```
+
+服务起来后，用我们惯用的 Node SDK + Zod 校验调用：
+
+```ts
+// local_infer.ts —— 调本地 vLLM（OpenAI 兼容接口）
+import OpenAI from 'openai';
+import 'dotenv/config';
+import { z } from 'zod';
+
+// 关键：把 baseURL 指向本地，model 用本地模型名；其余 API 完全一致
+const client = new OpenAI({
+  baseURL: 'http://localhost:8000/v1',
+  apiKey: 'EMPTY', // 本地服务通常不需要真实 key，占位即可
+});
+
+// 用 Zod 守住『我们期望的输出结构』（例如要求模型返回 JSON）
+const Answer = z.object({
+  city: z.string(),
+  temp: z.number(),
+});
+
+async function ask(prompt: string) {
+  const res = await client.chat.completions.create({
+    model: 'meta-llama/Llama-3-8B-Instruct',
+    messages: [{ role: 'user', content: prompt }],
+    temperature: 0.2,
+    // 配合 response_format 约束结构（vLLM 支持 json 模式，以官方文档为准）
+  });
+  const text = res.choices[0].message.content ?? '';
+  // 若约定输出 JSON，用 Zod 校验，避免脏输出进业务
+  const parsed = Answer.safeParse(JSON.parse(text));
+  return parsed.success ? parsed.data : null;
+}
+
+ask('北京现在多少度？只回 JSON {city, temp}').then(console.log);
+```
+
+运行：`npm i openai dotenv zod` 然后 `npx tsx local_infer.ts`。
+
+<Callout type="tip" title="零迁移成本的价值">
+  用 OpenAI 兼容接口，意味着『云 API ↔ 本地模型』可一键切换：开发用云、生产换本地，
+  或反过来做对照评测。业务代码只认 OpenAI SDK，部署形态对你透明。
+</Callout>
+
+## 7. 本地量化部署：伪代码骨架
+
+下面是用 AutoGPTQ / llama.cpp 把模型量化并在本地加载的思路骨架（以官方文档为准）：
+
+```python
+# quant_deploy.py —— 量化权重并本地加载（思路骨架）
+# 路径 A：GPU 侧 GPTQ/AWQ（需对应库，参数以官方文档为准）
+# from auto_gptq import AutoGPTQForCausalLM
+# model = AutoGPTQForCausalLM.from_quantized("model-4bit-gptq", device="cuda:0")
+
+# 路径 B：llama.cpp / GGUF（CPU 或低显存，跨平台）
+# from llama_cpp import Llama
+# llm = Llama(model_path="./model.Q4_K_M.gguf", n_ctx=4096, n_threads=8)
+# out = llm("法国的首都是？", max_tokens=64)
+# print(out["choices"][0]["text"])
+
+# 关键决策：选哪档量化？ Q4_K_M 是『质量/体积』甜点；要更省选 Q3，要更稳选 Q5/Q8
+```
+
+<Callout type="note" title="GGUF 量化档速查">
+  Q2_K 最小最糙，Q8_0 接近无损但最大。经验甜点 **Q4_K_M**（体积约为 FP16 的 1/4，质量损失通常可接受）。
+  边缘/CPU 设备优先 GGUF；有 GPU 服务端优先 AWQ/GPTQ + vLLM 拿连续批处理红利。
+</Callout>
+
+## 8. 部署形态决策树
+
+面对『怎么部署』，按顺序回答四个问题即可收敛：
+
+1. **有没有自有 GPU / 想不想运维？**
+   - 否 → 直接用云 API（OpenAI 等），SDK 改 baseURL 随时可切回本地做对照。
+   - 是 → 继续。
+2. **模型多大、什么硬件？**
+   - 7B~13B + 单卡 24GB → Ollama 或 vLLM + Q4/Q8 量化。
+   - 70B+ 或高并发 → vLLM/TGI + 多卡张量并行 + AWQ/GPTQ。
+   - 只有 CPU / 边缘设备 → llama.cpp + GGUF（Q4_K_M）。
+3. **要多高吞吐？**
+   - 高并发服务端 → 必选 vLLM/TGI（连续批处理 + PagedAttention）。
+   - 个人/低频 → Ollama 足够。
+4. **数据能否出域？**
+   - 不能（合规/隐私）→ 必须本地或私有化部署，禁用公有云 API。
+
+<Callout type="tip" title="先云后本地最稳">
+  开发期用云 API 快速验证逻辑，生产期再按上面决策树切到本地。
+  因为接口都 OpenAI 兼容，切换成本几乎为零，还能用同一套评测脚本做云/本对照。
+</Callout>
+
+## 9. 监控与可观测性
+
+推理服务上线后必须能看到『健康度』，否则出问题只能盲猜。至少埋三类信号：
+
+- **资源指标**：GPU 显存占用、利用率、温度；请求队列长度；P99 延迟与 QPS。
+- **质量指标**：输出格式合规率、空输出/异常率、Zod 校验失败率（见第 6 节）。
+- **成本指标**：每千 token 推理耗时、每请求显存成本，量化前后对比。
+
+```ts
+// 在调用侧记录质量信号（沿用 Zod 校验失败即埋点）
+const parsed = Answer.safeParse(JSON.parse(text));
+if (!parsed.success) {
+  metrics.increment('infer.json_invalid'); // 接入 Prometheus / 你的监控
+  return fallbackAnswer();                 // 降级而非抛错
+}
+```
+
+<Callout type="warn" title="看不见就等于没部署">
+  没有监控的推理服务，一旦发生『缓慢劣化』（如某量化档在长上下文掉点）你毫无察觉。
+  上线前先把指标管线接好，再放流量。LLM 专属的质量/成本看板（见部署运维分类）是标配。
+</Callout>
+
+## 10. 常见坑
+
+<Callout type="danger" title="max_model_len 撑爆显存">
+  把 `--max-model-len` 设得过大，KV Cache 预留直接 OOM。按真实业务最大上下文设，
+  别拍脑袋填 128k。长上下文用前缀缓存 + 分页注意力缓解，而非无脑拉长度。
+</Callout>
+
+<Callout type="warn" title="量化掉点没做对照">
+  上线前只用 FP16 评测，却部署了 4bit——结果关键指标悄悄掉。务必在『真实评测集』上
+  做 量化档 × 基模 的矩阵对照，定下可接受的量化档，写进上线规范。
+</Callout>
+
+<Callout type="warn" title="并发上限没压测">
+  直接把本地服务暴露到生产，没测 `max_num_seqs` 与实际并发。高并发下要么 OOM、要么排队爆炸。
+  上线前用 locust / 自写压测脚本跑一遍『目标 QPS』，确认 P99 延迟和吞吐达标。
+</Callout>
+
+<Callout type="warn" title="把本地服务裸奔暴露">
+  本地推理服务默认无鉴权。若部署在可达网络，务必加反向代理 + API Key 校验 + 限流，
+  否则成『免费算力池』。同理注意模型权重许可证（部分权重禁止商用）。
+</Callout>
+
+<Callout type="tip" title="冷启动与预热">
+  首请求常因『内核/JIT/显存分配』慢数秒。生产可在服务起后发一个预热请求，
+  并配合健康检查（/health）做就绪探针，避免流量打到未热身的实例。
+</Callout>
+
+## 11. 流式输出与背压
+
+用户不希望等模型『憋』完整段才看到结果。**流式（Streaming）** 让 token 边生成边返回，体验更接近真人打字。OpenAI 兼容接口用 SSE 推送，SDK 侧 `stream: true` 即可：
+
+```ts
+// 流式调用本地 vLLM（与云 API 写法一致）
+const stream = await client.chat.completions.create({
+  model: 'meta-llama/Llama-3-8B-Instruct',
+  messages: [{ role: 'user', content: '用三句话介绍 KV Cache' }],
+  stream: true, // 关键：开启流式
+});
+for await (const chunk of stream) {
+  const delta = chunk.choices[0]?.delta?.content ?? '';
+  process.stdout.write(delta); // 逐片输出，前端配打字机效果
+}
+```
+
+<Callout type="warn" title="背压与取消">
+  流式下若消费端（前端）卡顿或用户中途退出，服务端仍在生成会白白烧算力。
+  实现『客户端断开即中止生成』（如 AbortController），并在前端做背压——不要无脑全速推。
+  同时流式下更难做『整段 Zod 校验』，建议先收完再校验，或分段校验关键字段。
+</Callout>
+
+## 小结
+
+- 推理服务三指标：吞吐、延迟、成本，互相拉扯；现代引擎靠『连续批处理 + KV Cache 优化』提吞吐。
+- KV Cache 是性能关键也是显存大户；PagedAttention 类技术消碎片、前缀缓存复用省算力。
+- 选型：高并发服务端 → vLLM/TGI；本地快速试 → Ollama；CPU/边缘 → llama.cpp(GGUF)；不想运维 → 云 API。
+- 量化用精度换显存：GPTQ/AWQ 走 GPU，GGUF 走 CPU/低资源；Q4_K_M 是常用甜点档，上线前必做对照。
+- 本地 vLLM 暴露 OpenAI 兼容接口，Node SDK 改 baseURL 即可零迁移调用；红线在显存、对照、压测、鉴权、预热。
+
+## 延伸阅读 / 参考
+
+- vLLM 文档（PagedAttention、连续批处理、OpenAI 兼容接口、量化加载，以官方为准）
+- HuggingFace TGI 文档（生产级推理服务、量化与批处理）
+- GPTQ / AWQ 论文（4bit 训练后量化方法原理）
+- llama.cpp / GGUF 文档（CPU 与边缘部署、量化档说明）
+- 论文 *Orca: A Distributed Serving System for Transformer-Based Generative Models*（连续批处理思想源头）

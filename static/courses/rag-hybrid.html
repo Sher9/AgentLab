@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>混合检索：BM25 + 向量的优势互补 · AgentLab</title>
+  <meta name="description" content="理解纯向量检索的盲区，掌握 BM25 关键词召回、向量语义召回、RRF 融合、元数据过滤与查询改写，给出可运行骨架与踩坑要点。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="混合检索：BM25 + 向量的优势互补 · AgentLab"/>
+  <meta property="og:description" content="理解纯向量检索的盲区，掌握 BM25 关键词召回、向量语义召回、RRF 融合、元数据过滤与查询改写，给出可运行骨架与踩坑要点。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#rag">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">📚</span>
+        <span class="art-moduleName">RAG</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">36 分钟</span>
+      </div>
+      <h1 class="art-title">混合检索：BM25 + 向量的优势互补</h1>
+      <p class="art-desc">理解纯向量检索的盲区，掌握 BM25 关键词召回、向量语义召回、RRF 融合、元数据过滤与查询改写，给出可运行骨架与踩坑要点。</p>
+      <div class="art-tags"><span class="art-tag">#混合检索</span><span class="art-tag">#BM25</span><span class="art-tag">#RRF</span><span class="art-tag">#查询改写</span><span class="art-tag">#元数据过滤</span><span class="art-tag">#向量检索</span></div>
+    </div>
+    <div class="prose"><h1>混合检索：BM25 + 向量的优势互补</h1>
+<p>纯向量检索很强，但它有盲区：<strong>专有名词、错误码、产品型号、最新数字</strong>——这些&quot;字面要精确命中&quot;的内容，向量检索反而容易翻车（它更关心语义相似，不关心字面对不对）。反过来，传统关键词检索（BM25）对这些字面值极其精准，却不懂&quot;退钱&quot;和&quot;退款&quot;是一个意思。</p>
+<p><strong>混合检索（Hybrid Search）= 向量召回 + 关键词召回，再融合排序</strong>。本篇讲清为什么必须混、怎么融、以及查询改写与元数据过滤这两个实战杠杆。</p>
+<h2 id="1-为什么纯向量检索不够">1. 为什么纯向量检索不够</h2>
+<p>先看三个纯向量检索会跪的典型场景：</p>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>用户问</th>
+<th>期望召回</th>
+<th>纯向量为什么翻车</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>专有名词</td>
+<td>&quot;ERR_TIMEOUT_502 怎么解&quot;</td>
+<td>含该错误码的文档</td>
+<td>向量把&quot;502&quot;当成普通数字，语义上和&quot;错误/超时&quot;混了，召回不精准</td>
+</tr>
+<tr>
+<td>精确型号</td>
+<td>&quot;iPhone 15 Pro 续航&quot;</td>
+<td>含该型号的段落</td>
+<td>&quot;15 Pro&quot;被向量模糊成&quot;新款手机&quot;，召回一堆无关机型</td>
+</tr>
+<tr>
+<td>最新事实</td>
+<td>&quot;2026 医保新规&quot;</td>
+<td>含 2026 字样的文档</td>
+<td>语义上&quot;新规&quot;和&quot;旧规&quot;几乎同向量，年份信息被稀释</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">关键认知</span></div><div class="co-body"><p>  向量检索是『语义近似』，不是『字面包含』。凡是『字面必须精确』的需求，
+  都该让 BM25 这类关键词检索来兜底。两者不是替代关系，是互补关系。
+  生产级 RAG 几乎都上混合，纯向量只在『纯语义、无专名』场景才够用。</p>
+</div></div><h2 id="2-bm25-经典关键词召回原理">2. BM25：经典关键词召回原理</h2>
+<p>BM25 是 TF-IDF 的升级版，给一个查询词在文档中的&quot;相关性打分&quot;。它做了两件聪明的事：</p>
+<ul>
+<li><strong>词频饱和</strong>：一个词出现 1 次和 10 次相关性差很多，但 100 次和 110 次差别就小了（对数饱和，防止堆词作弊）；</li>
+<li><strong>逆文档频率（IDF）</strong>：越罕见的词越值钱（&quot;Timeout&quot;比&quot;的&quot;重要）；</li>
+<li><strong>文档长度归一</strong>：长文档天然词多，BM25 惩罚长文档的虚高得分，避免长文霸榜。</li>
+</ul>
+<pre><code>BM25 得分 ≈ Σ  IDF(词) × [ tf × (k+1) ] / [ tf + k×(1 - b + b×len/avgLen) ]
+                ↑稀有词更值钱   ↑词频饱和      ↑长度归一（b 控制惩罚强度）
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">BM25 不用 embedding</span></div><div class="co-body"><p>  BM25 是纯统计、零模型、零算力，建好倒排索引后毫秒级返回。
+  它和向量检索可以&quot;各跑各的、最后融合&quot;，因此混合检索的额外成本极低，
+  收益却覆盖了一大票向量盲区。性价比极高的增强手段。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">BM25 不懂同义词</span></div><div class="co-body"><p>  BM25 只看字面。用户问&quot;退钱&quot;，文档写&quot;退款&quot;，字面不同就召回不到。
+  这正是向量的强项——所以才要&quot;混&quot;。单独用 BM25 也会漏语义相关块。</p>
+</div></div><h2 id="3-混合检索架构-两条路并行">3. 混合检索架构：两条路并行</h2>
+<p>最经典的拓扑是&quot;双路召回、一路融合&quot;：</p>
+<pre><code>用户查询 q
+  ├─ 向量路： embed(q) → 向量库 ANN → 召回 top-k 向量结果（带排名）
+  └─ 关键词路：q → BM25 倒排索引 → 召回 top-k 关键词结果（带排名）
+                    │
+                    └─ 融合层（RRF / 加权）→ 统一 top-k → 重排 → 生成
+</code></pre><p>两条路彼此独立、可单独调优：向量路负责&quot;语义广撒网&quot;，关键词路负责&quot;专名精准命中&quot;。融合层把两份排名合成一份。</p>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">两路 k 可以不同</span></div><div class="co-body"><p>  向量路常取较大 k（如 20）保证语义覆盖，关键词路取较小 k（如 10）避免噪声。
+  融合时再统一裁剪。别想当然两路 k 必然相等——按各自召回质量调。</p>
+</div></div><h2 id="4-融合策略-rrf-为什么是默认首选">4. 融合策略：RRF 为什么是默认首选</h2>
+<p>把&quot;两份带排名的结果&quot;合成一份，最稳的做法是 <strong>RRF（Reciprocal Rank Fusion，倒数排名融合）</strong>：</p>
+<pre><code>RRF 得分 = Σ  1 / (k + rank_i)
+          各路   （k 通常取 60，抑制排名第 1 的相对优势、平滑差异）
+</code></pre><p>含义：某文档在越多路里排名越靠前，它的 RRF 总分越高。它<strong>只用排名、不用原始分数</strong>——这正是对抗&quot;向量分和 BM25 分量纲不同&quot;的关键：两者分数范围差几个数量级，直接加权相加会被一方碾压，而 RRF 只看&quot;排第几&quot;，天然公平。</p>
+<pre><code class="language-ts">// rrf.ts —— 倒数排名融合（真实可跑，纯算法无外部依赖）
+type Hit = { id: string; rank: number };
+
+// 输入多路结果（每路已是按相关度排好序的 id 列表），输出融合后排名
+function rrf(lists: string[][], k = 60): { id: string; score: number }[] {
+  const scoreMap = new Map&lt;string, number&gt;();
+  for (const list of lists) {
+    list.forEach((id, idx) =&gt; {
+      const rank = idx + 1; // 排名从 1 开始
+      // 关键：只看排名，不看原分数，避免量纲冲突
+      scoreMap.set(id, (scoreMap.get(id) ?? 0) + 1 / (k + rank));
+    });
+  }
+  // 按融合得分降序，得到最终统一排名
+  return [...scoreMap.entries()]
+    .map(([id, score]) =&gt; ({ id, score }))
+    .sort((a, b) =&gt; b.score - a.score);
+}
+
+// 用法示例：向量路召回 [a, b, c]，关键词路召回 [b, d, a]
+// rrf([['a','b','c'], ['b','d','a']]) → b 在两路都很靠前，总分最高
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">RRF 对量纲免疫</span></div><div class="co-body"><p>  向量相似度可能是 0.83，BM25 可能是 12.7，直接加权 <code>0.5×向量 + 0.5×BM25</code> 会被 BM25 碾压。
+  RRF 完全不看这些数值，只看&quot;在第几名&quot;，所以无需归一化、无需调权重，开箱即用且稳。
+  这也是它成为混合检索默认融合算法的根本原因。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">想要可调权重时再用加权</span></div><div class="co-body"><p>  若你确有证据&quot;某路更重要&quot;（如法律场景专名权重极高），可在 RRF 之上做
+  <code>score = w_vec×RRF_vec + w_kw×RRF_kw</code>，但先用纯 RRF 跑基线，再数据驱动地加权重，
+  别一上来就手拍权重。</p>
+</div></div><h2 id="5-元数据过滤-检索的第三只手">5. 元数据过滤：检索的第三只手</h2>
+<p>混合检索之外，还有一个常被低估的杠杆：<strong>元数据过滤</strong>。它和&quot;语义/关键词&quot;是正交的维度——先按业务字段缩小范围，再在子集里做混合召回。</p>
+<p>典型过滤维度：</p>
+<ul>
+<li><strong>权限/租户</strong>：<code>tenant_id = 当前用户</code>，多租户隔离的硬红线；</li>
+<li><strong>时间</strong>：<code>updated_at &gt; 2026-01-01</code>，保证召回的是最新版文档；</li>
+<li><strong>类型/来源</strong>：<code>category = '法律'</code> 或 <code>source = '手册v3'</code>，限定领域；</li>
+<li><strong>语言</strong>：<code>lang = 'zh'</code>，避免跨语种噪声。</li>
+</ul>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">过滤必须 pre-filter</span></div><div class="co-body"><p>  和第 5 篇向量库强调的一致：过滤要在 ANN/BM25 检索<strong>之前</strong>生效（pre-filter）。
+  若先召回再剔除，可能&quot;过滤后不足 k 条&quot;导致召回率崩塌。选支持 pre-filter 的引擎。</p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">过滤过严等于没召回</span></div><div class="co-body"><p>  同时叠 <code>tenant_id + 时间 + 类型 + 语言</code> 多个强过滤，候选集可能极小，ANN 无米下锅。
+  过滤条件要&quot;必要且最小&quot;：权限/租户是必选，其余按需，避免组合爆炸导致空结果。</p>
+</div></div><h2 id="6-查询改写-让召回率再上一个台阶">6. 查询改写：让召回率再上一个台阶</h2>
+<p>很多&quot;搜不到&quot;不是检索器的问题，而是<strong>用户查询太短、太口语、有错别字</strong>。查询改写（Query Rewriting）在检索前用 LLM 把问题&quot;改写成更适合检索的形式&quot;：</p>
+<ul>
+<li><strong>扩展</strong>：把&quot;怎么退钱&quot;扩成&quot;退款流程 退货 钱款原路返回&quot;；</li>
+<li><strong>拆解</strong>：把复合问题拆成多个子查询，分别召回再合并；</li>
+<li><strong>HyDE（假设性文档嵌入）</strong>：让 LLM 先&quot;假装回答&quot;一段，再用这段去向量检索——用&quot;答案的语义&quot;去匹配&quot;文档的语义&quot;，常能提升召回。</li>
+</ul>
+<pre><code class="language-ts">// query-rewrite.ts —— 用 LLM 改写查询以提升召回（OpenAI SDK，真实可跑骨架）
+import OpenAI from 'openai';
+import 'dotenv/config';
+
+const client = new OpenAI();
+
+// 把口语化短问，扩写成更适合 BM25+向量 的检索式
+async function rewriteQuery(userAsk: string): Promise&lt;string&gt; {
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      {
+        role: 'system',
+        content:
+          '你负责把用户问题改写成检索词。要求：1) 补全同义词与上下位词；' +
+          '2) 保留所有专有名词/型号/错误码原样；3) 输出一行，用空格分隔关键词。',
+      },
+      { role: 'user', content: userAsk },
+    ],
+  });
+  return res.choices[0].message.content?.trim() ?? userAsk;
+}
+
+// HyDE 思路：先生成一段"假设答案"，再对其向量化去检索（向量路增强）
+async function hydeVector(client: OpenAI, userAsk: string, embed: (t: string) =&gt; Promise&lt;number[]&gt;) {
+  const fake = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: '针对问题写一段可能出现在文档里的回答要点（一两句）。' },
+      { role: 'user', content: userAsk },
+    ],
+  });
+  const text = fake.choices[0].message.content ?? userAsk;
+  return embed(text); // 用这段"假设答案"的向量去做 ANN，语义对齐文档
+}
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">改写也要防注入</span></div><div class="co-body"><p>  改写模型的输入来自用户，而输出会进检索/可能进 prompt。必须对改写结果做长度截断与
+  敏感词过滤，避免用户借&quot;改写&quot;塞入提示注入。改写是检索环节，不是信任边界。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">HyDE 不是万能</span></div><div class="co-body"><p>  HyDE 在&quot;答案风格和文档一致&quot;时有效；若文档是代码/表格、答案风格迥异，假答案反而带偏。
+  用评测集验证 HyDE 是否真提升召回，别盲加。</p>
+</div></div><h2 id="7-可运行骨架-混合检索端到端">7. 可运行骨架：混合检索端到端</h2>
+<p>下面把&quot;向量路 + 关键词路 + RRF 融合&quot;串起来。向量 embedding 用 OpenAI SDK 真实可跑；BM25 与向量库的具体 API 因库而异，<strong>以官方文档为准</strong>。</p>
+<pre><code class="language-ts">// hybrid-search.ts —— 混合检索骨架（向量路 + 关键词路 + RRF）
+import OpenAI from 'openai';
+import 'dotenv/config';
+
+const client = new OpenAI();
+
+async function embed(text: string): Promise&lt;number[]&gt; {
+  const r = await client.embeddings.create({
+    model: 'text-embedding-3-small',
+    input: text,
+  });
+  return r.data[0].embedding;
+}
+
+async function hybridSearch(userAsk: string, topK = 5): Promise&lt;string[]&gt; {
+  // 0) 先改写，提升两路召回
+  const rewritten = await rewriteQuery(userAsk);
+
+  // 1) 向量路：embed（改写后的查询）→ 向量库 ANN top-k
+  const qv = await embed(rewritten);
+  // const vecHits = await vecClient.search({ vector: qv, limit: 20 });
+  // —— 向量库 API 以官方文档为准 ——
+  const vecHits: string[] = []; // 占位，实际为召回的文档 id 列表（已按相关度排序）
+
+  // 2) 关键词路：BM25 倒排索引查改写后的查询 top-k
+  // const kwHits = await bm25Client.search(rewritten, { limit: 10 });
+  // —— BM25 引擎 API 以官方文档为准（如 Elasticsearch / Tantivy / 自研倒排）——
+  const kwHits: string[] = []; // 占位
+
+  // 3) RRF 融合两路排名（算法见第 4 节，真实可跑）
+  const fused = rrf([vecHits, kwHits]);
+
+  // 4) 融合后再过一次重排（rag-rerank）效果更佳，此处直接取 top-k 文本
+  return fused.slice(0, topK).map((h) =&gt; h.id);
+  // 实际应把 id 映射回文档块文本，注入生成 prompt
+}
+
+// 复用第 4 节的 rrf 函数（此处省略定义，见上文）
+function rrf(lists: string[][], k = 60): { id: string; score: number }[] {
+  // ... 见第 4 节实现
+  return lists.flat().map((id) =&gt; ({ id, score: 0 }));
+}
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">融合后建议再过一道重排</span></div><div class="co-body"><p>  RRF 给出&quot;粗排 top-k&quot;，但向量/关键词的语义精细度有限。生产常在融合后再接一个
+  Cross-Encoder 重排（见 rag-rerank），把 top-20 精排成 top-5，质量明显更稳。
+  所以混合检索和重排是&quot;黄金搭档&quot;，不是二选一。</p>
+</div></div><h2 id="8-对比与踩坑">8. 对比与踩坑</h2>
+<h3 id="8-1-三种召回策略对比">8.1 三种召回策略对比</h3>
+<table>
+<thead>
+<tr>
+<th>策略</th>
+<th>擅长</th>
+<th>短板</th>
+<th>适用</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>纯向量</td>
+<td>语义、同义、模糊</td>
+<td>专名/数字/最新事实翻车</td>
+<td>纯语义、无专名</td>
+</tr>
+<tr>
+<td>纯 BM25</td>
+<td>专名、型号、精确字面</td>
+<td>不懂同义、漏语义相关</td>
+<td>关键词确定的检索</td>
+</tr>
+<tr>
+<td>混合（向量+BM25+RRF）</td>
+<td>兼顾语义与字面</td>
+<td>双路运维、略复杂</td>
+<td>生产级 RAG 默认</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">两路分数直接加权相加</span></div><div class="co-body"><p>  最常见错误：把向量分（0~1）和 BM25 分（可达几十）直接 <code>w1×vec + w2×kw</code> 相加。
+  BM25 会碾压向量，融合退化成&quot;纯 BM25&quot;。务必用 RRF（只看排名）或先各自归一化。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">关键词路忘记做分词与停用词</span></div><div class="co-body"><p>  中文 BM25 必须先做分词（jieba 等），否则&quot;退钱&quot;被当成一个字一个字查，毫无意义。
+  英文要小写化、去停用词（&quot;the/a&quot;）。分词质量直接决定关键词路召回上限。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">改写引入延迟与成本</span></div><div class="co-body"><p>  每次检索前多调一次 LLM 改写，增加一次往返与 token 成本。高频场景可考虑：
+  改写结果缓存（相同问题不重复改写）、或对简单问题跳过改写。用数据判断是否值得。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">用评测集定融合参数</span></div><div class="co-body"><p>  RRF 的 k、两路各自的 top-k、是否加权重，全部交给评测集（如 Ragas 检索召回@k）决定，
+  而不是拍脑袋。改一个参数跑一次回归，让指标说话。</p>
+</div></div><h2 id="9-决策清单-你的场景要上混合吗">9. 决策清单：你的场景要上混合吗</h2>
+<p>不是所有 RAG 都该上混合。用这份清单快速判断：</p>
+<ul>
+<li>✅ 文档含<strong>专有名词 / 型号 / 错误码 / 精确数字</strong> → 必须上 BM25 兜底；</li>
+<li>✅ 用户提问<strong>口语化、简短、有错别字</strong> → 查询改写大概率值得加；</li>
+<li>✅ 多业务域 / 多租户 → 元数据过滤是必选项；</li>
+<li>⚠️ 纯语义知识（如&quot;什么是 Transformer&quot;）且<strong>无专名</strong> → 纯向量可能已够，先测再决定；</li>
+<li>⚠️ 查询量极低、文档极少 → 上混合的运维成本可能高于收益，Chroma + 纯向量先跑通。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">先纯向量跑基线</span></div><div class="co-body"><p>  别一上来就堆混合。先用纯向量 + 一份评测集测召回@k，找出&quot;漏掉的到底是专名还是语义&quot;，
+  再针对性补 BM25 或改写。盲目上全套，既增加复杂度又难定位问题。</p>
+</div></div><h3 id="9-1-bm25-倒排索引长什么样-思路伪代码">9.1 BM25 倒排索引长什么样（思路伪代码）</h3>
+<p>理解 BM25 的存储形态，有助于你选引擎、排障：</p>
+<pre><code class="language-ts">// inverted-index.ts —— BM25 倒排索引思路（伪代码，非某库真实 API）
+// 倒排索引：词 → 出现在哪些文档、词频多少
+// 形如： "超时" → [{doc:'d1', tf:3}, {doc:'d3', tf:1}]
+//       "退款" → [{doc:'d1', tf:2}, {doc:'d2', tf:5}]
+
+// 查询 "超时 退款" 时：
+//   1) 两词各自取倒排列表
+//   2) 按 IDF 加权、按文档聚合 tf、按长度归一 → 给每个文档算 BM25 分
+//   3) 按分数降序取 top-k
+// 这一步是纯内存/磁盘查表，毫秒级，与 embedding 完全解耦。
+
+// 中文务必先分词再建索引：否则 "怎么退款" 不会被切成 ["怎么","退款"]
+// 而会被当整串，BM25 永远匹不到含 "退款" 的文档。分词质量 = 关键词路上限。
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">同源分词器是铁律</span></div><div class="co-body"><p>  建索引和查询必须用<strong>同一个分词器、同一套词典</strong>。否则&quot;退款&quot;建索引时切成
+  [&quot;退&quot;,&quot;款&quot;]，查询时切成 [&quot;退款&quot;]，两边对不上，召回直接归零。这点中文尤甚。</p>
+</div></div><h2 id="10-排障速查表">10. 排障速查表</h2>
+<table>
+<thead>
+<tr>
+<th>现象</th>
+<th>最可能的根因</th>
+<th>对策</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>专名问不中</td>
+<td>没上 BM25 / BM25 未分词</td>
+<td>加关键词路、校验分词器</td>
+</tr>
+<tr>
+<td>召回被 BM25 主导</td>
+<td>两路分数直接相加</td>
+<td>改用 RRF</td>
+</tr>
+<tr>
+<td>融合后不足 k 条</td>
+<td>过滤过严（post-filter）</td>
+<td>改 pre-filter、放宽条件</td>
+</tr>
+<tr>
+<td>改写后更差</td>
+<td>HyDE 风格不符 / 注入</td>
+<td>关 HyDE、加输出过滤</td>
+</tr>
+<tr>
+<td>中文召回全空</td>
+<td>分词器不一致</td>
+<td>统一分词器与词典</td>
+</tr>
+<tr>
+<td>延迟突增</td>
+<td>改写每次调 LLM</td>
+<td>缓存改写结果、简单问题跳过</td>
+</tr>
+</tbody></table>
+<h2 id="小结">小结</h2>
+<ul>
+<li>纯向量检索对专名、型号、最新数字翻车；BM25 精准但不懂同义——二者互补，混合是生产默认。</li>
+<li>BM25 靠词频饱和+IDF+长度归一做关键词召回，零算力、毫秒级。</li>
+<li>融合首选 RRF：只看排名不看分数，天然免疫向量/BM25 的量纲差异；需要可调权重时再叠加加权。</li>
+<li>元数据过滤是第三维杠杆（pre-filter 优先），查询改写（扩展/HyDE）能再抬召回。</li>
+<li>红线：别直接加权相加两路分数、中文必须分词、过滤要 pre-filter 且不过严、改写防注入、融合后接重排更佳。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  混合检索给出&quot;粗排 top-k&quot;，但向量/关键词对语义的精细区分有限。
+  怎么用 Cross-Encoder 把 top-20 精排成 top-5？这就是 <strong>rag-rerank（重排序）</strong> 的主题。</p>
+</div></div><h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>论文 <em>Reciprocal Rank Fusion outperforms Condorcet and individual Rank Learning Methods</em>（RRF 原始论文）</li>
+<li>Elasticsearch / OpenSearch 官方文档（BM25、hybrid search、pre-filter，以官方为准）</li>
+<li>Qdrant / Milvus 官方文档（混合检索、元数据过滤，以官方为准）</li>
+<li>论文 <em>Precise Zero-Shot Dense Retrieval without Relevance Labels (HyDE)</em>（假设性文档嵌入）</li>
+<li>Ragas 文档（检索召回@k 评测，用于数据驱动定融合参数）</li>
+<li>OpenAI Embeddings 文档（embedding 维度与批处理，以官方为准）</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="rag-vector-db.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">向量数据库：RAG 的语义检索底座</span></a>
+    <a class="art-pagerLink art-pagerRight" href="rag-rerank.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">重排序：用 Cross-Encoder 精排检索结果</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

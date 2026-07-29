@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>链路追踪实战：OpenTelemetry、Span 设计、错误定位与回放 · AgentLab</title>
+  <meta name="description" content="用 OpenTelemetry 的 Trace/Span 模型把 Agent 的每一步（LLM 调用、工具执行、检索、规划）都可视化，掌握 Span 切分原则、耗时/错误定位、回放重跑，并对比 LangSmith/Phoenix，给出可运行 TS 骨架。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="链路追踪实战：OpenTelemetry、Span 设计、错误定位与回放 · AgentLab"/>
+  <meta property="og:description" content="用 OpenTelemetry 的 Trace/Span 模型把 Agent 的每一步（LLM 调用、工具执行、检索、规划）都可视化，掌握 Span 切分原则、耗时/错误定位、回放重跑，并对比 LangSmith/Phoenix，给出可运行 TS 骨架。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#eval">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">📊</span>
+        <span class="art-moduleName">评估调优</span>
+        <span class="art-diff">高级</span>
+        <span class="art-dur">33 分钟</span>
+      </div>
+      <h1 class="art-title">链路追踪实战：OpenTelemetry、Span 设计、错误定位与回放</h1>
+      <p class="art-desc">用 OpenTelemetry 的 Trace/Span 模型把 Agent 的每一步（LLM 调用、工具执行、检索、规划）都可视化，掌握 Span 切分原则、耗时/错误定位、回放重跑，并对比 LangSmith/Phoenix，给出可运行 TS 骨架。</p>
+      <div class="art-tags"><span class="art-tag">#链路追踪</span><span class="art-tag">#OpenTelemetry</span><span class="art-tag">#Span</span><span class="art-tag">#可观测</span><span class="art-tag">#回放</span><span class="art-tag">#错误定位</span></div>
+    </div>
+    <div class="prose"><h1>链路追踪实战：OpenTelemetry、Span 设计、错误定位与回放</h1>
+<p>M6 把 Tracing 作为『让 Agent 行为可见』的总览点了一下。这一篇专门讲<strong>怎么做链路追踪</strong>：用 OpenTelemetry 的 Trace/Span 模型把一次 Agent 运行拆成可观测的步骤树，让你能回答『慢在哪、错在哪、当时到底发生了什么』。</p>
+<p>没有追踪的 Agent 是黑盒：用户说『它答非所问』，你只能盲猜是检索错了、模型抽风了还是工具挂了。有了 Trace，每一步的输入输出、耗时、错误都摊在眼前。</p>
+<h2 id="1-为什么-agent-特别需要链路追踪">1. 为什么 Agent 特别需要链路追踪</h2>
+<p>普通 Web 服务追踪已经很成熟，但 Agent 有额外难点，让追踪从『nice to have』变成『必须』：</p>
+<ul>
+<li><strong>多步、分支、循环</strong>：一次回答可能经历 『规划 → 检索 → 工具 → 再规划 → 生成』，失败点不固定；</li>
+<li><strong>LLM 调用本身不可复现</strong>：同一输入两次结果可能不同，必须记下当时的 prompt 与原始返回才能复盘；</li>
+<li><strong>跨系统</strong>：LLM、向量库、外部 API、数据库都参与，问题可能在任一环。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">Trace 是评估的底座</span></div><div class="co-body"><p>  上一篇的『任务完成度』『步骤准确率』，底层都依赖 Trace：你要知道 Agent 实际走了哪些步、
+  每步耗时与成败，才能算轨迹指标。Trace 也是红队评估（eval-guardrail）复盘攻击路径的依据。
+  先有 Trace，才有可量化的评估。</p>
+</div></div><h2 id="2-tracing-核心概念">2. Tracing 核心概念</h2>
+<p>OpenTelemetry（业界标准，下文简称 OTel）的模型三件套：</p>
+<table>
+<thead>
+<tr>
+<th>概念</th>
+<th>含义</th>
+<th>Agent 里的例子</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Trace</strong></td>
+<td>一次完整请求的端到端记录</td>
+<td>用户问『退掉订单 1024』的整轮</td>
+</tr>
+<tr>
+<td><strong>Span</strong></td>
+<td>Trace 里的一个有起止时间的操作单元</td>
+<td>一次 LLM 调用、一次 <code>search_order</code> 工具执行</td>
+</tr>
+<tr>
+<td><strong>Context</strong></td>
+<td>把父子 Span 串起来的上下文（trace_id + parent_span_id）</td>
+<td>让『规划 span』包含其下的『工具 span』</td>
+</tr>
+</tbody></table>
+<p>一棵典型的 Agent Trace：</p>
+<pre><code>Trace: 退掉订单 1024
+├─ Span: agent.run            (总耗时)
+│  ├─ Span: plan              (LLM 调用，决定先查后退)
+│  ├─ Span: tool.search_order (外部 API)
+│  ├─ Span: tool.refund_order (外部 API)
+│  └─ Span: generate          (LLM 调用，生成回复)
+</code></pre><h2 id="3-opentelemetry-基础-思路骨架">3. OpenTelemetry 基础（思路骨架）</h2>
+<p>OTel 自带多语言 SDK，规范稳定。下面用<strong>思路 + 伪代码</strong>展示核心 API 形态——真实方法名/版本以官方文档为准，OTel API 易随版本微调：</p>
+<pre><code class="language-ts">// trace-sketch.ts —— OpenTelemetry 思路骨架（以官方文档为准，API 易变）
+// 真实导入形如：import { trace, context } from '@opentelemetry/api';
+// 并需先初始化 TracerProvider + 导出器（OTLP/Jaeger/Console）
+
+// ① 拿到一个 tracer（命名空间，便于区分来源）
+const tracer = trace.getTracer('agentlab-agent');
+
+// ② 开启一个 span；回调内的工作都被这个 span 计时
+await tracer.startActiveSpan('agent.run', async (span) =&gt; {
+  // ③ 给 span 加属性（attribute），便于后续按维度过滤/聚合
+  span.setAttribute('user.id', 'u_001');
+  span.setAttribute('input.tokens', 128);
+
+  // ④ 真正干活；子 span 会自动继承 parent 上下文
+  const plan = await planStep();
+  const order = await runTool('search_order', { id: 1024 });
+
+  // ⑤ 异常记到 span，便于错误定位
+  if (!order) span.recordException(new Error('order not found'));
+
+  span.end(); // 必须 end，否则 span 不会上报
+});
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">别忘了 end 和上下文传播</span></div><div class="co-body"><p>  两个最高频错误：(1) span 没 <code>end()</code>，导致计时为 0 或永远不关闭；
+  (2) 在 <code>async</code> 里新起 <code>Promise</code> 但没把 OTel Context 传过去，子 span 丢失 parent，
+  Trace 树断裂。用 <code>context.with(...)</code> 或 <code>startActiveSpan</code> 包裹异步工作最稳。</p>
+</div></div><h2 id="4-span-设计-怎么切分才不哭">4. Span 设计：怎么切分才不哭</h2>
+<p>Span 切太粗（全塞一个 span）等于没追踪；切太细（每行一个）则噪声爆表。Agent 的<strong>推荐切分粒度</strong>：每个『有独立语义、值得单独看耗时/成败』的动作一个 Span。</p>
+<table>
+<thead>
+<tr>
+<th>动作</th>
+<th>是否独立 Span</th>
+<th>理由</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>一次 LLM 调用（plan/generate）</td>
+<td>✅ 是</td>
+<td>耗时大头、需记录 prompt 与原始返回</td>
+</tr>
+<tr>
+<td>一次工具执行（search/refund）</td>
+<td>✅ 是</td>
+<td>外部依赖、成败关键</td>
+</tr>
+<tr>
+<td>一次检索（向量召回）</td>
+<td>✅ 是</td>
+<td>召回质量影响答案，需记录 query 与 top-k</td>
+</tr>
+<tr>
+<td>循环的一整轮（iteration）</td>
+<td>✅ 是</td>
+<td>看『转了几圈、哪圈卡住』</td>
+</tr>
+<tr>
+<td>一行 <code>JSON.parse</code></td>
+<td>❌ 否</td>
+<td>噪声，别拆</td>
+</tr>
+</tbody></table>
+<p>关键属性（attribute）要记什么：</p>
+<pre><code class="language-ts">// 给 LLM span 记的属性示例——复盘时全靠它们
+span.setAttribute('llm.model', 'gpt-4o-mini');
+span.setAttribute('llm.prompt_tokens', usage.prompt_tokens);
+span.setAttribute('llm.latency_ms', Date.now() - start);
+// 把 prompt 与原始返回存进 events / 单独字段，便于回放（注意脱敏，见下）
+span.addEvent('llm.request', { messages: JSON.stringify(req) });
+span.addEvent('llm.response', { content: completion });
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">敏感字段要脱敏再记</span></div><div class="co-body"><p>  prompt 里可能有用户 PII、工具结果里可能有订单/密钥。写入 span 前<strong>先做脱敏</strong>
+  （ masking / 截断），否则 Trace 后端会变成另一个数据泄露面。这是合规红线，不是可选项。</p>
+</div></div><h2 id="5-把-openai-调用包成-span-可运行骨架">5. 把 OpenAI 调用包成 Span（可运行骨架）</h2>
+<p>下面是一段能跑的封装：把 <code>client.chat.completions.create</code> 自动包进 span，记录模型、token、耗时，并捕获异常。这里用 OTel 的 <code>@opentelemetry/api</code>（真实项目需配好 TracerProvider 与导出器）。</p>
+<pre><code class="language-ts">// traced-openai.ts —— 把 LLM 调用包进 span 的可运行骨架
+import OpenAI from 'openai';
+import 'dotenv/config';
+import { trace } from '@opentelemetry/api'; // 需先初始化 TracerProvider（见官方文档）
+
+const client = new OpenAI();
+const tracer = trace.getTracer('agentlab-openai');
+
+// 包装后的 chat 调用：自动产生一个 llm.span
+async function tracedChat(opts: OpenAI.Chat.Completions.ChatCompletionCreateParams) {
+  return tracer.startActiveSpan('llm.chat', async (span) =&gt; {
+    const start = Date.now();
+    span.setAttribute('llm.model', opts.model);
+    try {
+      const res = await client.chat.completions.create(opts);
+      const u = res.usage!;
+      // 记录关键指标，后续能在 dashboard 里按模型/耗时聚合
+      span.setAttribute('llm.prompt_tokens', u.prompt_tokens);
+      span.setAttribute('llm.completion_tokens', u.completion_tokens);
+      span.setAttribute('llm.latency_ms', Date.now() - start);
+      span.addEvent('llm.response', { content: res.choices[0].message.content ?? '' });
+      return res;
+    } catch (err: any) {
+      span.recordException(err);            // 错误定位的关键
+      span.setAttribute('error', true);
+      throw err;
+    } finally {
+      span.end();
+    }
+  });
+}
+
+// 用法：和直接用 client 一样，但每次调用都会留下 span
+await tracedChat({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: '你好' }] });
+</code></pre><p>同样手法套到工具执行、检索、embedding 上，一次 Agent 运行就形成了完整 Trace 树。</p>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">别在 span 里记完整 system prompt 当默认</span></div><div class="co-body"><p>  把整个超长 system prompt 每次都写进 event，会让 Trace 存储爆炸、且多为重复。
+  建议：记 <code>system_prompt_hash</code>（指纹）用于去重定位，完整文本存在带版本的配置里按需关联。</p>
+</div></div><h2 id="6-把工具与检索也包成-span-完整骨架">6. 把工具与检索也包成 Span（完整骨架）</h2>
+<p>只有 LLM 调用有 span 还不够——Agent 一半的坑在工具和检索。同样手法包一层，让它们也进 Trace 树。</p>
+<pre><code class="language-ts">// traced-tools.ts —— 工具与检索的 span 封装（与 tracedChat 同思路）
+const tracer = trace.getTracer('agentlab-tools');
+
+// ① 工具调用：记输入参数、成功与否、耗时
+async function tracedTool(name: string, args: unknown, fn: () =&gt; Promise&lt;string&gt;) {
+  return tracer.startActiveSpan(`tool.${name}`, async (span) =&gt; {
+    const start = Date.now();
+    span.setAttribute('tool.name', name);
+    span.setAttribute('tool.args', JSON.stringify(args)); // 注意脱敏
+    try {
+      const result = await fn();
+      span.setAttribute('tool.ok', true);
+      span.setAttribute('tool.latency_ms', Date.now() - start);
+      return result;
+    } catch (err: any) {
+      span.recordException(err);
+      span.setAttribute('tool.ok', false);
+      span.setAttribute('error', true);
+      throw err;
+    } finally {
+      span.end();
+    }
+  });
+}
+
+// ② 检索：记 query、召回数量、top1 分数，便于评估召回质量
+async function tracedRetrieve(query: string, doSearch: () =&gt; Promise&lt;{ text: string; score: number }[]&gt;) {
+  return tracer.startActiveSpan('retrieve', async (span) =&gt; {
+    span.setAttribute('retrieve.query', query);
+    const hits = await doSearch();
+    span.setAttribute('retrieve.count', hits.length);
+    span.setAttribute('retrieve.top1_score', hits[0]?.score ?? 0);
+    // 低分召回是坏答案的常见根因，单独打标便于告警
+    if (hits[0]?.score &lt; 0.3) span.setAttribute('retrieve.low_recall', true);
+    span.end();
+    return hits;
+  });
+}
+</code></pre><p>把这三层（LLM / 工具 / 检索）都包上，一次 Agent 运行就自然长成一棵完整 Trace 树，错误定位和步骤准确率统计（见 eval-metrics）才有数据可挖。</p>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">用命名约定让 span 可筛选</span></div><div class="co-body"><p>  统一前缀（<code>llm.*</code> / <code>tool.*</code> / <code>retrieve.*</code> / <code>plan.*</code>）后，在 Trace 后端能按前缀聚合，
+  比如『所有 tool 类 span 的平均耗时』『retrieve 低分率』。命名规范比事后打标签省力得多。</p>
+</div></div><h2 id="7-采样-别全量上报撑爆存储">7. 采样：别全量上报撑爆存储</h2>
+<p>高流量下每条请求都全量上报 Trace，存储和成本都吃不消。两类采样：</p>
+<ul>
+<li><strong>Head-based（头部采样）</strong>：请求一开始决定是否采样，简单但会漏掉『偶发错误』（因为采样时还不知道它会错）；</li>
+<li><strong>Tail-based（尾部采样）</strong>：等请求结束再决定，能『错误/慢请求全采、正常请求抽 1%』，最适合 Agent——既省钱又不丢关键现场。</li>
+</ul>
+<pre><code class="language-ts">// 尾部采样决策（思路骨架）：错误与慢请求必采，正常抽样
+function shouldSample(trace: { error: boolean; durationMs: number; sampled: boolean }): boolean {
+  if (trace.error) return true;            // 出错的必留，复盘靠它
+  if (trace.durationMs &gt; 5000) return true; // 慢请求必留
+  return Math.random() &lt; 0.01;             // 正常只留 1%
+}
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">头部采样会丢坏样本</span></div><div class="co-body"><p>  若用 head-based 且采样率 1%，那 1% 之外的错误 trace 就永远丢了，你只能看到『系统报错了』
+  却拿不到现场。Agent 场景强烈建议 tail-based，或至少对带 <code>error</code> 的强制全采。</p>
+</div></div><h2 id="8-与-dashboard-metric-联动">8. 与 Dashboard / Metric 联动</h2>
+<p>Trace 是『一案一查』的细看，但要<strong>持续盯质量</strong>，得把 Trace 里的关键数字沉淀成 Metric，再进 Dashboard 与告警：</p>
+<table>
+<thead>
+<tr>
+<th>从 Trace 提炼的 Metric</th>
+<th>用途</th>
+<th>告警示例</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>各 <code>llm.*</code> span P95 耗时</td>
+<td>看模型变慢没</td>
+<td>P95 &gt; 8s 告警</td>
+</tr>
+<tr>
+<td><code>tool.ok=false</code> 比率</td>
+<td>看外部依赖健康</td>
+<td>错误率 &gt; 5% 告警</td>
+</tr>
+<tr>
+<td><code>retrieve.low_recall</code> 次数</td>
+<td>看检索退化</td>
+<td>占比 &gt; 10% 告警</td>
+</tr>
+<tr>
+<td>单 Trace span 数（轮数）</td>
+<td>看 Agent 是否陷入循环</td>
+<td>平均轮数突增告警</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">Trace 找原因，Metric 管趋势</span></div><div class="co-body"><p>  分工清晰：Metric 告诉你『现在质量在变差』（趋势），Trace 告诉你『变差是因为哪一步』
+  （根因）。两者都接进同一个 Dashboard，才算把可观测做完整。成本维度的 metric 见 M6。</p>
+</div></div><h2 id="9-错误定位-用-trace-找慢-失败节点">9. 错误定位：用 Trace 找慢/失败节点</h2>
+<p>Trace 落地后，两类问题最好查：</p>
+<p><strong>慢</strong>：在 Trace 后端按 <code>duration</code> 排序，一眼看到底是 LLM 调用（通常最大头）还是某个慢工具（如同步查库）。定位后对症下药——LLM 慢就换小模型/流式，工具慢就加缓存/异步。</p>
+<p><strong>错</strong>：<code>error=true</code> 的 span 直接高亮。点进去看 <code>recordException</code> 的堆栈与当时的输入，就能区分是『模型返回了非法 JSON』『工具 500』还是『检索返回空』。</p>
+<pre><code class="language-ts">// 一个在本地汇总 trace 的极简辅助：找出最慢的 span（无后端时也能用）
+function findSlowest(spans: { name: string; ms: number }[]) {
+  return spans.slice().sort((a, b) =&gt; b.ms - a.ms)[0];
+}
+// 实战里这一步由 Jaeger / Tempo / LangSmith 的 UI 完成，无需自己写
+</code></pre><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">错误要可区分重试与致命</span></div><div class="co-body"><p>  记录异常时务必带上错误类型（网络超时 vs 业务 4xx vs 校验失败）。
+  超时可能自愈（下一轮重试就好），校验失败说明 prompt/参数有 bug，必须修代码。
+  混为一谈会让你要么过度重试、要么漏掉真 bug。</p>
+</div></div><h2 id="10-回放-replay-用-trace-重跑定位">10. 回放（Replay）：用 Trace 重跑定位</h2>
+<p>Trace 最好的副产品是<strong>可回放</strong>。当你发现一条坏 Trace，可以拿它记录的输入，在原环境（或固定模型版本）重新跑一遍，验证『是偶发还是必现』、对比改完后的差异。</p>
+<pre><code class="language-ts">// replay.ts —— 思路：从存档的 trace 取出输入，重新灌进 Agent
+//（以官方文档为准，这里只展示骨架逻辑）
+async function replay(traceSnapshot: {
+  messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[];
+  tools: unknown;
+}) {
+  // 用当时相同的 messages 重跑，观察现在是否还出错
+  // 关键：锁定模型版本，否则回放结果不可比
+  return tracedChat({ model: 'gpt-4o-mini', messages: traceSnapshot.messages });
+}
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">回放要锁版本</span></div><div class="co-body"><p>  回放对比的前提是『除了你想改的那一处，其余都不变』。务必固定模型版本、
+  工具实现、检索索引版本，否则你分不清改善来自改动还是来自环境漂移。</p>
+</div></div><h2 id="11-自建-otel-vs-专用平台对比">11. 自建 OTel vs 专用平台对比</h2>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>适用</th>
+<th>优点</th>
+<th>缺点</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>自建 OpenTelemetry + Jaeger/Tempo</td>
+<td>已用 OTel 体系、要完全自控</td>
+<td>标准、可迁、成本可控</td>
+<td>要自己搭存储/UI、Agent 语义需自接</td>
+</tr>
+<tr>
+<td>LangSmith</td>
+<td>LangChain 生态、要开箱即用</td>
+<td>Agent 语义（step/tool）原生、回放/标注方便</td>
+<td>厂商绑定、数据出域需评估</td>
+</tr>
+<tr>
+<td>Phoenix（Arize）</td>
+<td>想本地/开源看 LLM trace</td>
+<td>开源、专注 LLM 语义、可本地跑</td>
+<td>需自行部署、生态较新</td>
+</tr>
+<tr>
+<td>纯日志（console）</td>
+<td>原型期</td>
+<td>零依赖</td>
+<td>不可聚合、不可回放、不可跨请求</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">OTel 是通用底座，平台是上层语义</span></div><div class="co-body"><p>  LangSmith/Phoenix 底层很多也兼容 OTel 导出。建议：用 OTel 规范打点（保证不锁定），
+  再选一个平台做可视化。这样哪天换平台，埋点代码不用重写。</p>
+</div></div><h2 id="12-常见坑">12. 常见坑</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">Trace 泄露隐私</span></div><div class="co-body"><p>  span 里记了 prompt、工具结果，往往含 PII/密钥。不做脱敏直接上报，
+  等于把敏感数据复制了一份到可观测后端。写入前必须 masking/截断，多租户要严格按 userId 隔离。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">span 爆炸拖垮性能</span></div><div class="co-body"><p>  粒度太细（每行一个）+ 高频调用，会让 span 数量爆炸，既拖慢应用又撑爆后端存储。
+  遵循第 4 节的『语义动作级』切分，并对高频内部细节用 metric 而非 trace。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">上下文断裂导致树乱</span></div><div class="co-body"><p>  在 Agent 循环里如果手动 new Promise 却没传播 OTel Context，子 span 会『无父』，
+  Trace 树变平、无法还原步骤层级。统一用 <code>startActiveSpan</code> 或 <code>context.with</code> 包裹。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">只追不告警等于白追</span></div><div class="co-body"><p>  Trace 是事后排查。生产要把『慢 span 占比』『error span 率』『token 峰值』做成 metric +
+  告警，否则问题要等用户投诉你才从 Trace 里翻出来。追踪与监控是一套，别拆开做。</p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">回放环境漂移</span></div><div class="co-body"><p>  用回放验证修复时忘了锁模型/工具/索引版本，结果『复现不了也验证不了』。
+  回放前先把相关版本钉死并记下，这是回放可信的前提。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>Agent 多步、不可复现、跨系统，链路追踪从『可选项』变『必选项』；Trace 同时是评估与红队复盘的底座。</li>
+<li>核心模型：Trace（一次请求）= 树状 Span（有起止的操作）+ Context（串联父子）。OTel 是通用标准。</li>
+<li>Span 按『独立语义动作』切分：LLM 调用、工具、检索、每轮循环各一 span；属性记录模型/token/耗时，敏感字段先脱敏。</li>
+<li>用 <code>tracedChat</code> 这类封装自动打点；错误定位靠 <code>error</code> 标记与 <code>recordException</code>，回放验证修复要锁版本。</li>
+<li>平台选型：OTel 做不自锁的底座，LangSmith/Phoenix 做 LLM 语义可视化；追踪要与告警联动。</li>
+<li>红线：隐私脱敏、span 粒度、Context 传播、回放锁版本、追踪接告警。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  追踪让你『看见』每一步，但怎么判断『这一步质量行不行』？回到 eval-metrics 的指标，
+  或进入 eval-guardrail 看如何给每一步加安全护栏。要自动化回归这些评估，见 eval-dataset。</p>
+</div></div><h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>OpenTelemetry 官方文档（TracerProvider、Span、Context 传播、OTLP 导出，以官方为准，API 易变）</li>
+<li>Jaeger / Grafana Tempo 文档：Trace 存储与可视化后端</li>
+<li>LangSmith 文档：LangChain 生态的 Agent Tracing 与回放</li>
+<li>Phoenix（Arize）文档：开源 LLM 可观测与轨迹分析</li>
+<li>论文 <em>Observability for LLM Agents</em> 相关实践总结（step/tool 级语义追踪）</li>
+<li>W3C Trace Context 规范：跨服务传播 trace_id 的标准</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="eval-metrics.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">评估指标：自动指标、LLM-as-Judge、任务完成度与人工校准</span></a>
+    <a class="art-pagerLink art-pagerRight" href="eval-dataset.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">评测集与回归：给 Agent 一个可守护的真相来源</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

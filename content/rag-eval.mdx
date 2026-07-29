@@ -1,0 +1,364 @@
+---
+title: RAG 评估：检索/生成指标、Ragas、人工标注与回归测试
+description: 把 RAG 拆成检索与生成两段分别量化，讲清 Context Recall/Precision、Faithfulness、Answer Correctness 等核心指标的原理与可运行计算骨架，用 LLM-as-judge 与 Ragas 思路做自动评估，并落到人工标注与 CI 回归测试。评估框架以官方文档为准。
+category: RAG
+order: 10
+difficulty: 高级
+duration: 40 分钟
+tags: [RAG, 评估, Ragas, LLM-as-judge, 回归测试, 检索指标]
+date: 2026-07-29
+---
+
+# RAG 评估：检索/生成指标、Ragas、人工标注与回归测试
+
+RAG 系统有两段质量：**检索质量**（找没找对文档块）和**生成质量**（答没答对、有没有幻觉）。这两段必须分开评估——检索烂但你只测答案，等于放任『找错资料却答得漂亮』的假象；生成烂但你只测召回，等于放任『资料齐全却胡说八道』。
+
+本篇把 RAG 评估拆成可量化、可自动化、可回归的体系：先讲检索侧与生成侧各自的指标与原理，再给可运行的计算骨架，然后用 LLM-as-judge 与 Ragas 思路做自动评估，最后落到人工标注与 CI 回归测试。
+
+## 1. 为什么 RAG 需要专门的评估
+
+普通软件有单元测试就够了，但 RAG 的『正确性』是连续且主观的：同一个问题，召回 3 个块和召回 5 个块可能都『不算错』，但答案质量天差地别。难点有三：
+
+- **两段耦合**：最终答案质量 = f(检索质量, 生成质量)，不拆解就定位不到瓶颈；
+- **无唯一真值**：开放问题没有标准答案字符串，只能靠相似度或人工判分；
+- **数据易变**：知识库一更新，昨天的黄金答案今天就失效，所以评估必须可重复跑。
+
+<Callout type="note" title="评估的两大场景">
+  离线评估（改了切分/检索/提示后，批量跑黄金集看指标涨跌）和在线评估（生产流量里采样、人工或 judge 打分、监控漂移）。
+  本篇以离线评估为主线，因为它能接进 CI 做回归；在线评估思路相同，只是数据来自真实日志。
+</Callout>
+
+## 2. 检索侧指标：找没找对
+
+检索侧评估需要一个**带标注的黄金集**：每条样本 = `问题 + 该问题应该召回的正确文档块 ID 列表（ground truth）`。指标衡量『模型实际召回的块』与『该召回的块』的重合度。
+
+### 2.1 核心指标定义
+
+| 指标 | 含义 | 直觉 |
+|------|------|------|
+| Context Recall | 该召回的正确块里，有多少真的被召回了 | 宁漏勿错的反面，衡量覆盖 |
+| Context Precision | 召回的块里，有多少是真正相关的 | 衡量『召回的净不净』 |
+| Hit Rate@k | top-k 里是否至少含一个正确块 | 最简单粗暴的可用性门槛 |
+| MRR / NDCG | 考虑『正确块排在第几位』的排序质量 | 排得越靠前越好 |
+
+<Callout type="tip" title="先盯 Context Recall">
+  上线初期最该盯的是 **Context Recall**：如果用户问题对应的正确资料都没进上下文，后面生成再强也白搭。
+  Precision 影响成本和噪声，Recall 决定是否『答得出』——优先级 Recall > Precision。
+</Callout>
+
+### 2.2 可运行计算骨架
+
+下面是一段**不依赖任何框架**的检索指标计算（纯 TS），演示指标怎么从『预测集合』和『真值集合』算出来：
+
+```ts
+// rag-retrieval-metrics.ts —— 检索侧指标计算骨架（纯函数，可单测）
+type Sample = {
+  question: string;
+  expectedChunkIds: string[]; // 金标：该问题应召回的块
+  retrievedChunkIds: string[]; // 实际：检索器返回的块（已按分数排序）
+};
+
+// Context Recall：该召回的有多少被召回
+function contextRecall(s: Sample): number {
+  if (s.expectedChunkIds.length === 0) return 1; // 无金标时按满分处理，避免拉低均值
+  const got = new Set(s.retrievedChunkIds);
+  const hit = s.expectedChunkIds.filter((id) => got.has(id)).length;
+  return hit / s.expectedChunkIds.length;
+}
+
+// Context Precision@k：召回的前 k 个里，相关块占比（用位置加权更贴近真实）
+function contextPrecisionAtK(s: Sample, k: number): number {
+  const topK = s.retrievedChunkIds.slice(0, k);
+  const expected = new Set(s.expectedChunkIds);
+  const relevant = topK.filter((id) => expected.has(id)).length;
+  return relevant / topK.length; // 若 topK 为空则调用方应特判，这里简化
+}
+
+// Hit Rate@k：前 k 个里是否至少命中一个正确块
+function hitRateAtK(s: Sample, k: number): boolean {
+  const expected = new Set(s.expectedChunkIds);
+  return s.retrievedChunkIds.slice(0, k).some((id) => expected.has(id));
+}
+
+// 在一个数据集上汇总，得到可回归的宏观指标
+function evaluateRetrieval(samples: Sample[], k = 5) {
+  const recalls = samples.map(contextRecall);
+  const precisions = samples.map((s) => contextPrecisionAtK(s, k));
+  const hits = samples.map((s) => (hitRateAtK(s, k) ? 1 : 0));
+  const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+  return {
+    contextRecall: avg(recalls),
+    contextPrecisionAtK: avg(precisions),
+    hitRateAtK: avg(hits),
+  };
+}
+```
+
+<Callout type="warn" title="金标块 ID 要对得齐">
+  指标计算的脆弱点在于『金标块 ID』和『检索返回的块 ID』是不是同一套 ID。
+  常见坑：知识库重建后块 ID 变了，金标集没同步，于是 Recall 永远为 0。
+  建议金标直接存『块文本内容指纹』而非易变的 ID，或在重建索引时固化 ID 映射。
+</Callout>
+
+## 3. 生成侧指标：答没答对、有没有幻觉
+
+检索对了，生成仍可能翻车：答非所问、编造上下文里没有的内容（幻觉）、或啰嗦跑题。生成侧指标用『上下文』和『问题/答案』作为输入来判分。
+
+### 3.1 Faithfulness（忠实度 / 抗幻觉）
+
+最常用的生成指标。原理：把答案拆成若干『陈述句』，逐句检查『能否被检索到的上下文佐证』。不能被佐证的陈述越多，忠实度越低。
+
+可运行骨架（用 OpenAI SDK 做 LLM-as-judge，Zod 校验 judge 输出）：
+
+```ts
+// rag-faithfulness.ts —— 用 LLM-as-judge 算 Faithfulness（可运行骨架）
+import OpenAI from 'openai';
+import 'dotenv/config';
+import { z } from 'zod';
+
+const client = new OpenAI();
+
+// judge 输出用 Zod 约束，保证能解析、能算分（单一事实来源）
+const VerdictSchema = z.object({
+  statements: z.array(
+    z.object({
+      claim: z.string(),
+      supported: z.boolean(), // true=上下文能佐证，false=疑似幻觉
+    })
+  ),
+});
+
+async function faithfulness(answer: string, context: string): Promise<number> {
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      {
+        role: 'system',
+        content:
+          '把答案拆成独立陈述句，逐句判断能否被给定上下文佐证。只输出结构化结果。',
+      },
+      { role: 'user', content: `上下文：\n${context}\n\n答案：\n${answer}` },
+    ],
+    response_format: { type: 'json_schema', json_schema: { name: 'verdict', schema: {} as any } },
+  });
+  // 注：上方 json_schema 的 schema 字段以官方文档为准，此处仅示意调用形态
+  const parsed = VerdictSchema.safeParse(JSON.parse(res.choices[0].message.content ?? '{}'));
+  if (!parsed.success || parsed.data.statements.length === 0) return 0;
+  const supported = parsed.data.statements.filter((s) => s.supported).length;
+  return supported / parsed.data.statements.length; // 1=完全忠实，0=全在编
+}
+
+// 用法：对每条样本算分，再在数据集上取均值，作为回归基线
+// const score = await faithfulness(answer, retrievedContext);
+```
+
+<Callout type="tip" title="judge 也要小批量验证">
+  LLM-as-judge 不是金标准。上线前抽 20 条人工比对 judge 分数与人工分数，
+  算个相关系数。若 judge 经常『放水』或『过严』，先调 judge 的 system prompt，
+  而不是急着信它的数字。
+</Callout>
+
+### 3.2 Answer Relevancy / Correctness
+
+- **Answer Relevancy**：答案是否切题、是否完整回答了问题（不要求字面对，但要对路）；
+- **Answer Correctness**：与金标答案的重合度，常拆成『事实正确性』+『语义相似度』两部分加权。
+
+```ts
+// rag-answer-correctness.ts —— 思路骨架（伪代码 + 注释，以官方文档为准）
+// 真实实现可借助 Ragas / 自建 judge；下面仅演示打分逻辑的组合方式
+//
+// function answerCorrectness(answer, goldenAnswer, context) {
+//   const factual = factualMatch(answer, goldenAnswer);   // 关键事实命中率 0~1
+//   const semantic = cosineEmbedding(answer, goldenAnswer); // 语义相似度 0~1
+//   return 0.7 * factual + 0.3 * semantic; // 权重按业务调，偏事实的场景加重 factual
+// }
+//
+// 说明：factualMatch 可由 LLM-as-judge 判『答案是否包含了金标答案的关键事实』；
+// semantic 用 embedding 余弦相似度。两者互补——语义高但事实错，仍要扣分。
+```
+
+### 3.3 Context Utilization（上下文利用率）
+
+还有一个常被忽略的生成侧指标：检索到的块里，有多少**真的被答案用到了**。召回了一堆块、答案却只参考了其中一块，说明检索太宽或生成没充分利用证据——要么能缩检索量省成本，要么生成提示要改。
+
+```ts
+// rag-context-utilization.ts —— 思路骨架（伪代码 + 注释，以官方文档为准）
+//
+// 原理：让 judge 标出『答案里每句话，分别引用了检索到的第几个块』，
+//       没被任何句子引用的块 = 未被利用。
+//
+// function contextUtilization(answer, contexts) {
+//   const cited = judgeCiteMapping(answer, contexts); // 返回每句对应的块下标集合
+//   const usedChunks = new Set(cited.flatMap((c) => c.refs));
+//   return usedChunks.size / contexts.length; // 1=全部块都用上，越低越浪费
+// }
+//
+// 用法：利用率长期偏低（如 < 0.5）时，先怀疑『检索 top-k 取太大』，
+// 试着调小 k 再看答案质量是否受损——往往能砍掉一半检索成本而不掉分。
+```
+
+<Callout type="tip" title="利用率是成本探针">
+  Context Utilization 不是『越高越好』（强求高利用率会倒逼生成硬塞无关块），
+  但它是极好的**成本探针**：偏低且答案质量没掉，基本就等于『检索取多了』，
+  是调整 top-k 与切块粒度的第一信号。
+</Callout>
+
+## 4. 用 Ragas 思路做端到端评估
+
+[Ragas](https://docs.ragas.io) 是当前主流的 RAG 评估框架，内置了 `context_precision`、`context_recall`、`faithfulness`、`answer_relevancy`、`answer_correctness` 等 metric，并把『需要调 LLM 的指标』封装成可直接跑的组件。
+
+<Callout type="warn" title="不编造 Ragas API">
+  本文**不给出具体的 Ragas 函数签名**——其 API 迭代很快，参数名/调用方式易变。
+  下面用『思路 + 伪代码骨架 + 注释』描述它怎么用，落地时**以 Ragas 官方文档为准**。
+</Callout>
+
+```ts
+// rag-ragas-outline.ts —— Ragas 使用思路（伪代码骨架，API 以官方文档为准）
+//
+// 核心数据流：
+//   准备数据集（HuggingFace Dataset 形态）每行含：
+//     question, answer, contexts(检索到的块), reference(金标答案), ground_truths(金标块)
+//
+//   选择要算的 metrics：
+//     from ragas.metrics import (context_precision, context_recall,
+//                                faithfulness, answer_relevancy, answer_correctness)
+//
+//   用评估器跑：
+//     from ragas import evaluate
+//     result = evaluate(dataset, metrics=[context_recall, faithfulness, ...])
+//     print(result)  # 含各指标均值与逐样本明细
+//
+// 要点：
+//   1) faithfulness / answer_relevancy 需要你提供一个 LLM 客户端（可接 OpenAI）；
+//   2) context_recall 需要 ground_truths（金标块），context_precision 同理；
+//   3) 结果可直接导出 CSV / JSON，作为回归基线的来源。
+//   具体 import 路径、evaluate 参数、Dataset 构造方式，一律以官方文档为准。
+```
+
+<Callout type="note" title="Ragas 不是唯一选择">
+  除 Ragas 外，还有 DeepEval、PromptFoo、Giskard 等评估框架，思路大同小异：
+  定义 metric → 喂数据集 → 跑 LLM-judge 或确定性计算 → 出报告。
+  选一个能稳定接你数据格式的即可，不必追新。
+</Callout>
+
+## 5. 人工标注与黄金集建设
+
+自动指标（尤其 LLM-as-judge）只能兜底，真正的质量水位靠**人工标注的黄金集**。黄金集是 RAG 评估的『测试基准』，它的质量直接决定你所有数字的可信度。
+
+### 5.1 黄金集怎么来
+
+- **覆盖维度**：高频问题、边界问题（含糊/多义）、对抗问题（诱导幻觉）、长尾问题，各占一定比例；
+- **标注内容**：每条至少含『问题 + 金标答案 + 金标相关块』；
+- **标注规范**：先写 1 页标注指南（什么算答对、什么算幻觉），多人标注后算一致性（如 Cohen's Kappa），不一致的超阈值就重新对齐规范。
+
+<Callout type="tip" title="先小后大">
+  黄金集不用一次到位。先攒 50 条高质量、跨场景的样本把流程跑通，
+  再滚动扩到 200~500 条。比起『大而糙』，『小而精』的黄金集更能暴露回归。
+</Callout>
+
+### 5.2 金标答案的两种形态
+
+| 形态 | 适用 | 标注成本 | 评估方式 |
+|------|------|----------|----------|
+| 参考文本（reference） | 有较标准答案的问题 | 中 | 语义相似度 + 事实命中 |
+| 关键事实清单（key facts） | 开放/多解问题 | 低 | 逐事实命中率，更抗表述差异 |
+
+## 6. 回归测试：把评估接进 CI
+
+评估的最大价值不是『看一次分』，而是『每次改动都能看分涨跌』。把评估写成可重复脚本，接进 CI，任何改动切分策略、检索参数、提示词都会触发回归比对。
+
+```ts
+// rag-regression.ts —— 回归测试骨架（可接 CI / npm test）
+import { evaluateRetrieval } from './rag-retrieval-metrics'; // 第 2 节的函数
+import { readFileSync } from 'node:fs';
+
+// 黄金集固化在仓库里，随代码版本走（和知识库解耦，避免漂变）
+const golden: Sample[] = JSON.parse(readFileSync('eval/golden.json', 'utf-8'));
+
+// 跑当前系统的检索结果（这里用假数据示意，真实应调你的 RAG pipeline）
+const samples = golden.map((g) => ({
+  question: g.question,
+  expectedChunkIds: g.expectedChunkIds,
+  retrievedChunkIds: myRagRetrieve(g.question), // 接你真实的检索器
+}));
+
+const metrics = evaluateRetrieval(samples, 5);
+
+// 与基线比对，掉太多就让 CI 失败，拦住质量回退
+const baseline = JSON.parse(readFileSync('eval/baseline.json', 'utf-8'));
+const DROP_THRESHOLD = 0.05; // 允许 5% 内波动，超过视为回归
+if (metrics.contextRecall < baseline.contextRecall - DROP_THRESHOLD) {
+  console.error(`Context Recall 回归：${baseline.contextRecall} → ${metrics.contextRecall}`);
+  process.exit(1); // 让 CI 红
+}
+console.log('评估通过：', metrics);
+```
+
+<Callout type="warn" title="基线要锁版本">
+  基线 `baseline.json` 应随『你认可的那个 commit』一起提交。
+  每次人工确认质量提升后，再更新基线。否则回归测试会变成『和上周随机值比』，失去意义。
+</Callout>
+
+## 7. 对比：三类评估手段怎么选
+
+| 手段 | 速度 | 成本 | 可信度 | 适用 |
+|------|------|------|--------|------|
+| 确定性指标（Recall/Precision/相似度） | 快 | 极低 | 中（只看结构） | 检索侧、格式类，每日跑 |
+| LLM-as-judge（Faithfulness/Relevancy） | 中 | 中 | 中高（需校准） | 生成侧，频繁跑 |
+| 人工标注 | 慢 | 高 | 最高 | 黄金集建设、阶段验收 |
+
+<Callout type="note" title="组合才是真相">
+  单一手段都会偏：确定性指标抓不出『答非所问但格式对』，judge 会放水，人工太慢。
+  实战组合：确定性指标做日常回归门槛 + LLM-judge 做生成侧巡检 + 人工抽样做周度校准。
+</Callout>
+
+## 8. 常见坑
+
+<Callout type="danger" title="数据泄漏式造假">
+  最常见也最隐蔽的『自欺』：金标答案本身就是从你的知识库里复制的，
+  于是检索 Recall 虚高、答案相似度虚高，上线一碰真实问题就露馅。
+  金标必须由人独立撰写，且尽量用『真实用户会怎么问』的措辞，而非文档原话。
+</Callout>
+
+<Callout type="warn" title="只测答案不测检索">
+  很多团队只跑 Answer Correctness，忽略了 Context Recall。
+  结果检索其实只召回了 30% 相关资料，但生成『编』得滴水不漏，分数好看。
+  一旦知识库变动、编不出时直接崩。检索与生成指标必须同时盯。
+</Callout>
+
+<Callout type="warn" title="judge 模型与生产模型同源偏见">
+  若 judge 和生产作答用的是同一个模型家族，judge 可能『偏爱』同族风格，给出虚高分数。
+  条件允许时用不同家族的模型做 judge（如生产用 GPT 系，judge 用 Claude 系），分数更客观。
+</Callout>
+
+<Callout type="danger" title="金标集过期">
+  知识库更新后，旧金标答案可能已不成立，继续用它评估会误杀正确的新答案。
+  给黄金集加『关联知识库版本号』，知识库大版本更新时同步复审金标。
+</Callout>
+
+<Callout type="warn" title="用平均值掩盖长尾">
+  宏观均值 0.9 可能意味着『90% 简单题全对、10% 难题意外全错』。
+  回归报告里务必同时看**分布与低分样本**，把低分样本拉出来人工过一遍，比盯均值有用。
+</Callout>
+
+## 小结
+
+- RAG 质量 = 检索质量 × 生成质量，评估必须分段：检索看 Context Recall/Precision，生成看 Faithfulness/Answer Correctness。
+- 检索指标是纯函数、可单测；生成指标靠 LLM-as-judge，但 judge 自己要先和人工校准。
+- Ragas 等框架能把指标封装成可跑组件，但 API 易变——以官方文档为准，本文只给思路骨架。
+- 黄金集是评估可信度的根基：小而精、独立撰写、带版本、定期复审。
+- 把评估接进 CI 做回归，配锁定版本的基线，才能拦住质量回退。
+- 红线：防数据泄漏、检索生成同盯、judge 跨家族校准、金标防过期、别被均值麻痹。
+
+<Callout type="note" title="下一步">
+  评估体系跑顺后，下一步是把它『长期、低成本、可监控』地跑在生产里——
+  增量更新、缓存、监控与成本控制，这就是 **RAG 生产化（rag-production）** 的主题。
+</Callout>
+
+## 延伸阅读 / 参考
+
+- Ragas 官方文档（metrics 定义、Dataset 构造、evaluate 调用，API 以官方为准）
+- 论文 *RAGAS: Automated Evaluation of Retrieval Augmented Generation*（各指标的形式化定义）
+- OpenAI / Anthropic 文档：response_format 与 LLM-as-judge 的提示设计要点
+- 谷歌 *HELM* 与 *MT-Bench*：更广义的 LLM 评测方法论，可借鉴 judge 设计
+- 数据标注规范参考：Cohen's Kappa 一致性计算、标注指南（annotation guideline）写法

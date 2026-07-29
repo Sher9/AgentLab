@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>规划与推理：ReAct、Plan-and-Execute、反思与思维树 · AgentLab</title>
+  <meta name="description" content="拆解 Agent 的『思考策略』——ReAct 边想边做、Plan-and-Execute 先规划后执行、Reflexion 自我批评、ToT 思维树，讲清原理、与 LLM 推理的关系，并给出可运行骨架、对比与踩坑。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="规划与推理：ReAct、Plan-and-Execute、反思与思维树 · AgentLab"/>
+  <meta property="og:description" content="拆解 Agent 的『思考策略』——ReAct 边想边做、Plan-and-Execute 先规划后执行、Reflexion 自我批评、ToT 思维树，讲清原理、与 LLM 推理的关系，并给出可运行骨架、对比与踩坑。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#agent">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🤖</span>
+        <span class="art-moduleName">AI Agent</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">38 分钟</span>
+      </div>
+      <h1 class="art-title">规划与推理：ReAct、Plan-and-Execute、反思与思维树</h1>
+      <p class="art-desc">拆解 Agent 的『思考策略』——ReAct 边想边做、Plan-and-Execute 先规划后执行、Reflexion 自我批评、ToT 思维树，讲清原理、与 LLM 推理的关系，并给出可运行骨架、对比与踩坑。</p>
+      <div class="art-tags"><span class="art-tag">#规划</span><span class="art-tag">#推理</span><span class="art-tag">#ReAct</span><span class="art-tag">#Plan-and-Execute</span><span class="art-tag">#Reflexion</span><span class="art-tag">#思维树</span></div>
+    </div>
+    <div class="prose"><h1>规划与推理：ReAct、Plan-and-Execute、反思与思维树</h1>
+<p>架构（agent-architecture）解决了『模块怎么分』，但决策层真正难的是：<strong>让 LLM 决定『先做什么、后做什么』</strong>。这就是规划（Planning）与推理（Reasoning）。同一个任务，『边想边做』和『先列计划再执行』是两种截然不同的策略，适用场景也不一样。</p>
+<p>面向有经验的开发者，本篇把四种主流策略——ReAct、Plan-and-Execute、Reflexion（反思）、ToT（思维树）——的原理、代码骨架、对比与踩坑一次讲透。代码沿用 OpenAI Node SDK + Zod。</p>
+<h2 id="1-规划为什么难-llm-推理的真相">1. 规划为什么难：LLM 推理的真相</h2>
+<p>先破除一个误解：<strong>LLM 不会『真正规划』</strong>。它做的是『在每一步，根据当前上下文预测最可能合理的下一个 token』。所谓『规划能力』，来自训练数据里海量的『先想步骤、再执行』的示范，以及我们给它的提示结构。</p>
+<p>这带来两个本质约束：</p>
+<ul>
+<li><strong>没有全局回溯</strong>：ReAct 一旦走错一步，模型只能基于『已经错的上下文』继续编，不会自动回到分支点重选；</li>
+<li><strong>计划会过时</strong>：任务执行到一半，现实变了（工具返回意外结果），原定计划可能失效，需要动态调整。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">规划是提示工程 + 控制流</span></div><div class="co-body"><p>  Agent 的规划能力 = 合理的提示结构（让模型输出『思考+动作』） + 你写的控制流（决定何时停、
+  何时回滚、何时重规划）。模型负责『生成候选步骤』，你负责『保证过程收敛』。</p>
+</div></div><h2 id="2-react-边想边做">2. ReAct：边想边做</h2>
+<p><strong>ReAct = Reason + Act</strong>。每轮让模型同时输出『思考（Thought）』和『动作（Action）』，执行动作后把『观察（Observation）』回填，进入下一轮。它把推理与行动<strong>交织</strong>在一起，适合步骤依赖前一步结果、无法预先列全计划的任务。</p>
+<pre><code>Thought: 我需要先查北京的天气，才能决定建议穿什么
+Action: get_weather(city=北京)
+Observation: 北京 晴 26°C
+Thought: 26°C 挺舒服，建议薄外套即可
+Action: reply(建议穿薄外套)
+</code></pre><pre><code class="language-ts">// react.ts —— ReAct 骨架（思考与动作交织）
+import OpenAI from 'openai';
+import 'dotenv/config';
+import { z } from 'zod';
+
+const client = new OpenAI();
+
+const tools = [{ type: 'function', function: {
+  name: 'get_weather', description: '查天气',
+  parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
+}}] as const;
+
+// 用 Zod 解析模型的结构化输出（思考 + 动作）
+const StepSchema = z.object({
+  thought: z.string(),
+  action: z.union([
+    z.object({ kind: 'tool', name: z.string(), args: z.record(z.unknown()) }),
+    z.object({ kind: 'reply', content: z.string() }),
+  ]),
+});
+
+async function react(userGoal: string) {
+  const messages = [
+    { role: 'system', content: '你用 ReAct 范式：每轮先写 Thought，再决定 Action（调工具或回复）。' },
+    { role: 'user', content: userGoal },
+  ];
+  for (let i = 0; i &lt; 8; i++) {
+    const res = await client.chat.completions.create({ model: 'gpt-4o-mini', messages, tools });
+    const msg = res.choices[0].message;
+    messages.push(msg);
+    if (!msg.tool_calls?.length) return msg.content; // 没有动作 → 直接收尾
+    for (const call of msg.tool_calls) {
+      const args = JSON.parse(call.function.arguments);
+      const obs = `北京：晴 26°C`; // 真实场景换成工具实现
+      messages.push({ role: 'tool', tool_call_id: call.id, content: obs });
+    }
+  }
+}
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">ReAct 适合『路径依赖』任务</span></div><div class="co-body"><p>  当下一步取决于上一步的真实结果（查到天气才能建议穿搭），ReAct 比预先列计划更稳——
+  因为计划本就列不全。它的问题是步数不可控，必须设上限。</p>
+</div></div><h2 id="3-plan-and-execute-先规划后执行">3. Plan-and-Execute：先规划后执行</h2>
+<p>与 ReAct 相反，Plan-and-Execute <strong>把『规划』和『执行』分成两个阶段</strong>：先让一个（通常更强的）模型把任务拆成有序步骤列表，再由执行器逐步完成。中途若某步失败或现实变化，再触发『重新规划』。</p>
+<pre><code>规划器输出：
+  1. 查北京天气
+  2. 查用户日程
+  3. 若室外且有空 → 建议去公园
+执行器逐步跑 1→2→3，遇到意外（下雨）再回规划器修订
+</code></pre><pre><code class="language-ts">// plan-execute.ts —— 先规划后执行骨架
+import OpenAI from 'openai';
+import 'dotenv/config';
+import { z } from 'zod';
+
+const client = new OpenAI();
+
+// 规划器的产出：有序步骤列表（单一事实来源，便于校验与重规划）
+const PlanSchema = z.object({
+  steps: z.array(z.object({
+    id: z.number(),
+    description: z.string(),
+    dependsOn: z.array(z.number()).default([]), // 步骤间依赖，决定能否并行
+  })),
+});
+type Plan = z.infer&lt;typeof PlanSchema&gt;;
+
+async function plan(goal: string): Promise&lt;Plan&gt; {
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o', // 规划用更强的模型，执行可用更小的
+    messages: [
+      { role: 'system', content: '把任务拆成有序步骤，输出 JSON。' },
+      { role: 'user', content: goal },
+    ],
+    response_format: { type: 'json_schema', json_schema: { name: 'plan', schema: PlanSchema.shape } },
+  });
+  return PlanSchema.parse(JSON.parse(res.choices[0].message.content!));
+}
+
+async function execute(plan: Plan) {
+  const results = new Map&lt;number, string&gt;();
+  for (const step of plan.steps) {
+    // 依赖未完成的步骤先跳过（真实场景用拓扑排序 + 并行）
+    if (!step.dependsOn.every((d) =&gt; results.has(d))) continue;
+    const out = `完成：${step.description}`; // 真实场景：调工具/调子 Agent
+    results.set(step.id, out);
+    console.log(out);
+  }
+  return results;
+}
+
+const p = await plan('为用户安排明天的户外活动');
+await execute(p);
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">规划与执行分离可独立调参</span></div><div class="co-body"><p>  规划器用强模型保证步骤质量，执行器用便宜模型跑单步，成本与质量可分别优化。
+  而 ReAct 每步都调强模型，账单会更贵。这是两者在成本上的核心差异。</p>
+</div></div><h2 id="4-reflexion-自我批评与反思">4. Reflexion：自我批评与反思</h2>
+<p>ReAct 走错不会回头。Reflexion 在每轮（或每轮结束后）加一个<strong>反思步骤</strong>：让模型『回顾自己刚才的决策，指出错在哪、下次怎么改』，把反思文本作为额外上下文带入下一轮，从而自我纠正。</p>
+<pre><code class="language-ts">// reflexion.ts —— 在 ReAct 基础上加反思步
+async function reflect(trajectory: string): Promise&lt;string&gt; {
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: '你是严厉的评审。看下面的决策轨迹，指出错误与改进点，一句话。' },
+      { role: 'user', content: trajectory },
+    ],
+  });
+  return res.choices[0].message.content ?? '';
+}
+
+// 在 react 循环里，每步结束把『轨迹 + 反思』拼回 messages：
+//   messages.push({ role: 'system', content: `反思：${await reflect(fullTrace)}` });
+// 模型下一轮就能『避开刚才的坑』
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">反思是记忆的一种</span></div><div class="co-body"><p>  Reflexion 本质是把『自我批评』当作一段记忆回填，和 M4 的摘要记忆同源。
+  区别只在内容来自『对自己行为的评价』而非『对对话的压缩』。</p>
+</div></div><h2 id="5-tot-思维树-搜索多条路径">5. ToT（思维树）：搜索多条路径</h2>
+<p>ReAct 是『一条链』，Plan-and-Execute 是『一条计划』。ToT（Tree of Thoughts）把每一步推理展开成<strong>多个候选分支</strong>，用模型对每個分支打分（或『值函数』），保留高分支、剪掉低分支，像搜索一棵树一样找最优解。适合需要『尝试多种思路、择优』的难题（如谜题、策略博弈）。</p>
+<pre><code>        根(问题)
+       ├─ 思路A ── 评分 0.7 ── 展开 ── ... 保留
+       ├─ 思路B ── 评分 0.3 ── 剪枝
+       └─ 思路C ── 评分 0.8 ── 展开 ── ... 保留
+</code></pre><pre><code class="language-ts">// tot.ts —— 思维树骨架（简化：每层多候选 + 评分 + 保留）
+async function score(thought: string, goal: string): Promise&lt;number&gt; {
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: '给下面的思路对完成目标的帮助打分 0~1，只回数字。' },
+      { role: 'user', content: `目标：${goal}\n思路：${thought}` },
+    ],
+  });
+  return Number(res.choices[0].message.content ?? '0');
+}
+
+async function expand(thought: string, goal: string, k = 3): Promise&lt;string[]&gt; {
+  // 让模型一次产出 k 个下一步候选（伪代码，真实用 JSON 模式约束）
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o', messages: [
+      { role: 'system', content: `给出 ${k} 个不同的下一步思路，换行分隔。` },
+      { role: 'user', content: `目标：${goal}\n当前：${thought}` },
+    ],
+  });
+  return (res.choices[0].message.content ?? '').split('\n').filter(Boolean);
+}
+
+// 主循环：每层 expand → 逐个 score → 只保留 top-m 进下一层，直到终止
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">ToT 成本极高</span></div><div class="co-body"><p>  每层产生 k 个候选、每个都要 score，token 消耗是 ReAct 的数倍到数十倍。
+  只在『想错代价高、且确实需要搜多路径』的任务用（谜题、重要决策），
+  日常任务用 ReAct/Plan 足够，别为炫技上 ToT。</p>
+</div></div><h2 id="6-四种策略对比">6. 四种策略对比</h2>
+<table>
+<thead>
+<tr>
+<th>策略</th>
+<th>结构</th>
+<th>何时用</th>
+<th>成本</th>
+<th>回溯能力</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>ReAct</td>
+<td>单链，想做交织</td>
+<td>步骤依赖前序结果、路径不定</td>
+<td>中（每步都推理）</td>
+<td>弱（靠反思补）</td>
+</tr>
+<tr>
+<td>Plan-and-Execute</td>
+<td>先计划后执行</td>
+<td>步骤可预先列出、规模大</td>
+<td>低（执行可用小模型）</td>
+<td>中（可重规划）</td>
+</tr>
+<tr>
+<td>Reflexion</td>
+<td>ReAct + 反思步</td>
+<td>易走错、需自我纠正</td>
+<td>中高（多一次反思调用）</td>
+<td>较强（带记忆纠正）</td>
+</tr>
+<tr>
+<td>ToT</td>
+<td>树状多分支搜索</td>
+<td>需搜多路径择优的难题</td>
+<td>极高</td>
+<td>强（天然剪枝）</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">可组合，不必单选</span></div><div class="co-body"><p>  实战常组合：用 Plan-and-Execute 定大框架，其中复杂单步用 ReAct，关键决策点加 Reflexion，
+  极少数死胡同用 ToT 展开。策略是积木，不是宗教。</p>
+</div></div><h2 id="7-规划与-llm-推理的关系">7. 规划与 LLM 推理的关系</h2>
+<ul>
+<li><strong>CoT（思维链）是规划的底层燃料</strong>：模型能『写出中间推理步骤』，才谈得上 ReAct 的 Thought、Plan 的步骤。没有 CoT 能力，规划策略无从落地。</li>
+<li><strong>推理质量随模型能力跃迁</strong>：强模型列的计划更合理、ReAct 更少走死胡同。所以『换更强模型』往往比『改提示结构』收益更大——但成本也更高。</li>
+<li><strong>结构化输出是规划的载体</strong>：用 <code>response_format: json_schema</code> / Zod 把计划锁成可校验结构，比让模型吐自由文本稳得多（见 m1 工具调用）。</li>
+</ul>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">给规划器更强的模型</span></div><div class="co-body"><p>  经验法则：规划与反思用强模型（gpt-4o 级），单步执行用轻模型（gpt-4o-mini 级）。
+  强模型只在『需要全局判断』的地方出场，账单立刻友好。</p>
+</div></div><h2 id="8-踩坑">8. 踩坑</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">没有步数上限</span></div><div class="co-body"><p>  任何基于循环的策略（ReAct/ToT）都必须设最大步数 + 总超时。模型偶尔会反复调同一工具，
+  没有上限就烧钱卡死。建议上限 8~15 步，并限制单步工具调用数。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">计划一旦写过就当圣旨</span></div><div class="co-body"><p>  Plan-and-Execute 最易犯的病：执行到第三步发现现实和计划不符，却硬着头皮走完。
+  必须加『动态重规划』触发条件：某步失败 / Observation 与预期严重偏离 / 用户改口 → 回规划器。
+  计划是地图不是枷锁。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">ToT 不看成本就上</span></div><div class="co-body"><p>  ToT 的 token 消耗会吓人。上线前估算：树宽 k × 深度 d × 每节点 2 次调用（expand+score）。
+  日常任务用 ReAct 足够，ToT 留给真正需要搜多路径的难题。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">反思变成自我安慰</span></div><div class="co-body"><p>  Reflexion 的反思文本若不加约束，模型可能写一堆正确的废话却不改行为。
+  反思要具体（指出『第 2 步不该调 X，因为 Y』），并能实际影响下一步动作，否则只是给 prompt 加噪声。</p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">把规划结果当可信真相</span></div><div class="co-body"><p>  计划是模型『猜』的，不是事实。执行每步前仍要校验参数、校验工具可用性。
+  规划错了不可怕，可怕的是不校验就照单全收去执行副作用操作。</p>
+</div></div><h2 id="9-统一骨架-规划-执行-反思拼起来">9. 统一骨架：规划 + 执行 + 反思拼起来</h2>
+<p>把前面三节合成一个能跑的最小闭环：规划器列步骤，执行器逐步跑，每步之后用反思器评估『是否走偏』，偏了就触发重规划。存成 <code>planner-agent.ts</code>，已装 <code>openai</code> + <code>dotenv</code> + <code>zod</code> 即可运行（工具与规划器用桩）。</p>
+<pre><code class="language-ts">// planner-agent.ts —— 规划 + 执行 + 反思 的可运行骨架
+import OpenAI from 'openai';
+import 'dotenv/config';
+import { z } from 'zod';
+
+const client = new OpenAI();
+const PlanSchema = z.object({
+  steps: z.array(z.object({ id: z.number(), description: z.string() })),
+});
+type Plan = z.infer&lt;typeof PlanSchema&gt;;
+
+async function plan(goal: string): Promise&lt;Plan&gt; {
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o',
+    messages: [{ role: 'system', content: '拆成有序步骤，输出 JSON。' }, { role: 'user', content: goal }],
+    response_format: { type: 'json_schema', json_schema: { name: 'plan', schema: PlanSchema.shape } },
+  });
+  return PlanSchema.parse(JSON.parse(res.choices[0].message.content!));
+}
+
+// 反思器：评估当前进度是否偏离目标（Reflexion 的落地）
+async function reflect(goal: string, done: string[]): Promise&lt;string&gt; {
+  const res = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: '评估已完成步骤是否偏离目标，若需调整只回一句话，否则回 OK。' },
+      { role: 'user', content: `目标：${goal}\n已完成：${done.join(' / ')}` },
+    ],
+  });
+  return res.choices[0].message.content ?? 'OK';
+}
+
+async function run(goal: string) {
+  let p = await plan(goal);
+  const done: string[] = [];
+  for (let round = 0; round &lt; 3; round++) {        // 最多 3 轮『规划→执行→反思』
+    for (const step of p.steps) {
+      done.push(`完成：${step.description}`);          // 真实场景：调工具/子 Agent
+      console.log(done[done.length - 1]);
+    }
+    const r = await reflect(goal, done);
+    if (r === 'OK') break;                            // 反思通过 → 结束
+    p = await plan(`${goal}\n注意：${r}`);            // 反思不通过 → 带反馈重规划
+  }
+}
+
+run('为用户安排明天的户外活动，含天气与日程检查');
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">重规划的触发点要少而准</span></div><div class="co-body"><p>  别每步都重规划（太贵且抖动），也别全程不重规划（计划会腐化）。
+  好的触发点是：某步执行失败、Observation 与预期严重偏离、或反思器连续两次给出非 OK。
+  让重规划成为『例外处理』而非『常态』。</p>
+</div></div><h2 id="10-适用与不适用场景">10. 适用与不适用场景</h2>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>推荐策略</th>
+<th>原因</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>多跳检索问答（答案依赖前序结果）</td>
+<td>ReAct</td>
+<td>步骤无法预列，需边查边决定</td>
+</tr>
+<tr>
+<td>长流程业务编排（下单→审批→通知）</td>
+<td>Plan-and-Execute</td>
+<td>步骤可预列，规模大，执行用轻模型省成本</td>
+</tr>
+<tr>
+<td>代码生成 / 易走错的生成任务</td>
+<td>ReAct + Reflexion</td>
+<td>需自我纠正，反思降低返工</td>
+</tr>
+<tr>
+<td>谜题 / 博弈 / 重要决策</td>
+<td>ToT</td>
+<td>需搜多路径择优，代价可接受</td>
+</tr>
+<tr>
+<td>纯单轮问答 / 事实查询</td>
+<td>都不用</td>
+<td>直接一次调用，规划是多余开销</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">最简单的不用规划</span></div><div class="co-body"><p>  如果你的任务『给一句话就能直接答』，那就别上任何规划框架——一次 <code>chat.completions.create</code>
+  足矣。规划带来的是控制流复杂度与成本，只为『多步、有依赖、易错』的任务买单。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>规划 = 提示结构 + 控制流；模型生成候选步骤，你保证过程收敛（上限/重规划）。</li>
+<li>ReAct 想做交织，适合路径依赖任务；Plan-and-Execute 先计划后执行，可强弱模型分离省成本。</li>
+<li>Reflexion 用反思回填纠正错误，ToT 用树状搜索多路径择优但极贵。</li>
+<li>四者可组合：大框架用 Plan，复杂单步用 ReAct，关键决策加 Reflexion，死胡同才用 ToT。</li>
+<li>规划依赖 CoT 与结构化输出；强模型列计划更稳，但只在全局判断处用强模型。</li>
+<li>红线：步数上限、动态重规划、成本预算、反思要落地、规划结果须校验。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  规划策略决定了『决策层怎么思考』。当任务需要同时处理图像、语音、文档时，
+  感知层要怎么路由不同模态、怎么协同工具？这就是 <strong>agent-multimodal（多模态 Agent）</strong> 的主题。</p>
+</div></div><h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>论文 <em>ReAct: Synergizing Reasoning and Acting in Language Models</em>（想做交织的范式起点）</li>
+<li>论文 <em>Plan-and-Solve / Plan-and-Execute</em>（先规划后执行的思想来源）</li>
+<li>论文 <em>Reflexion: Language Agents with Verbal Reinforcement Learning</em>（自我批评框架）</li>
+<li>论文 <em>Tree of Thoughts: Deliberate Problem Solving with LLMs</em>（树状搜索）</li>
+<li>OpenAI / Anthropic 文档：response_format 与 JSON 模式，规划结构化落地的载体</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="agent-loop.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">Agent 主循环与控制流：事件驱动、上限、超时与中断</span></a>
+    <a class="art-pagerLink art-pagerRight" href="agent-multimodal.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">多模态 Agent：视觉/语音/文档理解与模态路由</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

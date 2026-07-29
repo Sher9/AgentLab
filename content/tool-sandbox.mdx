@@ -1,0 +1,359 @@
+---
+title: 工具沙箱与安全执行：让 Agent 放心『动手』
+description: 理解为什么 LLM 生成的代码/命令必须在隔离环境执行，掌握容器、微虚拟机、Wasm、进程级限制四类沙箱思路，给出 Python 子进程隔离与 Docker 两套可运行骨架，并讲清权限最小化、资源限额、审计三原则与接入 Agent 的踩坑。
+category: 工具开发
+order: 5
+difficulty: 进阶
+duration: 36 分钟
+tags: [沙箱, 安全执行, 容器, Wasm, 资源限额, Agent 工具]
+date: 2026-07-29
+---
+
+# 工具沙箱与安全执行：让 Agent 放心『动手』
+
+上一节 `tool-mcp` 解决了『工具如何被标准化调用』。但有一类工具特别危险：**执行 LLM 生成的代码或命令**（代码解释器、Shell 工具、SQL 执行器）。模型生成的代码你没法逐行审，一旦直接在本机跑，等于把整台机器的权限交出去——删库、提权、挖矿、内网横向移动都可能发生。
+
+**沙箱（Sandbox）** 就是给这类『不可信代码』套上的隔离笼子：限制它能碰的文件、能用的 CPU/内存/网络、能跑多久，出了事也炸不到宿主。本篇讲原理、给骨架、列踩坑，不编造具体引擎的私有 API，落地参数以你所选方案官方文档为准。
+
+<Callout type="danger" title="永远不要裸跑模型生成的代码">
+  哪怕你『只是想让它算个 1+1』，模型也可能输出 `os.system('rm -rf /')`。
+  任何来自 LLM 的代码/命令，默认都按『潜在恶意』处理——先隔离，再执行。
+</Callout>
+
+## 1. 为什么需要沙箱：威胁模型
+
+先明确你要防什么，才知道沙箱该挡什么：
+
+| 威胁 | 表现 |
+|------|------|
+| 破坏性操作 | `rm -rf`、格式化、DROP TABLE |
+| 权限提升 | 利用漏洞读到宿主密钥、提权到 root |
+| 资源耗尽 | 死循环、fork 炸弹、吃满内存拖垮宿主 |
+| 网络外联 | 把机密外传、访问内网其他服务、下载恶意载荷 |
+| 提示注入传导 | 读取到的文件内容里藏着指令，反控上层 Agent |
+
+沙箱的目标不是『让代码跑得爽』，而是『**就算代码是恶意的，损失也被框死在笼子里**』。
+
+<Callout type="note" title="关键认知">
+  沙箱是『降低爆炸半径』的工程，不是『绝对安全』的保证。
+  再好的沙箱也有逃逸风险。重要系统的底线原则是：
+  沙箱里的凭证也要最小化、宿主与沙箱网络隔离、关键操作仍需人工确认。
+</Callout>
+
+## 2. 四类沙箱思路与对比
+
+| 方案 | 隔离强度 | 启动开销 | 适用 | 代表 |
+|------|----------|----------|------|------|
+| 进程级限制 | 低（同 OS） | 极低 | 轻量、可信度稍高的脚本 | `rlimit` + `seccomp` + 命名空间 |
+| 容器（Docker） | 中 | 低 | 通用代码/命令执行 | Docker + 只读根、cap-drop |
+| 微虚拟机（MicroVM） | 高 | 中 | 强隔离多租户 | Firecracker、Cloud Hypervisor |
+| 语言沙箱 / Wasm | 中高（按语言） | 极低 | 受限计算、插件 | Wasmtime、Python AST 限制 |
+
+<Callout type="tip" title="按风险选方案">
+  内部可信脚本 → 进程级限制够用；通用 AI 代码执行 → Docker 是性价比甜点；
+  多租户 SaaS、跑陌生人的代码 → 上微虚拟机；只想要『安全算个表达式』→ Wasm/语言沙箱最快。
+  不要一上来就微虚拟机——运维复杂度会反噬。
+</Callout>
+
+## 3. 思路一：进程级限制（Python 子进程 + rlimit）
+
+最轻量的隔离：把代码放进**独立子进程**，用系统调用限制它的资源与系统能力。下面骨架演示用 `subprocess` + `resource` 模块设 CPU/内存/时间上限，并禁用危险模块。
+
+<Callout type="warn" title="进程级限制不是真隔离">
+  子进程仍和你在**同一内核**、同一文件系统视图下。它挡得住『吃内存/死循环』，
+  挡不住『读宿主文件/提权』。只适合跑你**相对信任**的代码，且宿主本身无其他敏感数据。
+</Callout>
+
+```python
+# sandbox_proc.py —— 进程级资源限额骨架（仅限可信度较高的脚本）
+import subprocess, resource, os, sys, tempfile
+
+def run_limited(code: str, cpu_sec: int = 2, mem_mb: int = 128) -> str:
+    # 把用户代码写临时文件；用独立解释器子进程跑，不污染主进程
+    with tempfile.NamedTemporaryFile('w', suffix='.py', delete=False) as f:
+        f.write(code)
+        path = f.name
+
+    # 子进程启动前设置的资源上限（仅对该子进程及其后代生效）
+    def set_limits():
+        # CPU 时间上限：超了杀掉，防止死循环烧 CPU
+        resource.setrlimit(resource.RLIMIT_CPU, (cpu_sec, cpu_sec))
+        # 内存上限（字节）：超了 OOM 杀进程，防内存耗尽拖垮宿主
+        mem = mem_mb * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_AS, (mem, mem))
+        # 禁止起新进程（防 fork 炸弹），禁止建新文件（防乱写）
+        resource.setrlimit(resource.RLIMIT_NPROC, (0, 0))
+
+    try:
+        res = subprocess.run(
+            [sys.executable, path],
+            preexec_fn=set_limits,   # 关键：在子进程里应用限额
+            capture_output=True,
+            text=True,
+            timeout=cpu_sec + 1,      # 双保险：外层再卡一次总时长
+        )
+        return res.stdout or res.stderr
+    except subprocess.TimeoutExpired:
+        return '执行超时，已终止'
+    finally:
+        os.unlink(path)  # 用完即删，不留痕迹
+
+# 用法
+print(run_limited("print(sum(range(10)))"))
+```
+
+## 4. 思路二：容器隔离（Docker，性价比甜点）
+
+把代码丢进一个**最小化、只读根、丢权限、断网**的容器里跑，是 AI 代码执行最常用方案。骨架用 `docker run` 一次性容器，执行完即销毁。
+
+<Callout type="note" title="容器参数以官方文档为准">
+  Docker 的安全开关（cap-drop、no-new-privileges、只读根）随版本演进，
+  下面给出『思路与参数名』，落地时以你 Docker 版本的官方文档为准，并优先用
+  rootless 模式 + 非 root 用户运行。
+</Callout>
+
+```bash
+# sandbox_docker.sh —— 一次性隔离容器骨架（思路级）
+# 原则：只读根文件系统、丢弃全部 Linux capabilities、禁止提权、断网、限额资源
+docker run --rm \
+  --network none \            # 断网：代码无法外联/访问内网
+  --read-only \               # 根文件系统只读，写入只能进临时层（容器退出即丢）
+  --cap-drop ALL \            # 丢弃全部 Linux capabilities，几乎无特权
+  --security-opt no-new-privileges \  # 禁止 setuid 提权
+  --memory 256m \             # 内存硬上限
+  --cpus 1 \                  # CPU 核数上限
+  -u 1000:1000 \              # 非 root 用户跑
+  -v /tmp/safe:/work:ro \     # 只允许挂一个只读工作目录
+  python:3.12-slim \
+  python /work/user_code.py
+```
+
+配合 Python 侧把代码写进 `/tmp/safe/user_code.py` 再触发上面的命令即可。注意：容器镜像要**预装好依赖**且**不内含任何生产密钥**，否则密钥会随挂载/镜像泄露给不可信代码。
+
+<Callout type="warn" title="容器不是铁笼">
+  Docker 默认共享宿主内核， historically 有过逃逸 CVE。对『跑陌生人代码』的多租户场景，
+  容器之上的微虚拟机（Firecracker）才更稳。此外容器内若挂载了宿主目录或 docker.sock，
+  等于把宿主钥匙递了出去——挂载列表务必逐条审视。
+</Callout>
+
+## 5. 思路三：微虚拟机与 Wasm（强隔离 / 轻量受限）
+
+- **微虚拟机（Firecracker 等）**：每个沙箱是独立轻量 VM，有自己内核，隔离接近物理机，启动毫秒级。适合多租户跑不可信代码。代价是运维复杂度高，通常需要平台化封装（如用现成的『代码执行 API』）。
+- **Wasm（Wasmtime 等）**：把代码编译成 WebAssembly，在线性内存 + 显式能力（capabilities）模型里跑，默认碰不到文件系统/网络，要什么权限显式授予。适合『受限计算 / 插件』，启动极快。
+
+<Callout type="tip" title="优先用现成执行服务">
+  若不想自建微虚拟机集群，可考虑托管的『代码解释器 / 沙箱执行』云服务——
+  它们已处理好隔离、限额、快照。自建只在『数据不能出域』或『规模极大』时才划算。
+</Callout>
+
+## 6. 三原则：权限最小化、资源限额、审计
+
+无论选哪种技术，安全执行都靠这三条贯穿：
+
+### 6.1 权限最小化（Least Privilege）
+
+- 非 root 用户运行；容器 `cap-drop ALL`；只读根文件系统。
+- 网络默认断开，确需出网则走白名单代理，而非裸放行。
+- 文件系统只挂**必要且只读**的目录；写权限仅给临时层，容器退出即焚。
+- 注入沙箱的环境变量**不含生产密钥**；真要凭证，用限时、只读、最小范围的令牌。
+
+### 6.2 资源限额（Resource Quota）
+
+- CPU、内存、进程数、文件大小、执行时长全部设上限，双层（系统调用层 + 外层 timeout）兜底。
+- 限制磁盘 IO 与网络带宽，防『慢速拖垮』。
+- 单个 Agent 会话的累计配额也要限，防『调一千次工具』式成本/资源打爆。
+
+```python
+# 外层总超时 + 配额计数的思路骨架
+class QuotaGuard:
+    def __init__(self, max_calls=20, max_seconds=30):
+        self.calls = 0
+        self.max_calls = max_calls
+        self.budget = max_seconds  # 该会话剩余可执行秒数
+
+    def check(self, est_seconds: int):
+        self.calls += 1
+        if self.calls > self.max_calls:
+            raise RuntimeError('会话工具调用次数超限')
+        if est_seconds > self.budget:
+            raise RuntimeError('会话执行时长预算不足')
+        self.budget -= est_seconds
+```
+
+### 6.3 审计（Audit）
+
+- 每次沙箱执行：记录代码内容、触发来源（哪个工具/哪轮对话）、结果、耗时、资源用量。
+- 日志集中留存，便于事后溯源与异常检测（如某会话突然大量外联尝试）。
+- 对『有副作用』的执行（写文件、发请求）单独标记，必要时异步人工复核。
+
+<Callout type="note" title="沙箱日志别记密钥">
+  审计要记『做了什么』，但**绝不能**把沙箱里出现的明文密钥、PII 写进日志。
+  记哈希或脱敏后的摘要，既保留可追溯性又不扩大泄露面。
+</Callout>
+
+## 7. 把沙箱接入 Agent 工具循环
+
+把 `m1-tool-calling` 的工具执行那一步，换成『进沙箱跑』即可：
+
+```
+模型要求执行代码/命令
+  → 你的 dispatch 把它路由到沙箱执行器
+  → 执行器按上面三原则隔离运行（限额/断网/非root）
+  → 捕获 stdout/stderr/退出码，按 QuotaGuard 记账
+  → 把结果（截断后）作为 tool 结果回填给模型
+```
+
+```python
+# agent_sandbox_dispatch.py —— 把『代码工具』导向沙箱（思路骨架）
+def execute_code_tool(code: str, guard: 'QuotaGuard') -> str:
+    guard.check(est_seconds=2)            # 先扣配额，超了直接拦在沙箱外
+    # 这里根据策略选实现：轻量用 sandbox_proc.run_limited，
+    # 通用用 docker run 骨架，强隔离用微虚拟机/执行服务
+    output = run_in_sandbox(code)         # 见第 3/4 节骨架
+    # 回填前截断，避免超大输出撑爆上下文
+    return output[:4000]
+```
+
+<Callout type="warn" title="回填前务必截断输出">
+  沙箱里 `print` 一个无限列表能产出 GB 级 stdout。回填模型前必须截断长度、
+  限制总行数，否则下游上下文与成本失控。同时把异常堆栈脱敏后再回传。
+</Callout>
+
+## 8. 踩坑与最佳实践
+
+<Callout type="danger" title="挂载宿主目录等于开门">
+  图省事把 `/`、`/var/run/docker.sock`、含密钥的目录挂进沙箱，
+  隔离即刻归零。挂载清单逐条评审，默认『什么都不挂』，只挂必要只读目录。
+</Callout>
+
+<Callout type="danger" title="容器里塞了生产密钥">
+  镜像或环境变量里若含数据库密码、API Key，不可信代码 `os.environ` 一读便知。
+  沙箱镜像必须纯净；需要外部能力时走『最小范围、限时令牌』而非全量凭证。
+</Callout>
+
+<Callout type="warn" title="只卡时间忘了卡内存">
+  很多人给沙箱加了 timeout，却没限内存。一段 `a = [0]*10**10` 能直接 OOM 拖垮宿主。
+  CPU、内存、进程数、文件大小必须**同时**设限，且系统调用层与外层双保险。
+</Callout>
+
+<Callout type="warn" title="断网不全等于安全">
+  即便 `--network none`，代码仍可读取宿主挂载的文件、利用共享内核的漏洞逃逸。
+  网络隔离是必要非充分条件；配合非 root、cap-drop、只读根才构成基本防线。
+</Callout>
+
+<Callout type="tip" title="给沙箱做『冒烟测试』">
+  上线前用一段**故意作恶**的代码（删文件、读 /etc/passwd、fork 炸弹、外联）
+  跑一遍，确认沙箱真挡住了。安全机制『没被测过』等于『没有』。
+</Callout>
+
+<Callout type="note" title="成本也要限额">
+  沙箱不是免费资源。给每个会话设调用次数/时长预算（见 6.2），
+  防止模型陷入『反复生成代码→执行』的循环把账单烧穿。
+</Callout>
+
+## 9. 进阶隔离：gVisor 与 seccomp
+
+Docker 默认共享宿主内核，隔离强度有限。要更强又不至于上微虚拟机，有两个中间层：
+
+- **gVisor（用户态内核）**：用 `runsc` 运行时接管容器的系统调用，在用户态实现 Linux  syscall 接口，容器不再直接打宿主内核。隔离强度接近虚拟机，开销远低于真 VM。是『容器之上、微虚拟机之下』的甜点。用法上只需把 Docker 的 runtime 换成 `runsc`，其余 `docker run` 参数不变。
+- **seccomp（系统调用过滤）**：用 Berkeley Packet Filter 规则只允许白名单 syscall，未列出的（如 `mount`、`ptrace`、`execve` 的某些变体）直接被内核拒绝。能堵住大量提权类利用。Docker 默认已带一份裁剪过的 seccomp 配置，敏感场景应自定义更严的白名单。
+
+<Callout type="warn" title="默认 seccomp 不是最严">
+  Docker 默认 profile 仍放行不少 syscall。对被疑为恶意的代码，
+  应自定义只留 `read/write/exit` 等极小集合的 seccomp 文件，配合 `cap-drop ALL`，
+  把攻击面压到最小。具体字段以官方 seccomp 文档为准。
+</Callout>
+
+## 10. 一个最小沙箱镜像与出网白名单
+
+实际跑代码执行器，建议提前构建一个**纯净、只读、仅含运行时**的镜像，而不是每次临时拉基础镜像：
+
+```dockerfile
+# Dockerfile.sandbox —— 最小沙箱镜像骨架（思路级，参数以官方为准）
+FROM python:3.12-slim
+# 不装任何生产密钥、不 COPY 业务代码；只留运行用户代码所需的最小依赖
+RUN useradd -m sandbox -u 1000
+USER sandbox                 # 非 root 运行
+WORKDIR /tmp                 # 可写区仅限临时目录，容器退出即焚
+# 依赖预装（避免在沙箱内联网 pip install，既慢又有供应链风险）
+RUN pip install --no-cache-dir numpy
+# 入口由外层 docker run 决定，不固化 CMD，便于传入不同代码
+```
+
+需要出网时，**不要**直接放开 `--network`。正确做法是部署一个出网代理（如带域名白名单的 HTTP proxy），沙箱只许访问该代理，代理再按白名单放行到少数外部域名，全程可审计。
+
+```bash
+# 出网白名单思路：容器只连代理，代理按域名白名单放行
+docker run --rm --network none \
+  --env HTTP_PROXY=http://egress-proxy:3128 \   # 只指向受控代理
+  -u 1000:1000 --cap-drop ALL --read-only \
+  --memory 256m --cpus 1 \
+  sandbox-image python /work/user_code.py
+# egress-proxy 侧：仅允许 api.weather.com 等白名单域名，其余 403
+```
+
+## 11. 安全上线检查清单
+
+上线一个代码执行工具前，逐项核对：
+
+- [ ] 运行用户非 root，容器 `cap-drop ALL`，`no-new-privileges` 开启
+- [ ] 根文件系统只读，仅挂必要且只读目录，无宿主密钥/套接字挂载
+- [ ] 网络默认断开，确需出网走白名单代理并审计
+- [ ] CPU / 内存 / 进程数 / 文件大小 / 执行时长全部双层限额
+- [ ] 镜像纯净、不含业务凭证、依赖预装
+- [ ] 用恶意代码（删文件/读密码/fork 炸弹/外联）做过冒烟测试
+- [ ] 输出回填前截断、脱敏，异常堆栈不外泄密钥
+- [ ] 会话级配额（次数/时长预算）已接入
+- [ ] 审计日志集中留存且自身不含明文密钥
+
+<Callout type="note" title="清单要进代码评审">
+  这份清单不是『写完看一眼』，而应作为 PR 模板的必勾项。
+  每次改沙箱参数都要重新走一遍——安全配置最容易在『顺手一改』中退化。
+</Callout>
+
+## 12. 沙箱与 MCP 的衔接
+
+回到 `tool-mcp`：一个『代码执行 Server』本身就是 MCP Server 的绝佳用例——它把沙箱能力按协议暴露给任意 Host。此时安全职责链是：
+
+```
+Host（模型）
+  → MCP Client（调用 code.run 工具）
+    → 你的 MCP Server（校验入参、记账）
+      → 沙箱执行器（隔离运行不可信代码）
+        → 结果回填 → Host → 模型
+```
+
+也就是说：**MCP 负责『把沙箱标准化成可发现、可调用、可跨 Host 复用的工具』，沙箱负责『让这个工具安全』**。两者正交，组合后才是生产可用的『AI 代码执行』。凡是做代码/Shell 类工具，默认就该是『MCP Server + 内置沙箱』的结构。
+
+## 13. 常见误区速记
+
+- **『容器就够了，不用管密钥』**：隔离解决的是『炸不到宿主内核』，不解决『代码读环境变量里的密钥』。镜像与挂载的凭证管理是独立问题。
+- **『断网就安全』**：网络隔离必要，但共享内核的逃逸、挂载目录的越权仍是敞口，必须叠加非 root / cap-drop / 只读根。
+- **『只卡时间』**：缺内存限额的沙箱会被一行大数组 OOM 拖垮，CPU/内存/进程数须同时设限。
+- **『沙箱是绝对安全』**：任何沙箱都有逃逸可能，重要系统的底线仍是凭证最小化 + 网络隔离 + 关键操作人工确认。
+
+<Callout type="note" title="把安全当纵深防御">
+  沙箱、MCP、Agent 编排每一层都只挡一部分风险。真正稳妥的是『多层叠加、任一层失效仍有兜底』，
+  而不是押注单一技术。这也是所有安全设计的通用铁律。
+</Callout>
+
+## 小结
+
+- 任何 LLM 生成的代码/命令默认按『潜在恶意』处理，必须在隔离环境执行。
+- 四类方案按需选：进程级限制（轻量）、Docker（性价比甜点）、微虚拟机（强隔离多租户）、Wasm（受限计算）。
+- 安全执行三原则贯穿始终：权限最小化（非 root/cap-drop/只读/断网）、资源限额（CPU/内存/时长双层兜底）、审计（脱敏留痕）。
+- 接入 Agent 时把工具执行导向沙箱，回填前截断输出，并用 QuotaGuard 给会话记账。
+- 红线：不挂宿主目录、镜像不含密钥、内存时间同限、断网非万能、上线前用恶意代码冒烟测试。
+
+<Callout type="note" title="下一步">
+  工具能力标准化（MCP）、执行安全（沙箱）都齐了。
+  但你也许还想：把一堆现成的 HTTP 接口『自动变成 Agent 工具』——这正是 **tool-openapi（基于 OpenAPI 封装工具）** 的方向。
+</Callout>
+
+## 延伸阅读 / 参考
+
+- Docker 官方安全文档（cap-drop、read-only、no-new-privileges、rootless，以官方为准）
+- Firecracker / 微虚拟机文档（强隔离多租户的执行底座）
+- Wasmtime 与 WebAssembly 能力模型（受限、可移植的轻量沙箱）
+- OWASP LLM Top 10（把沙箱放进整体安全视野对照）
+- 各云厂商『代码解释器 / 沙箱执行』API（不想自建时的托管选项）

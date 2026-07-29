@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Docker 化 Agent 服务：多阶段、最小化镜像、健康检查与 Compose · AgentLab</title>
+  <meta name="description" content="把 Agent 服务安全可复现地打包成镜像——讲透多阶段构建、最小化基础镜像、.dockerignore、HEALTHCHECK 与 docker-compose 编排，给出生产级可运行骨架与踩坑清单。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="Docker 化 Agent 服务：多阶段、最小化镜像、健康检查与 Compose · AgentLab"/>
+  <meta property="og:description" content="把 Agent 服务安全可复现地打包成镜像——讲透多阶段构建、最小化基础镜像、.dockerignore、HEALTHCHECK 与 docker-compose 编排，给出生产级可运行骨架与踩坑清单。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#deploy">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🚀</span>
+        <span class="art-moduleName">部署运维</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">35 分钟</span>
+      </div>
+      <h1 class="art-title">Docker 化 Agent 服务：多阶段、最小化镜像、健康检查与 Compose</h1>
+      <p class="art-desc">把 Agent 服务安全可复现地打包成镜像——讲透多阶段构建、最小化基础镜像、.dockerignore、HEALTHCHECK 与 docker-compose 编排，给出生产级可运行骨架与踩坑清单。</p>
+      <div class="art-tags"><span class="art-tag">#Docker</span><span class="art-tag">#多阶段构建</span><span class="art-tag">#最小化镜像</span><span class="art-tag">#健康检查</span><span class="art-tag">#Compose</span><span class="art-tag">#部署</span></div>
+    </div>
+    <div class="prose"><h1>Docker 化 Agent 服务：多阶段、最小化镜像、健康检查与 Compose</h1>
+<p>前面 <code>m7-engineering-deploy</code> 把『配置分层、密钥、健康检查、灰度回滚』的框架讲清了。但框架要落地，第一步是<strong>把服务变成可移植、可复现的镜像</strong>——否则『我本地能跑』和『生产跑崩』之间的鸿沟永远填不上。</p>
+<p>这一篇聚焦 Docker 化的实战：为什么必须做、多阶段构建怎么省空间、基础镜像怎么选最小、<code>.dockerignore</code> 为什么不能漏、<code>HEALTHCHECK</code> 怎么让编排器知道服务活着、再用 <code>docker-compose</code> 把 Agent 服务 + 依赖（如 Redis、向量库）编排起来。面向有经验的开发者，重骨架、轻口水。</p>
+<h2 id="1-为什么-agent-服务必须容器化">1. 为什么 Agent 服务必须容器化</h2>
+<p>Agent 服务比普通 Web 服务更『重依赖』：Python/Node 运行时、模型 SDK、<code>playwright</code>/<code>chromium</code> 这类重客户端、系统级库（如 <code>libgl</code>、<code>ffmpeg</code>）。直接往生产机器上 <code>pip install</code> 有三个致命问题：</p>
+<ul>
+<li><strong>环境漂移</strong>：A 机器装了 <code>numpy 1.26</code>、B 机器是 <code>2.0</code>，行为不一致；</li>
+<li><strong>不可复现</strong>：CI 和线上依赖树对不上，回滚时找不到当时的环境；</li>
+<li><strong>横向扩展困难</strong>：要起 10 个实例，没法靠『手动装一遍』。</li>
+</ul>
+<p>容器把『代码 + 运行时 + 依赖』封成一份不可变镜像，解决以上全部。镜像一旦构建，全世界任何装了 Docker 的机器跑出来的结果一致。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">镜像即环境契约</span></div><div class="co-body"><p>  把镜像理解成『一份写死的环境契约』：它记录了确切的基础系统、依赖版本、启动命令。
+  上线的不是『代码』，而是『这份契约』。这让你的回滚变成『换回旧镜像 ID』这种原子操作。</p>
+</div></div><h2 id="2-镜像分层原理-决定优化方向">2. 镜像分层原理（决定优化方向）</h2>
+<p>Docker 镜像由一层层只读层叠加而成，每一行 <code>RUN</code>/<code>COPY</code>/<code>ADD</code> 都可能生成新层。构建时 Docker 会<strong>缓存未变化的层</strong>：只要某一层及之前的内容没变，就复用缓存。这带来两条铁律：</p>
+<ul>
+<li><strong>变动频率越低的内容，越要放前面</strong>（基础系统、系统依赖）→ 命中缓存、构建飞快；</li>
+<li><strong>变动频繁的内容（源码、配置）放最后</strong> → 只重跑最后几层。</li>
+</ul>
+<pre><code class="language-dockerfile"># 反面教材：把源码放前面，每次改一行代码都会让后面所有层缓存失效
+COPY . .
+RUN apt-get update &amp;&amp; apt-get install -y curl   # 永远重跑
+
+# 正确：先装依赖（稳定），再拷源码（易变）
+RUN apt-get update &amp;&amp; apt-get install -y curl
+COPY . .
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">利用缓存加速 CI</span></div><div class="co-body"><p>  Node 项目先 <code>COPY package*.json</code> 再 <code>RUN npm ci</code>，然后才 <code>COPY</code> 源码。
+  这样只改业务代码时，依赖安装层全部命中缓存，CI 从几分钟降到几十秒。</p>
+</div></div><h2 id="3-多阶段构建-构建环境和运行环境分离">3. 多阶段构建：构建环境和运行环境分离</h2>
+<p>Agent 项目常有『重构建、轻运行』特征：构建时需要 <code>gcc</code>/<code>python-dev</code>/构建工具链，但运行只需要编译产物。若把构建工具全打进最终镜像，体积会爆炸（轻松上 GB）。<strong>多阶段构建</strong>用多个 <code>FROM</code> 把构建与运行拆开，只把产物拷进极小的最终镜像。</p>
+<pre><code class="language-dockerfile"># ---- 阶段一：builder，装全套构建工具 ----
+FROM node:20-bookworm AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci                      # 装依赖（含可能的 native 编译）
+COPY . .
+RUN npm run build               # 产出 dist/（TS 编译结果）
+
+# ---- 阶段二：runtime，只拿产物，不拿构建工具 ----
+FROM node:20-bookworm-slim AS runtime
+WORKDIR /app
+# 只拷 package.json + 编译产物 + node_modules 的生产部分
+COPY package*.json ./
+RUN npm ci --omit=dev           # 关键：只装生产依赖，devDependencies 全丢
+COPY --from=builder /app/dist ./dist
+EXPOSE 8080
+CMD ["node", "dist/server.js"]
+</code></pre><code>COPY --from=builder</code> 只搬运产物，构建期的 <code>gcc</code>、源码、测试文件全部留在第一阶段，不进最终镜像。体积通常能从 1.2GB 降到 200MB 以内。<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">production node_modules 才进镜像</span></div><div class="co-body">  <code>npm ci --omit=dev</code> 是瘦身关键。带 <code>devDependencies</code>（tsc、eslint、vitest）的镜像
+<p>  既大又有不必要的攻击面。运行期只要运行时依赖。</p>
+</div></div><h2 id="4-最小化基础镜像-三选一">4. 最小化基础镜像：三选一</h2>
+<p>最终运行阶段选什么基础镜像，直接决定体积与安全面。主流三档：</p>
+<table>
+<thead>
+<tr>
+<th>镜像</th>
+<th>体积（约）</th>
+<th>适用</th>
+<th>注意</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>bookworm-slim</code></td>
+<td>150–250MB</td>
+<td>需要完整包管理（<code>apt</code>）、调试方便</td>
+<td>仍带 shell 与大量系统库</td>
+</tr>
+<tr>
+<td><code>alpine</code></td>
+<td>5–15MB</td>
+<td>极致精简、无状态微服务</td>
+<td><code>musl</code> 而非 <code>glibc</code>，部分 native 包要重编、易踩坑</td>
+</tr>
+<tr>
+<td><code>gcr.io/distroless</code></td>
+<td>2–50MB</td>
+<td>只跑二进制、极致安全（无 shell）</td>
+<td>不能 <code>docker exec</code> 进去调试，排障靠日志</td>
+</tr>
+</tbody></table>
+<pre><code class="language-dockerfile"># 方案 A：slim（调试友好，推荐大多数 Agent 服务起步用）
+FROM node:20-bookworm-slim AS runtime
+
+# 方案 B：distroless（生产追求最小攻击面时）
+# FROM gcr.io/distroless/nodejs20-debian12 AS runtime
+# COPY --from=builder /app/dist ./dist
+# CMD ["dist/server.js"]
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">alpine 的 musl 坑</span></div><div class="co-body"><p>  Alpine 用 <code>musl libc</code>，而很多预编译 native 包（如 <code>sharp</code>、<code>better-sqlite3</code>、某些
+  <code>onnxruntime</code>）是为 <code>glibc</code> 编的，在 Alpine 上会直接 <code>Error: Unable to load native binding</code>。
+  要么换用 <code>node:20-alpine</code> 并重新编译，要么干脆用 <code>slim</code>。新手优先 <code>slim</code> 省心。</p>
+</div></div><h2 id="5-dockerignore-别把垃圾打进镜像">5. .dockerignore：别把垃圾打进镜像</h2>
+<p>没有 <code>.dockerignore</code>，<code>COPY . .</code> 会把 <code>node_modules</code>、<code>.git</code>、<code>.env</code>、日志全打进镜像——既臃肿又<strong>泄露密钥</strong>。它和 <code>.gitignore</code> 语法一致：</p>
+<pre><code class="language-gitignore"># .dockerignore —— 必须和 Dockerfile 同目录
+node_modules          # 镜像里会重新 npm ci，别带宿主的
+npm-debug.log
+.git
+.env                 # 致命：密钥绝对不能进镜像层
+.env.*
+*.md
+tests/
+coverage
+dist                  # 多阶段里 builder 自己编译，别带旧的
+Dockerfile
+.dockerignore
+</code></pre><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">.env 进镜像等于泄露密钥</span></div><div class="co-body">  <code>.env</code> 一旦被 <code>COPY</code> 进镜像层，即使后面删掉，历史层里仍可读到（镜像层只读但可被 <code>docker history</code>/
+<p>  导出提取）。密钥必须走运行时挂载（见第 7 节 <code>env_file</code>/<code>secrets</code>），<strong>绝不</strong>烘焙进镜像。</p>
+</div></div><h2 id="6-健康检查-让编排器知道服务活着">6. 健康检查：让编排器知道服务活着</h2>
+<code>HEALTHCHECK</code> 让 Docker（及 K8s 的探针）能判断容器是『进程在』还是『真的能服务』。单纯进程在但死锁了，没有健康检查就会被持续转发流量到坏实例。<pre><code class="language-dockerfile"># 用 curl 探一个轻量 health 端点（镜像需含 curl；distroless 改用 wget 或自带探针）
+HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
+  CMD curl -f http://localhost:8080/health || exit 1
+</code></pre><p>参数含义：</p>
+<ul>
+<li><code>--interval</code>：多久探一次；</li>
+<li><code>--timeout</code>：单次探测超时；</li>
+<li><code>--start-period</code>：启动宽限期，这段时间失败不计入重试（给冷启动留时间，Agent 加载模型常需几十秒）；</li>
+<li><code>--retries</code>：连续失败几次才标记 <code>unhealthy</code>。</li>
+</ul>
+<p>服务侧要实现一个真的探查端点，而不是永远返回 200 的假健康：</p>
+<pre><code class="language-ts">// server.ts 片段：真实健康检查，连依赖都探一遍
+import express from 'express';
+const app = express();
+
+app.get('/health', async (_req, res) =&gt; {
+  // 只探进程存活：返回 200
+  // 要更严格：顺便探 Redis / 向量库连通性，任一挂了就返回 503
+  try {
+    // 伪代码：await redis.ping();
+    res.status(200).json({ status: 'ok', ts: Date.now() });
+  } catch {
+    res.status(503).json({ status: 'degraded' }); // 编排器据此摘除流量
+  }
+});
+
+app.listen(8080);
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">start-period 给模型加载留时间</span></div><div class="co-body"><p>  Agent 服务启动常要加载 embedding 模型、连向量库、预热缓存，冷启动可能 20–60 秒。
+  <code>--start-period</code> 设太短，容器会被反复判死、反复重启。按实测冷启动时间给足余量。</p>
+</div></div><h2 id="7-docker-compose-本地编排多服务">7. docker-compose：本地编排多服务</h2>
+<p>单容器不够——Agent 通常还要 Redis（KV 记忆）、Qdrant（向量库）、Postgres。开发/单机部署用 <code>docker-compose</code> 一把拉起，定义网络、环境变量、卷、依赖顺序。</p>
+<pre><code class="language-yaml"># docker-compose.yml —— 单机编排骨架（以官方文档为准，字段易微调）
+version: "3.9"
+
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    # 密钥走 env_file，绝不写死在文件里；.env 不进镜像、不进 git
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379      # 用服务名互通（compose 内置 DNS）
+      - QDRANT_URL=http://qdrant:6333
+    depends_on:
+      redis:
+        condition: service_healthy        # 等 redis 健康再起 agent
+      qdrant:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped                # 异常退出自动拉起
+    # 把日志/缓存挂出来，避免容器删了数据丢
+    volumes:
+      - ./logs:/app/logs
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      retries: 5
+    volumes:
+      - redis-data:/data
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+volumes:
+  redis-data:
+  qdrant-data:
+</code></pre><p>常用命令：</p>
+<pre><code class="language-bash"># 构建并后台启动全部服务
+docker compose up -d --build
+
+# 看某个服务日志（比如 agent 启动报错了）
+docker compose logs -f agent
+
+# 只重建 agent 镜像（依赖没变时）
+docker compose up -d --build agent
+
+# 停掉并删容器（卷保留）
+docker compose down
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">compose 不是生产编排器</span></div><div class="co-body">  <code>docker-compose</code> 适合开发、单机 Demo、边缘盒子。它**没有**自愈调度、没有多机分布、
+<p>  没有滚动更新。真正的多副本生产部署请用 Kubernetes（见 <code>deploy-k8s</code>）。把 compose 当
+  『单机编排』而非『集群调度』来用，别指望它跨主机扩。</p>
+</div></div><h2 id="8-完整可运行骨架-端到端">8. 完整可运行骨架（端到端）</h2>
+<p>把下面三件套放进项目根目录，即可 <code>docker compose up -d --build</code> 跑起一个带健康检查的 Agent 服务骨架（业务代码用占位，零外部 API 依赖即可演示）。</p>
+<pre><code class="language-dockerfile"># Dockerfile —— 多阶段 + slim + 健康检查
+FROM node:20-bookworm AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM node:20-bookworm-slim AS runtime
+WORKDIR /app
+# 只装生产依赖，体积与攻击面双降
+RUN npm ci --omit=dev
+COPY package*.json ./
+COPY --from=builder /app/dist ./dist
+# 探活端点（镜像自带 curl）
+HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
+  CMD curl -f http://localhost:8080/health || exit 1
+EXPOSE 8080
+CMD ["node", "dist/server.js"]
+</code></pre><pre><code class="language-json">// package.json（节选，体现 build 脚本与依赖）
+{
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/express": "^4.17.21"
+  }
+}
+</code></pre><p>构建与运行：</p>
+<pre><code class="language-bash"># 构建镜像并打 tag
+docker build -t agent-svc:v1 .
+
+# 跑一个容器，映射端口、挂环境变量（不写死密钥）
+docker run -d -p 8080:8080 --name agent1 \
+  -e OPENAI_API_KEY="$(cat .env | grep KEY)" \
+  agent-svc:v1
+
+# 看健康状态（STATUS 列会显示 healthy/unhealthy）
+docker ps
+
+# 进容器排障（slim 有 shell 才进得去；distroless 不行）
+docker exec -it agent1 sh
+</code></pre><h2 id="9-对比-构建策略与基础镜像怎么选">9. 对比：构建策略与基础镜像怎么选</h2>
+<table>
+<thead>
+<tr>
+<th>决策点</th>
+<th>选项</th>
+<th>何时选</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>构建方式</td>
+<td>单阶段 / 多阶段</td>
+<td>任何带编译的项目都该多阶段，单阶段只适合纯解释型脚本</td>
+</tr>
+<tr>
+<td>运行镜像</td>
+<td>slim / alpine / distroless</td>
+<td>要调试选 slim；要极小且愿折腾选 alpine；要极致安全选 distroless</td>
+</tr>
+<tr>
+<td>依赖安装</td>
+<td><code>npm ci</code> / <code>npm install</code></td>
+<td>永远 <code>npm ci</code>（锁版本、可复现），<code>install</code> 会浮动版本</td>
+</tr>
+<tr>
+<td>密钥</td>
+<td>烘焙 / env_file / secrets</td>
+<td>绝不烘焙；compose 用 <code>env_file</code>，生产用 secrets _manager</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">可复现是底线</span></div><div class="co-body"><p>  选 <code>npm ci</code> 而非 <code>npm install</code>，本质是为了『锁文件即真相』。生产镜像必须能从
+  同一份 <code>package-lock.json</code> 重建出逐字节一致的依赖树，否则回滚毫无意义。</p>
+</div></div><h2 id="10-常见坑">10. 常见坑</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">root 用户跑容器</span></div><div class="co-body"><p>  默认容器以 <code>root</code> 跑，一旦被 RCE 攻击面极大。生产应在 Dockerfile 末尾建非特权用户：
+  <code>RUN useradd -m appuser &amp;&amp; USER appuser</code>。注意 <code>USER</code> 之后 <code>COPY</code> 的文件归属要 <code>chown</code>。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">latest 标签导致不可复现</span></div><div class="co-body">  <code>image: redis:latest</code> 看似方便，实则每次拉取可能版本不同，回滚时找不到当时的行为。
+<p>  生产固定小版本：<code>redis:7.2-alpine</code>。镜像 tag 也要带版本/commit，别都用 <code>latest</code>。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">缓存层藏着旧依赖</span></div><div class="co-body"><p>  改了 <code>package.json</code> 却忘了动 <code>COPY package*.json</code> 之前的层，可能命中旧缓存、依赖没更新。
+  依赖变化时确保 <code>COPY package*.json</code> 这层也失效。排障用 <code>docker build --no-cache</code> 验证。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">HEALTHCHECK 探活端点造假</span></div><div class="co-body"><p>  若 <code>/health</code> 永远返回 200（不探真实依赖），编排器会持续把流量打进『进程在但已死锁』的实例。
+  健康检查要探关键依赖连通性，至少探 Redis/向量库之一。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">镜像体积定期audit</span></div><div class="co-body"><p>  用 <code>docker images</code> 和 <code>dive</code> 工具审查层，发现意外大层（如整份源码被打进去了）及时修。
+  镜像越小，拉取越快、节点磁盘越省、攻击面越小。</p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">把大模型权重打进镜像</span></div><div class="co-body"><p>  几 GB 的模型权重别烘焙进镜像——会让镜像巨大、构建极慢、且每次换权重都要重 build。
+  权重应走挂载卷或对象存储按需下载（GPU 推理场景见 <code>deploy-gpu</code>）。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>容器把『代码 + 运行时 + 依赖』封成不可变镜像，解决环境漂移与不可复现，回滚即换镜像。</li>
+<li>多阶段构建分离 build/runtime，只搬运产物，<code>npm ci --omit=dev</code> 是瘦身关键。</li>
+<li>基础镜像三选一：slim（调试友好）、alpine（极小但 musl 坑）、distroless（极致安全无 shell）。</li>
+<li><code>.dockerignore</code> 必须排除 <code>node_modules</code>/<code>.git</code>/<code>.env</code>，密钥绝不进镜像层。</li>
+<li><code>HEALTHCHECK</code> + 真实探活端点，让编排器摘除死实例；<code>start-period</code> 给模型冷启动留余量。</li>
+<li><code>docker-compose</code> 做单机编排足够，但生产多副本请用 K8s；对比维度集中在可复现、最小、安全。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  单机镜像跑通后，要上多副本、跨机器、滚动更新、自动扩缩，就进入 <strong>deploy-k8s</strong> 的领域；
+  若服务要吞 GPU 跑模型推理，见 <strong>deploy-gpu</strong>。</p>
+</div></div><h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>Docker 官方文档：多阶段构建（Multi-stage builds）与 <code>HEALTHCHECK</code> 指令语义</li>
+<li><code>docker compose</code> 官方参考：services / depends_on / healthcheck / volumes 字段</li>
+<li>GoogleContainerTools/distroless 仓库：无 shell 最小镜像的使用与调试限制</li>
+<li>Alpine 官方 Wiki：musl vs glibc 的 native 包兼容说明</li>
+<li>OWASP Docker Security Cheat Sheet：非 root 运行、最小权限、密钥管理红线</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="m7-engineering-deploy.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">工程化部署：配置、密钥、健康检查与灰度回滚</span></a>
+    <a class="art-pagerLink art-pagerRight" href="deploy-k8s.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">Kubernetes 部署 Agent 服务：Deployment、Service、HPA 与滚动更新</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

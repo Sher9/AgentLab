@@ -1,0 +1,195 @@
+---
+title: 分词器：BPE/WordPiece、计费与跨语言
+description: 理解 LLM 如何把文本切成 token，掌握 BPE/WordPiece 原理、token 计费口径、中英跨语言差异与截断处理，并给出可运行的 token 计数骨架，面向有经验的开发者。
+category: LLM大模型
+order: 3
+difficulty: 进阶
+duration: 18 分钟
+tags: [分词器, BPE, WordPiece, token计费, 跨语言]
+date: 2026-07-29
+---
+
+# 分词器：BPE/WordPiece、计费与跨语言
+
+你看到的『一个字』和模型看到的『一个 token』不是一回事。所有计费、上下文上限、跨语言成本差异，根源都在**分词器（Tokenizer）**。这篇把分词怎么切、怎么计费、中英文差多少、超限怎么截断讲透，并给你一个可运行的计数骨架。
+
+## 1. 为什么需要分词
+
+模型不能直接吃字符，它只在**离散 token -id** 上做计算。分词器负责『文本 ↔ token 序列』的双向映射：
+
+- 编码：`"你好"` → `[123, 456]`（token id 列表）；
+- 解码：`[123, 456]` → `"你好"`。
+
+不同模型用不同词表与算法，所以**同一句话在不同模型里的 token 数不同**——这是跨模型成本对比的隐藏变量。
+
+<Callout type="note" title="token ≠ 字 ≠ 词">
+  中文里一个汉字常被切成 1~2 个 token；英文一个词可能被切成多个子词（如 `playing` → `play`+`ing`）。
+  计费、上限、延迟都按 token 计，不按字。所以『这篇文章 500 字』和『500 token』是两码事。
+</Callout>
+
+## 2. BPE 与 WordPiece 原理
+
+主流子词算法都遵循『从字符出发、按频率合并』的思路，目标是：**高频词不切、低频词拆到能表达**。
+
+### 2.1 BPE（Byte-Pair Encoding）
+
+GPT 系列、Llama、Qwen 多用 BPE。流程：
+
+1. 语料拆成字符级；
+2. 反复合并『出现频率最高的相邻符号对』，加入词表；
+3. 直到词表达到目标大小或不再合并。
+
+编码时**贪心**地把文本按词表里『最长可匹配子串』切分。
+
+```
+语料: "low lower lowest" 反复合并最高频字节对 → 得到 low / er / est 等子词
+新词 "lowest" 可复用已学子词，无需整词入表 → 词表紧凑、未登录词也能拼出
+```
+
+### 2.2 WordPiece
+
+BERT、ERNIE 等常用。和 BPE 类似，但合并判据不是『频率最高』，而是**合并后带来的语言模型似然提升最大**（用互信息类分数）。它对『词内边界』更敏感，中文常切得更碎。
+
+<Callout type="tip" title="二者工程差异很小">
+  对应用层来说，BPE 与 WordPiece 的区别基本不影响你写代码——你只关心『这个模型用哪个 tokenizer 对象』。
+  真正影响你的是『词表覆盖哪种语言』，见第 4 节跨语言。
+</Callout>
+
+## 3. 可运行骨架：token 计数
+
+不要用『字数 × 系数』估算 token——直接调用对应 tokenizer。下面用 JS 的 `gpt-tokenizer`（OpenAI 系列）做计数，并演示中文 vs 英文差异。其他模型（Qwen/GLM 等）请使用各自官方 tokenizer 包，API 类似。
+
+```ts
+// count-tokens.ts —— 真实计数 token（以 gpt-tokenizer 为例，其他模型换对应包）
+import { encode } from 'gpt-tokenizer';
+import { z } from 'zod';
+
+// 用 Zod 约束输入：防止把 undefined/非字符串塞进编码器导致异常
+const Input = z.object({ text: z.string() });
+
+function countTokens(text: string): number {
+  const parsed = Input.safeParse({ text });
+  if (!parsed.success) return 0;
+  // encode 返回 token-id 数组，其长度即 token 数（这是唯一可信口径）
+  return encode(parsed.data.text).length;
+}
+
+const samples = {
+  zh: '你好，今天天气不错，我们去公园散步吧。',
+  en: 'Hello, the weather is nice today, let us go for a walk in the park.',
+};
+
+for (const [lang, text] of Object.entries(samples)) {
+  const chars = [...text].length;          // 字符数（中文算 1）
+  const toks = countTokens(text);
+  console.log(`${lang}: 字符=${chars}  token=${toks}  约 ${(toks / chars).toFixed(2)} token/字`);
+}
+```
+
+运行：`npm i gpt-tokenizer zod` 然后 `npx tsx count-tokens.ts`。你会看到英文『每词约 1.x token』、中文『每字约 0.6~1.5 token（视模型）』。
+
+<Callout type="warn" title="别用字符串长度近似">
+  `text.length` 既算不对中文（含标点、emoji 可能占 2 个 code unit），也和 token 数无线性关系。
+  上线计费/截断判断务必用真实 tokenizer 编码，否则成本预估会差出数倍。
+</Callout>
+
+## 4. 跨语言差异：中文为何更『贵』
+
+- **英文**：常见词整词入表，生词拆子词，约 1 词 = 1.3 token；空格与标点各算。
+- **中文**：多数模型中文词表覆盖有限，常『字级或亚字级』切分，一个汉字可能 1~2 token；繁体、文言文、生僻字更碎。
+- **代码/公式**：特殊符号多，token 数常偏高。
+
+实务影响：同样一段意思，中文 prompt 的 token 数可能比英文高 1.5~2 倍，**同等上下文窗口下中文能装的内容更少、同等内容成本更高**。做国际化产品时要按语言分别估上限。
+
+<Callout type="tip" title="压缩中文 prompt 是真省钱">
+  因为中文按字/子词计费，去掉冗余虚词、用更短表达能直接降 token。中文场景下『精简文案』
+  的 ROI 高于英文——这是中文 Agent 成本优化的一线抓手。
+</Callout>
+
+## 5. 截断处理：超限了怎么办
+
+模型的 `max_tokens`（上下文窗口）是硬上限 = system + 历史 + 输入 + 预留输出。超限有两个层面：
+
+- **输入截断**：超出部分被丢掉（模型看不到），常静默发生 → 信息丢失、幻觉。
+- **输出截断**：生成到上限强制结束 → 答案被腰斩，JSON 不完整。
+
+处理策略：
+
+```ts
+// truncate.ts —— 编码后按预算截断（以 tokenizer 为准，而非字符）
+import { encode, decode } from 'gpt-tokenizer';
+
+function fitWithin(text: string, maxTokens: number): string {
+  const ids = encode(text);
+  if (ids.length <= maxTokens) return text;   // 未超，原样返回
+  // 超了：截到 maxTokens 个 token 再解码回来（保证是合法 token 边界，不乱码）
+  const truncated = ids.slice(0, maxTokens);
+  return decode(truncated) + '…（已截断）';
+}
+
+// 更稳妥：先留足输出预算，再截输入
+const BUDGET = 8000;          // 该模型输入上限
+const RESERVE = 1000;         // 给模型输出预留
+const safeInput = fitWithin(userText, BUDGET - RESERVE);
+```
+
+<Callout type="danger" title="按字符截断会切坏 token">
+  用 `text.slice(0, N)` 按字符截断，可能在一个多 byte / 多 token 字符中间切断，解码出来是乱码或报错。
+  必须用 tokenizer 的 encode→slice→decode，保证截断在 token 边界上，中文尤其要注意。
+</Callout>
+
+<Callout type="warn" title="截断静默丢信息">
+  输入被截断时模型不会报错，只会『假装读完了』，然后基于残缺上下文作答，产生幻觉。
+  长文档优先走 RAG 检索相关片段，而不是整篇塞入再截断；必须整篇时，明确告知用户已截断。
+</Callout>
+
+## 6. 对比：三种计费相关口径
+
+| 口径 | 含义 | 用途 |
+|------|------|------|
+| token 数（真实编码） | 模型实际处理的单位 | 计费、上限、延迟估算的**唯一可信口径** |
+| 字符数 | 人类可读长度 | 仅做粗略展示，不可用于计费判断 |
+| 词数 | 英文按空格、中文按字 | 给产品侧一个直觉，非工程口径 |
+
+<Callout type="note" title="计费永远以 token 为准">
+  任何『按字数收费』的展示都要在底层换算成 token，且要按『各家模型各自的 tokenizer』分别算。
+  跨模型对比成本时，先统一用各自的 tokenizer 数一遍，再比单价。
+</Callout>
+
+## 7. 常见踩坑
+
+<Callout type="warn" title="跨模型直接搬 token 数">
+  在 GPT 上数出 100 token，不代表在 Qwen/GLM 上也是 100。换模型必须换对应 tokenizer 重数，
+  否则成本与上限估算全错。封装一个『按模型名取 tokenizer』的适配层能避免这类坑。
+</Callout>
+
+<Callout type="warn" title="忽略输出预留导致 JSON 被腰斩">
+  把整个上下文窗口都给了输入，模型没空间输出，结果 JSON/代码写到一半被截断，解析失败。
+  永远 `输入预算 = 窗口 − 输出预留`，并在业务里对不完整输出做校验与重试。
+</Callout>
+
+<Callout type="tip" title="缓存命中也按 token 算">
+  许多 API 对『命中缓存的 prompt token』有折扣（如 0.1 倍价）。稳定前缀（system、few-shot 示例）
+  尽量放在最前且保持不动，能显著降成本——这是分词器与缓存联动的省钱点。
+</Callout>
+
+## 小结
+
+- 分词器做『文本↔token-id』映射；token 才是计费、上限、延迟的真实单位，不是字也不是词。
+- BPE（GPT/LLaMA/Qwen）按频率合并，WordPiece（BERT/ERNIE）按似然提升合并；应用层差异小。
+- 中文常按字/子词切，同义内容 token 数常高于英文 1.5~2 倍，更贵、更占窗口。
+- 截断必须在 token 边界（encode→slice→decode），按字符截断会乱码；输入要留输出预算。
+- 红线：别用字符数近似计费、别跨模型搬 token 数、别忘输出预留、长文档优先 RAG 而非硬塞截断。
+
+<Callout type="note" title="下一步">
+  知道输入怎么被切成 token、怎么计费后，要去理解『这些 token 是怎么被模型算出来的』，
+  见 **Transformer 原理**；要在多个模型间比价选型，见 **主流模型选型**。
+</Callout>
+
+## 延伸阅读 / 参考
+
+- OpenAI Tokenizer 文档与官方 tiktoken 库（GPT 系列计数权威口径）
+- HuggingFace Tokenizers 文档（BPE/WordPiece 实现与任意模型 tokenizer 加载）
+- 通义 Qwen / 智谱 GLM 官方 tokenizer 说明（中文覆盖与跨语言差异）
+- 论文 *Neural Machine Translation of Rare Words with Subword Units*（BPE 应用于 NLP 的起点）
+- 各模型定价页：注意『缓存命中 token』的折扣口径（以官方为准）

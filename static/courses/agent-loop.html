@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Agent 主循环与控制流：事件驱动、上限、超时与中断 · AgentLab</title>
+  <meta name="description" content="拆解 Agent 主循环的事件驱动模型，讲透步骤上限、超时/中断、并发执行与错误恢复的设计要点，给出带护栏的可运行骨架与常见坑。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="Agent 主循环与控制流：事件驱动、上限、超时与中断 · AgentLab"/>
+  <meta property="og:description" content="拆解 Agent 主循环的事件驱动模型，讲透步骤上限、超时/中断、并发执行与错误恢复的设计要点，给出带护栏的可运行骨架与常见坑。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#agent">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🤖</span>
+        <span class="art-moduleName">AI Agent</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">22 分钟</span>
+      </div>
+      <h1 class="art-title">Agent 主循环与控制流：事件驱动、上限、超时与中断</h1>
+      <p class="art-desc">拆解 Agent 主循环的事件驱动模型，讲透步骤上限、超时/中断、并发执行与错误恢复的设计要点，给出带护栏的可运行骨架与常见坑。</p>
+      <div class="art-tags"><span class="art-tag">#主循环</span><span class="art-tag">#控制流</span><span class="art-tag">#超时</span><span class="art-tag">#中断</span><span class="art-tag">#并发</span><span class="art-tag">#错误恢复</span></div>
+    </div>
+    <div class="prose"><h1>Agent 主循环与控制流</h1>
+<p>M1 给了你『工具调用四步闭环』的最小骨架；M2 讲了 Agent 该按什么策略思考。但真正把 Agent 跑稳，靠的是<strong>主循环（control loop）这层控制流</strong>：它决定每一步转多久、卡住怎么办、能不能并行、出错怎么救。</p>
+<p>这一篇只聊循环本身——不绑定某个框架，把事件驱动循环、步骤上限、超时/中断、并发执行、错误恢复讲透，并给你一份带护栏的 TS 骨架。</p>
+<h2 id="1-为什么循环需要一个-控制层">1. 为什么循环需要一个『控制层』</h2>
+<p>工具调用的朴素写法是 <code>for</code> 里套一次模型调用。但生产环境会逼你加一堆控制：</p>
+<ul>
+<li>模型偶尔死循环（反复调同一个工具还不肯收手）→ 必须<strong>步骤上限</strong>；</li>
+<li>一次往返可能卡 30 秒（模型慢 + 工具慢）→ 必须有<strong>超时</strong>；</li>
+<li>用户点了『停止』→ 必须能<strong>中断</strong>；</li>
+<li>多个无依赖工具 → 应该<strong>并发</strong>而非串行；</li>
+<li>某个工具 500 了 → 不能让整个 Agent 抛错退出。</li>
+</ul>
+<p>这些都不是『业务功能』，却是 Agent 能不能上的分水岭。控制层就是为此存在的。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">循环是 Agent 的中枢</span></div><div class="co-body"><p>  模型是无状态的『下一步预测器』，它不知道『我已经转了 8 圈』。
+  『何时停、何时并行、何时救』这些元决策，全靠你的循环代码，而不是模型。
+  把循环想成操作系统调度器：模型只是其中一个可被抢占的任务。</p>
+</div></div><h2 id="2-主循环的两种形态">2. 主循环的两种形态</h2>
+<h3 id="2-1-轮询式-pull-循环">2.1 轮询式（pull）循环</h3>
+<p>最常见的形态：你在代码里兜一个 <code>while/for</code>，每轮主动去问模型一次，自己决定走不走下一步。</p>
+<pre><code>while 未达终态 且 步数 &lt; 上限:
+    响应 = 问模型(上下文, 工具)
+    if 响应无 tool_calls: 输出答案，结束
+    结果 = 执行工具(响应.tool_calls)
+    上下文 += 结果
+</code></pre><p>优点是逻辑直观、易调试；缺点是每次都是『你拉模型』，天然是同步节奏。</p>
+<h3 id="2-2-事件驱动-push-循环">2.2 事件驱动（push）循环</h3>
+<p>把循环拆成<strong>事件处理器</strong>：模型返回、工具完成、超时触发、用户中断，都是事件。一个调度器按事件推进状态机。</p>
+<pre><code>on 模型返回: 若无 tool_calls → 终态；否则派发工具任务
+on 工具完成: 收集结果，凑齐一批后再次问模型
+on 超时: 中断当前批，进入降级
+on 用户中断: 立即置为终态，取消在途任务
+</code></pre><p>优点是能自然支持并发、超时、中断、流式；缺点是状态机略复杂。生产级 Agent 几乎都走这条。</p>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">从轮询起步，事件收尾</span></div><div class="co-body"><p>  原型阶段用轮询式最省事，能跑通闭环即可；
+  一旦你需要并发工具、真超时、可被用户打断，就值得重构为事件驱动。
+  两种形态共享同一套『上下文 + 工具执行』内核，迁移成本不高。</p>
+</div></div><h2 id="3-步骤上限-别让模型烧钱失控">3. 步骤上限：别让模型烧钱失控</h2>
+<p>每轮循环都是一次模型调用，失控就是钱和时间的无底洞。</p>
+<pre><code class="language-ts">const MAX_STEPS = 12; // 经验值：绝大多数任务 3~8 步内可解
+
+async function run(userInput: string) {
+  const messages = [{ role: 'user', content: userInput }];
+  for (let step = 0; step &lt; MAX_STEPS; step++) {
+    const res = await client.chat.completions.create({ model: 'gpt-4o-mini', messages, tools });
+    const msg = res.choices[0].message;
+    messages.push(msg);
+    if (!msg.tool_calls?.length) return msg.content; // 终态：直接回答
+    await runTools(msg.tool_calls, messages);        // 执行并回填
+  }
+  // 走到这里说明触顶：优雅降级，而非抛异常
+  return '任务步骤过多，已暂停。请拆分需求或明确约束后重试。';
+}
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">上限要可观测</span></div><div class="co-body"><p>  触顶不是正常路径。每次触顶都应记一条日志（带上 userInput 摘要与已用步数），
+  它往往是『工具定义不清』或『任务过大』的信号，值得回头优化，而不是默默吞掉。</p>
+</div></div><h2 id="4-超时与中断-让循环可被抢占">4. 超时与中断：让循环可被抢占</h2>
+<h3 id="4-1-单次调用超时">4.1 单次调用超时</h3>
+<p>模型或工具都可能长时间不返回。给每次调用加超时，超时就取消：</p>
+<pre><code class="language-ts">// 给任意 Promise 套一个超时；到点到 AbortController 取消模型请求
+function withTimeout&lt;T&gt;(p: Promise&lt;T&gt;, ms: number, signal?: AbortSignal): Promise&lt;T&gt; {
+  return new Promise((resolve, reject) =&gt; {
+    const t = setTimeout(() =&gt; reject(new Error('timeout')), ms);
+    p.then(resolve, reject).finally(() =&gt; clearTimeout(t));
+    signal?.addEventListener('abort', () =&gt; {
+      clearTimeout(t);
+      reject(new Error('aborted'));
+    });
+  });
+}
+
+const res = await withTimeout(
+  client.chat.completions.create({ model: 'gpt-4o-mini', messages, tools }, { signal }),
+  20_000 // 单次 20s 上限，超时走降级
+);
+</code></pre><h3 id="4-2-用户中断">4.2 用户中断</h3>
+<p>Web/长任务场景下，用户点了停止。用 <code>AbortController</code> 贯穿到模型与工具调用：</p>
+<pre><code class="language-ts">const ac = new AbortController();
+// 用户点停止时：ac.abort()
+// 模型调用与工具调用都接收同一个 signal，收到 abort 立即抛错并清理
+</code></pre><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">中断后务必清理在途工具</span></div><div class="co-body"><p>  用户中断时，若你只 abort 了模型调用却没取消在途工具，
+  那些工具（发邮件、写库）可能仍跑完，造成『用户以为停了、其实动作已发出』的事故。
+  把 signal 透传到每一个副作用工具调用，是并发执行的最低要求。</p>
+</div></div><h2 id="5-并发执行-无依赖工具一起跑">5. 并发执行：无依赖工具一起跑</h2>
+<p>M1 提过：无依赖工具用 <code>Promise.all</code> 并行。放到循环里，关键在『凑齐一批再回填』。</p>
+<pre><code class="language-ts">async function runTools(calls: ToolCall[], messages: Message[]) {
+  // 仅当工具间无依赖时才并行；有依赖的工具交给模型下一轮串联
+  const settled = await Promise.allSettled(
+    calls.map((c) =&gt; invokeTool(c.function.name, JSON.parse(c.function.arguments), signal))
+  );
+  for (let i = 0; i &lt; calls.length; i++) {
+    const r = settled[i];
+    const content = r.status === 'fulfilled'
+      ? r.value
+      : `工具执行失败：${(r.reason as Error).message}`;
+    messages.push({ role: 'tool', tool_call_id: calls[i].id, content });
+  }
+}
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">并发会放大下游压力</span></div><div class="co-body"><p>  并行 N 个工具 = N 次副作用同时打到下游。若工具调的是同一个脆弱服务，
+  并发可能直接把它打挂。并发前先确认下游能扛住瞬时 QPS，必要时加信号量限流。</p>
+</div></div><h2 id="6-错误恢复-把失败变成一次-tool-结果">6. 错误恢复：把失败变成一次『tool 结果』</h2>
+<p>工具失败的兜底思路与 M1 一致：可重试的退避重试，不可重试的降级回填，绝不抛 500。</p>
+<pre><code class="language-ts">async function invokeTool(name: string, args: unknown, signal: AbortSignal): Promise&lt;string&gt; {
+  for (let i = 0; i &lt; 3; i++) {
+    try {
+      return await execute(name, args, signal);
+    } catch (err: any) {
+      const retryable = err?.code === 'ECONNRESET' || err?.status &gt;= 500;
+      if (retryable &amp;&amp; i &lt; 2) {
+        await new Promise((r) =&gt; setTimeout(r, 2 ** i * 300)); // 指数退避
+        continue;
+      }
+      throw err; // 非重试类 / 重试耗尽 → 由上层转成 tool 结果回填
+    }
+  }
+  throw new Error('retry exhausted');
+}
+</code></pre><h2 id="7-与轮询式对比-何时上事件驱动">7. 与轮询式对比：何时上事件驱动</h2>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>轮询式</th>
+<th>事件驱动</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>实现复杂度</td>
+<td>低，一个循环搞定</td>
+<td>中，需状态机/调度器</td>
+</tr>
+<tr>
+<td>并发工具</td>
+<td>需手动 <code>Promise.all</code></td>
+<td>天然支持批量事件</td>
+</tr>
+<tr>
+<td>真超时/中断</td>
+<td>难，需层层透传 signal</td>
+<td>天然，事件可取消</td>
+</tr>
+<tr>
+<td>流式/边跑边吐</td>
+<td>弱</td>
+<td>强</td>
+</tr>
+<tr>
+<td>适用</td>
+<td>原型、简单 Agent</td>
+<td>生产、长任务、可打断</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">控制层与思考策略解耦</span></div><div class="co-body"><p>  主循环是『怎么跑』，M2 的 ReAct/Plan-and-Execute 是『怎么想』，二者正交。
+  同一套循环内核，既能驱动 ReAct 也能驱动 Plan-and-Execute，只是工具集与提示不同。
+  别把控制流和推理策略写死耦合在一起。</p>
+</div></div><h2 id="8-常见坑">8. 常见坑</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">没有步骤上限</span></div><div class="co-body"><p>  不设上限 = 把钱包交给模型的随机性。任何走循环的 Agent，MAX_STEPS 是必选项。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">超时只包了模型没包工具</span></div><div class="co-body"><p>  只给模型调用加超时，工具内部仍是阻塞的，整体仍可能卡死。
+  工具调用同样要走带超时的执行路径。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">并发但共享可变状态</span></div><div class="co-body"><p>  多工具并行执行时，若都往同一份上下文/全局变量写，会产生竞态。
+  工具应是纯函数式的『输入→输出』，副作用集中在对外的有限接口。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">中断后还在计费</span></div><div class="co-body"><p>  abort 后模型可能已部分生成、工具可能已部分执行。做好幂等，
+  避免『中断重跑』导致重复副作用（重复发消息、重复扣款）。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>主循环是 Agent 的中枢控制层，负责停、并行、超时、中断、恢复——这些元决策不靠模型。</li>
+<li>轮询式上手快、事件驱动生产稳；两者共享『上下文 + 工具执行』内核。</li>
+<li>步骤上限、单次超时、用户中断（AbortController 透传）是三个必备护栏。</li>
+<li>无依赖工具用 <code>Promise.all</code>/<code>allSettled</code> 并发，但注意下游压力与竞态。</li>
+<li>错误靠『退避重试 + 降级回填』消化，绝不因工具挂掉让 Agent 崩溃。</li>
+<li>控制层与推理策略（M2）解耦，同一套循环可驱动不同思考模式。</li>
+</ul>
+<h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>OpenAI 文档：<code>chat.completions.create</code> 的 <code>signal</code> 参数与流式取消</li>
+<li>MDN：<code>AbortController</code> / <code>AbortSignal</code> 中断异步任务的标准用法</li>
+<li>LangGraph Checkpointer 与中断恢复：框架如何把『中断/续跑』做成一等公民</li>
+<li>论文 <em>ReAct</em> 与 <em>Reflexion</em>：循环内推理—行动—反思范式的源头</li>
+<li>公开实践：Agent 循环的步骤预算（step budget）与成本护栏设计</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="m5-multi-agent.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">多 Agent 协作：角色编排、通信与任务分解</span></a>
+    <a class="art-pagerLink art-pagerRight" href="agent-planning.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">规划与推理：ReAct、Plan-and-Execute、反思与思维树</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

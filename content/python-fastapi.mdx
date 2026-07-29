@@ -1,0 +1,455 @@
+---
+title: FastAPI 实战：路由、依赖注入、校验、异步与 OpenAPI
+description: 用 FastAPI 搭建类型安全、自带文档的异步 API，深入路由、Pydantic 校验、依赖注入、异步视图、中间件、OpenAPI 与安全。
+category: Python
+order: 2
+difficulty: 进阶
+duration: 45 分钟
+tags: [FastAPI, Web, 异步, Pydantic, 依赖注入]
+date: 2026-07-29
+---
+
+# FastAPI 实战：路由、依赖注入、校验、异步与 OpenAPI
+
+FastAPI 是当下 Python Web 框架里「现代感」最强的一个：基于类型注解做**自动校验与文档生成**，原生支持 `async/await`，性能靠 Starlette + Pydantic 撑着，足以和 Node/Go 一较高下。这一篇带你从零搭一个能跑的异步 API，并深入路由、请求体、依赖注入、异步并发、中间件、OpenAPI 与安全这几个核心零件。
+
+## 1. 为什么选 FastAPI
+
+对比常见选择，你会明白它为什么火：
+
+| 框架 | 类型校验 | 异步 | 自动文档 | 性能 |
+|------|----------|------|----------|------|
+| Flask | 需自己接 | 弱 | 需插件 | 中 |
+| Django | 表单/DRF | 部分 | 需插件 | 中 |
+| FastAPI | Pydantic 内置 | 一等公民 | 开箱即有 | 高 |
+
+核心卖点就三条：**写注解即写文档兼校验**、**异步并发开箱即用**、**开发体验好（编辑器补全强）**。
+
+<Callout type="note" title="它到底是什么">
+  FastAPI 是 Starlette（ASGI Web 骨架）之上的一层封装：路由/请求解析/依赖注入/文档生成由它做，
+  底层并发模型是 ASGI。理解这一点，后面「异步为什么快」就有了落脚点。
+</Callout>
+
+## 2. 最小应用
+
+一个 FastAPI 应用就是个 `FastAPI()` 实例，往上面挂路由即可。
+
+```python
+# main.py
+from fastapi import FastAPI
+
+app = FastAPI()   # 应用实例，uvicorn 加载的就是它（main:app）
+
+@app.get("/")            # 装饰器声明 HTTP 方法与路径
+async def root():
+    return {"msg": "hello world"}
+```
+
+启动：`uvicorn main:app --reload`。访问 `http://127.0.0.1:8000/` 看到 JSON；访问 `/docs` 看到自动生成的交互式 Swagger UI。
+
+<Callout type="tip" title="app:app 是什么">
+  `uvicorn main:app` 里前一个 `main` 是模块文件名（main.py），后一个 `app` 是该模块里
+  那个 `FastAPI` 实例的变量名。写成 `uvicorn mymodule:myapp` 也行，要对应上。
+</Callout>
+
+## 3. 路径参数与查询参数
+
+路径参数写在 `{}` 里，查询参数直接当函数参数，二者都由类型注解自动解析与校验。
+
+```python
+from typing import Optional
+
+@app.get("/items/{item_id}")
+async def read_item(item_id: int, q: Optional[str] = None, limit: int = 10):
+    # item_id 是路径参数，FastAPI 自动把字符串转成 int，转失败返回 422
+    # q / limit 是查询参数：?q=xxx&limit=5
+    return {"item_id": item_id, "q": q, "limit": limit}
+```
+
+类型注解在这里是**活的**：传 `item_id=abc` 这类无法转 int 的值，框架直接返回 422 并告诉你哪错——不用你手写校验逻辑。
+
+<Callout type="note" title="路径 vs 查询参数怎么选">
+  路径参数用于「定位资源」（如 /users/123 的 123）；查询参数用于「过滤/分页」
+  （如 ?page=2&size=20）。这是 REST 风格的基本约定。注意路径参数必填，查询参数可给默认值。
+</Callout>
+
+## 4. Pydantic 校验深入
+
+请求体用 Pydantic 模型描述，FastAPI 负责解析 JSON、校验字段、把 Python 对象交给你。这是在 Python 里写 API 最舒服的地方。
+
+```python
+from pydantic import BaseModel, Field, field_validator
+
+class Item(BaseModel):
+    name: str = Field(..., min_length=1)   # ... 表示必填；带校验规则
+    price: float = Field(..., gt=0)         # 价格必须大于 0
+    tags: list[str] = []                    # 可选，默认空列表
+
+    @field_validator("name")
+    def name_not_blank(cls, v: str) -> str:
+        # 跨字段/复杂规则用校验器，而非单纯 Field 约束
+        if v.strip() != v:
+            raise ValueError("name 不应带首尾空格")
+        return v
+```
+
+### 4.1 嵌套模型与泛型
+
+```python
+from typing import List
+from pydantic import BaseModel
+
+class Address(BaseModel):
+    city: str
+    street: str
+
+class User(BaseModel):
+    name: str
+    addresses: List[Address]   # 嵌套模型，FastAPI 递归校验
+
+# 用 TypeAdapter / 泛型可进一步抽象，详见 Pydantic 文档（以官方文档为准，API 易变）
+```
+
+### 4.2 响应模型
+
+用 `response_model` 约束返回结构，既能自动过滤掉不该外泄的字段（如密码），又能生成准确的响应文档。
+
+```python
+class ItemOut(BaseModel):
+    name: str
+    price: float
+
+@app.post("/items/", response_model=ItemOut)
+async def create_item(item: Item):
+    # 哪怕内部对象还有别的字段，返回时也只保留 ItemOut 声明的
+    return {"name": item.name, "price": item.price, "secret": "不出现"}
+```
+
+<Callout type="warn" title="校验失败默认 422">
+  Pydantic 校验失败会返回 422 Unprocessable Entity，并给出结构化错误（哪字段、为什么）。
+  前端要据此做友好提示；不要吞掉错误返回 200 带 error 字段——那会破坏 HTTP 语义与 OpenAPI 契约。
+</Callout>
+
+## 5. 依赖注入 `Depends` 深入
+
+依赖注入（DI）把「可复用的前置逻辑」抽出来：鉴权、取数据库会话、读公共配置等。写法是用 `Depends` 把一个可调用对象声明成依赖。
+
+```python
+from fastapi import Depends, HTTPException
+
+def get_current_user(token: str = ""):
+    if token != "secret":
+        raise HTTPException(status_code=401, detail="未授权")
+    return {"user": "alice"}
+
+@app.get("/me")
+async def me(user: dict = Depends(get_current_user)):
+    # FastAPI 先调用 get_current_user，把结果注入到 user 参数
+    return user
+```
+
+### 5.1 yield 依赖：请求级生命周期
+
+用 `yield` 的依赖适合管理「建—用—拆」的资源（如 DB 会话），请求结束自动走 `finally` 清理：
+
+```python
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db        # 请求内注入 db；请求完成后执行下面的关闭
+    finally:
+        db.close()
+```
+
+### 5.2 子依赖与缓存
+
+依赖还能再 `Depends` 别的依赖，形成链；同一请求内对同一无参依赖默认只执行一次（`use_cache`）：
+
+```python
+def get_token(authorization: str = Header(None)) -> str:
+    if not authorization:
+        raise HTTPException(401)
+    return authorization
+
+def get_user(token: str = Depends(get_token)):   # 嵌套子依赖
+    return decode(token)
+```
+
+<Callout type="tip" title="依赖让测试变简单">
+  测试时直接把 mock 依赖传进去即可，不用走真实鉴权/数据库：
+  `app.dependency_overrides[get_db] = lambda: FakeSession()`。
+  这是 FastAPI 测试友好的核心原因之一。
+</Callout>
+
+## 6. 为什么 `async def` 视图能并发
+
+这是 FastAPI 性能的关键。单进程里多个请求同时打到异步视图时：某个请求 `await` 挂起等 IO，事件循环**立刻切去处理下一个请求**，而不是干等。
+
+```python
+import asyncio
+
+@app.get("/slow")
+async def slow():
+    await asyncio.sleep(1)   # 模拟一次 IO 等待（查库、调外部 API）
+    return {"ok": True}
+```
+
+反例是同步写法：
+
+```python
+import time
+
+@app.get("/slow-sync")
+def slow_sync():
+    time.sleep(1)   # 这是真阻塞！整个线程被占住，别的请求只能排队
+    return {"ok": True}
+```
+
+<Callout type="danger" title="同步阻塞拖垮事件循环">
+  在 async 应用里写了同步阻塞调用（如 `time.sleep`、未异步化的 `requests.get`、
+  重 CPU 计算），会**卡住整个事件循环**——所有并发请求一起被拖慢，FastAPI 的并发优势荡然无存。
+  规则：IO 等待一律用异步库（如 `httpx.AsyncClient`）；CPU 重活丢给
+  `BackgroundTasks` 或 `asyncio.to_thread` / `ProcessPoolExecutor`。千万别拿 `time.sleep` 当 `await asyncio.sleep` 用。
+</Callout>
+
+### 6.1 后台任务
+
+不需要立即返回给客户端的活（发邮件、写日志），用 `BackgroundTasks`：
+
+```python
+from fastapi import BackgroundTasks
+
+def send_email(to: str): ...
+
+@app.post("/notify")
+async def notify(background: BackgroundTasks, to: str):
+    background.add_task(send_email, to)   # 响应返回后才在后台执行
+    return {"queued": True}
+```
+
+## 7. 中间件、CORS 与异常处理器
+
+中间件在每个请求进入路由前、响应返回前统一插一脚，适合做日志、计时、跨域等横切逻辑。
+
+```python
+from fastapi import Request
+import time
+
+@app.middleware("http")
+async def add_timing(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)   # 把请求交给后续处理（含路由）
+    response.headers["X-Process-Time"] = str(time.perf_counter() - start)
+    return response
+```
+
+跨域（CORS）是前端调接口时绕不开的，FastAPI 内置 `CORSMiddleware`：
+
+```python
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],  # 允许的前端源，生产别写 *
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+```
+
+<Callout type="warn" title="生产别开 allow_origins=['*']">
+  开发图省事常写 `*` 允许所有源，生产环境这等于对 CSRF 类攻击敞开大门。
+  只用明确的白名单源，并配合 `allow_credentials` 的注意事项（带凭据时不能写 *）。
+</Callout>
+
+### 7.1 统一异常处理
+
+用 `@app.exception_handler` 或 `@app.exception_handler(HTTPException)` 把异常转成一致的响应结构：
+
+```python
+from fastapi import HTTPException
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(HTTPException)
+async def http_error(request, exc: HTTPException):
+    return JSONResponse(status_code=exc.status_code, content={"error": exc.detail})
+```
+
+## 8. OpenAPI 与文档
+
+FastAPI 自动生成 OpenAPI 规范，并据此提供两套交互文档：
+
+- `/docs`：Swagger UI（默认）
+- `/redoc`：ReDoc
+- `/openapi.json`：机器可读的规范，可喂给代码生成器（前端 client、Postman）
+
+你还能用 `FastAPI(title=..., version=..., description=...)` 丰富元信息，用 `tags` 给路由分组、用 `summary`/`response_description` 让文档更可读。
+
+<Callout type="tip" title="文档即契约">
+  因为文档直接由类型注解 + Pydantic 模型生成，它永远和代码一致——不会出现「文档说 A、代码做 B」。
+  把文档当成前后端协作的契约来维护，能省大量沟通成本。
+</Callout>
+
+## 9. 安全：API Key 与 OAuth2
+
+FastAPI 的 `fastapi.security` 提供开箱即用的安全方案。
+
+```python
+from fastapi.security import APIKeyHeader
+from fastapi import Security, HTTPException
+
+api_key_header = APIKeyHeader(name="X-API-Key")
+
+async def require_key(key: str = Security(api_key_header)):
+    if key != "secret":
+        raise HTTPException(status_code=403, detail="无效密钥")
+    return key
+
+@app.get("/protected", dependencies=[Depends(require_key)])
+async def protected():
+    return {"ok": True}
+```
+
+OAuth2 密码流/Bearer 令牌同理，框架提供 `OAuth2PasswordBearer` 等 helper（以官方文档为准，API 易变）。
+
+## 10. 测试：TestClient 与 httpx
+
+写接口测试可用 `fastapi.testclient.TestClient`（基于 httpx），直接同步调用，不必起真实服务：
+
+```python
+from fastapi.testclient import TestClient
+from main import app
+
+def test_root():
+    c = TestClient(app)
+    assert c.get("/").json()["msg"] == "hello"
+
+def test_create_item():
+    c = TestClient(app)
+    r = c.post("/items/", json={"name": "键盘", "price": 99})
+    assert r.status_code == 200
+    assert r.json()["name"] == "键盘"
+```
+
+<Callout type="note" title="依赖覆盖便于测试">
+  测试 DB/鉴权时覆盖依赖：`app.dependency_overrides[get_db] = lambda: FakeDB()`，
+  测完 `app.dependency_overrides.clear()`。比起 mock 整个请求栈，这更符合 FastAPI 设计。
+</Callout>
+
+## 11. 单文件可运行骨架
+
+把下面整段存成 `main.py`，装上依赖即可跑通所有零件：
+
+```python
+# main.py —— FastAPI 可运行骨架（路由/请求体/依赖/中间件/CORS/安全 全包含）
+from fastapi import FastAPI, Depends, HTTPException, Request, Security
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
+from pydantic import BaseModel, Field
+import time
+
+app = FastAPI(title="AgentLab Demo API")
+
+# ---- CORS：允许本地前端源 ----
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ---- 请求体模型 ----
+class Item(BaseModel):
+    name: str = Field(..., min_length=1)
+    price: float = Field(..., gt=0)
+
+# ---- 依赖：假鉴权 ----
+def get_current_user(token: str = ""):
+    if token != "secret":
+        raise HTTPException(status_code=401, detail="未授权")
+    return {"user": "alice"}
+
+# ---- 安全：API Key ----
+api_key_header = APIKeyHeader(name="X-API-Key")
+
+async def require_key(key: str = Security(api_key_header)):
+    if key != "secret":
+        raise HTTPException(status_code=403, detail="无效密钥")
+    return key
+
+# ---- 中间件：加处理耗时头 ----
+@app.middleware("http")
+async def add_timing(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    response.headers["X-Process-Time"] = f"{time.perf_counter() - start:.4f}"
+    return response
+
+# ---- 路由 ----
+@app.get("/")
+async def root():
+    return {"msg": "hello"}
+
+@app.get("/items/{item_id}")
+async def read_item(item_id: int, q: str = None):
+    return {"item_id": item_id, "q": q}
+
+@app.post("/items/", dependencies=[Depends(require_key)])
+async def create_item(item: Item, user: dict = Depends(get_current_user)):
+    return {"created_by": user["user"], "name": item.name}
+
+# 运行：uvicorn main:app --reload  → 打开 http://127.0.0.1:8000/docs
+```
+
+## 12. 运行说明
+
+```bash
+pip install fastapi uvicorn
+uvicorn main:app --reload
+# 接口根：  http://127.0.0.1:8000/
+# 交互文档：http://127.0.0.1:8000/docs
+```
+
+```bash
+curl -X POST "http://127.0.0.1:8000/items/" \
+  -H "X-API-Key: secret" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"键盘","price":99}'
+```
+
+## 13. 适用与不适用
+
+| 场景 | 是否适合 FastAPI |
+|------|------------------|
+| JSON API / 微服务后端 | 非常适合 |
+| 需要高并发 IO（网关、聚合层） | 非常适合 |
+| 重 CPU 计算服务 | 不太适合（需下沉到 worker/其他语言） |
+| 传统服务端渲染页面 | 不如 Django/SSR 框架 |
+| 极简脚本 | 略重，Flask 更轻 |
+
+<Callout type="warn" title="别把 FastAPI 当全能框架">
+  FastAPI 不内置 ORM、模板引擎、Admin。数据库用 SQLAlchemy/Tortoise，模板用 Jinja，
+  或直接做纯 API 配合前端框架。它的定位是「高性能 API 层」，不是全家桶。
+</Callout>
+
+## 小结
+
+- FastAPI 把类型注解同时用作「校验」和「文档」，写一份注解两处受益；底层是 Starlette(ASGI)。
+- 路径/查询参数靠注解自动解析校验；请求体用 Pydantic 模型，校验逻辑与业务解耦，`field_validator` 处理复杂规则。
+- `response_model` 控制对外字段、防数据泄漏；`Depends` 做依赖注入（含 yield 生命周期与子依赖缓存），抽离鉴权/DB 等横切逻辑且便于测试。
+- 异步并发的命门在「别阻塞事件循环」：IO 用异步库，同步阻塞会拖垮全部请求；重活走 `BackgroundTasks`/`to_thread`。
+- 中间件做统一前置/后置处理，CORS 用内置 `CORSMiddleware` 且生产要限定源白名单；异常处理器统一响应结构。
+- `/docs` 自带交互文档，且文档即契约；安全用 `fastapi.security` 的 API Key/OAuth2 helper。
+
+<Callout type="note" title="下一步">
+  服务能跑了，但怎么让它「可维护、可交付」？虚拟环境、依赖锁定、测试、Lint、打包
+  这些工程化动作，见 Python 工程化那篇。
+</Callout>
+
+## 延伸阅读
+
+- [FastAPI 官方文档](https://fastapi.tiangolo.com/) — 路由/依赖/安全权威参考
+- [Pydantic 文档](https://docs.pydantic.dev/) — 校验与模型（以官方文档为准，API 易变）
+- [Starlette 文档](https://www.starlette.io/) — ASGI 底层机制
+- [uvicorn 文档](https://www.uvicorn.org/) — ASGI 服务器与部署参数
+- [MDN: CORS](https://developer.mozilla.org/zh-CN/docs/Web/HTTP/CORS) — 跨域原理
+- [OpenAPI 规范](https://spec.openapis.org/oas/latest.html) — API 文档契约标准

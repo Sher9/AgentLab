@@ -1,0 +1,208 @@
+---
+title: 数据清洗与质量门禁
+description: 讲透去重/标准化/异常值处理的手段与取舍，落地自动化的数据质量门禁与校验，并对比多种去重与异常检测方案，给出可运行骨架。
+category: 数据处理
+order: 2
+difficulty: 进阶
+duration: 20 分钟
+tags: [数据清洗, 数据质量, 去重, 异常检测, 质量门禁]
+date: 2026-07-29
+---
+
+# 数据清洗与质量门禁
+
+数据科学里有句老话：『垃圾进，垃圾出』。对 AI 工程尤其如此——评测集里混着重复样本，模型指标会被虚假抬高；知识库文档没去重，检索会反复命中同一段；训练语料有异常值，分布被带偏。**数据清洗**是把脏数据变干净，**质量门禁**是在管线入口拦住不达标的数据，二者共同决定下游一切产出的可信度。
+
+这篇面向有经验的开发者，聚焦：**去重**、**标准化**、**异常检测**三大动作，以及如何用**质量门禁**把校验自动化、可回归。
+
+## 1. 去重：不止是精确匹配
+
+去重的第一层是精确去重，但真实数据里大量重复是『语义重复』——内容相同、写法不同。
+
+```python
+import pandas as pd
+
+df = pd.DataFrame({
+    "id":   [1, 2, 3, 4],
+    "text": ["RAG 很有用", "rag 很有用", "RAG很有用。", "完全无关的内容"],
+})
+
+# 1) 精确去重：整列完全一样才删，太弱
+exact = df.drop_duplicates("text")
+
+# 2) 归一化后去重：小写 + 去标点空格，能抓到『rag 很有用』这种变体
+import re
+def norm(s: str) -> str:
+    return re.sub(r"\s+", "", s.lower()).strip("。.，,")
+df["_norm"] = df["text"].map(norm)
+fuzzy = df.drop_duplicates("_norm").drop(columns="_norm")
+
+# 3) 语义去重：用 embedding 余弦相似度 > 阈值判定重复，开销大但能抓改写
+#    emb = embed(df["text"]); 两两 cos_sim，高于 0.95 视为重复（见 RAG 相关章节）
+```
+
+<Callout type="note" title="去重要看业务主键还是内容">
+  按主键去重（如订单 id）保证『每条记录唯一』；按内容去重保证『每段信息唯一』。
+  评测集、知识库通常要**内容级去重**，否则检索/评测会被重复样本注水。
+  两者不冲突，常常先后做：先按主键，再按归一化内容。
+</Callout>
+
+## 2. 标准化：把混乱的写法归一
+
+真实数据来自不同系统、不同人录入，同一含义有无数写法。标准化是清洗里最琐碎也最值钱的部分。
+
+```python
+# 枚举归一：性别、状态、类别最典型
+gender_map = {"M":"male","男":"male","F":"female","女":"female"}
+df["gender"] = df["gender"].astype(str).str.strip().str.lower().map(gender_map).fillna("unknown")
+
+# 数值单位归一：金额统一到『分』或『元』
+df["price_yuan"] = pd.to_numeric(df["price_raw"].astype(str).str.replace("元",""), errors="coerce")
+
+# 时间归一：各种格式统一成 UTC（AI 管线跨时区必做）
+df["ts"] = pd.to_datetime(df["time_raw"], utc=True, errors="coerce")
+```
+
+<Callout type="warn" title="标准化别悄悄丢信息">
+  `fillna("unknown")` 兜底虽方便，但会把『无法解析』和『确实未知』混为一谈。
+  对关键字段，建议先统计解析失败率，失败率异常高说明上游出了结构性问题，
+  应报警而非默默填 unknown 掩盖。
+</Callout>
+
+## 3. 异常检测：找出的不只是错误
+
+异常值可能是录入错误（价格 -1、年龄 999），也可能是真实但极端的事件（双十一销量峰值）。清洗要能区分二者。
+
+| 方法 | 思路 | 适用 |
+|------|------|------|
+| 统计阈值 | 超出 `[p1, p99]` 或 `均值±3σ` | 分布近似正态、单变量 |
+| IQR | 超出 `Q1-1.5IQR ~ Q3+1.5IQR` | 分布偏态、稳健 |
+| 业务规则 | 年龄 0–120、价格 ≥ 0 | 有明确物理含义的字段 |
+| 隔离森林 | 高维联合异常 | 多变量、非线性 |
+
+```python
+# IQR 法：对偏态分布比 3σ 更稳健
+q1, q3 = df["price"].quantile([0.25, 0.75])
+iqr = q3 - q1
+lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+outliers = df[(df["price"] < lo) | (df["price"] > hi)]
+
+# 业务规则优先：硬约束先拦，再做统计检测
+bad = df[(df["age"] < 0) | (df["age"] > 120) | (df["price"] < 0)]
+```
+
+<Callout type="tip" title="异常先隔离别急着删">
+  把异常样本单独导出到 `quarantine` 表/文件，而不是直接 `drop`。
+  既能让主流程继续，又保留取证资格——事后发现是『真实大单』还能追回。
+</Callout>
+
+## 4. 质量门禁：把校验自动化
+
+清洗逻辑写完后，真正的关键是**不让脏数据悄悄流向下游**。质量门禁在管线入口做断言，不达标就失败并报警，而不是带病运行。
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class CheckResult:
+    name: str
+    passed: bool
+    detail: str
+
+def quality_gate(df: pd.DataFrame) -> list[CheckResult]:
+    results = []
+    # 1) 非空约束
+    null_ratio = df["text"].isna().mean()
+    results.append(CheckResult("text非空率<5%", null_ratio < 0.05, f"null={null_ratio:.2%}"))
+    # 2) 去重后留存率（重复太多说明上游有问题）
+    dup_ratio = 1 - df["_norm"].nunique() / len(df)
+    results.append(CheckResult("重复率<10%", dup_ratio < 0.10, f"dup={dup_ratio:.2%}"))
+    # 3) 数值范围
+    results.append(CheckResult("price>=0", (df["price"] >= 0).all(), ""))
+    return results
+
+def run_gate(df):
+    for r in quality_gate(df):
+        if not r.passed:
+            # 真实场景在此 raise / 发告警，阻断下游
+            raise RuntimeError(f"质量门禁未通过：{r.name} {r.detail}")
+```
+
+<Callout type="danger" title="门禁失败要阻断而非降级通过">
+  门禁的意义是『拦』。常见错误是写成 `warn` 然后继续跑——一次两次没问题，
+  等真出事时已带病跑了成百上千条脏数据。门禁失败=流程失败，必须阻断并人工确认。
+</Callout>
+
+## 5. 数据校验：Schema 与分布双保险
+
+门禁之外，用 **schema 校验**挡住结构错误（字段缺失、类型不符），用 **分布校验**挡住语义漂移（某列均值突然翻倍）。
+
+```python
+# Schema 校验：用 pydantic / pandera 声明式校验，比手写 if 更稳
+# 以 pandera 为例（伪代码，API 以官方文档为准）
+# import pandera as pa
+# schema = pa.DataFrameSchema({
+#     "text":  pa.Column(str, pa.Check(lambda s: s.str.len() > 0)),
+#     "price": pa.Column(float, pa.Check.ge(0)),
+# })
+# schema.validate(df)   # 不通过直接抛异常
+
+# 分布校验：和历史基线比，均值/缺失率漂移超阈值就报警
+# baseline_mean = 12.3
+# if abs(df["price"].mean() - baseline_mean) / baseline_mean > 0.5:
+#     alert("price 均值漂移超 50%")
+```
+
+## 6. 对比：清洗策略怎么选
+
+| 维度 | 规则/阈值（白名单） | 统计/IQR | 模型（隔离森林/embedding） |
+|------|-------------------|----------|--------------------------|
+| 可解释性 | 高 | 中 | 低 |
+| 成本 | 极低 | 低 | 高 |
+| 抓未知异常 | 弱 | 中 | 强 |
+| 上线速度 | 快 | 快 | 慢 |
+
+经验法则：**先用规则拦明显错误，再用统计抓分布异常，模型法只在规则/统计覆盖不到时上**。不要一上来就上复杂模型，多数脏数据用规则就能解决 80%。
+
+## 7. 运行方式
+
+```bash
+pip install pandas
+python clean_pipeline.py
+```
+
+最小可运行骨架（归一化去重 + IQR 异常隔离 + 质量门禁）：
+
+```python
+import pandas as pd, re
+
+df = pd.DataFrame({"text":["RAG 很有用","rag 很有用","X"], "price":[10,10,-1]})
+
+# 归一化去重
+df["_n"] = df["text"].str.lower().str.replace(r"\s+","",regex=True)
+df = df.drop_duplicates("_n").drop(columns="_n")
+
+# IQR 异常隔离
+q1,q3 = df["price"].quantile([.25,.75]); iqr=q3-q1
+bad = df[(df["price"]<q1-1.5*iqr)|(df["price"]>q3+1.5*iqr)]
+clean = df[~df.index.isin(bad.index)]
+
+print("异常:", len(bad), "干净:", len(clean))
+```
+
+## 小结
+
+- 去重分两层：精确去重（按主键）+ 归一化/语义去重（按内容）；评测集、知识库必须内容级去重。
+- 标准化把混乱写法归一，但兜底 `fillna` 会掩盖上游结构性问题，要监控解析失败率。
+- 异常检测先隔离（quarantine）别急着删，保留取证资格；业务规则优先于统计。
+- 质量门禁要**阻断**而非降级通过，失败=流程失败。
+- Schema 校验挡结构错误，分布校验挡语义漂移，二者互补。
+- 策略选型：规则 → 统计 → 模型，由简到繁，别一上来就堆模型。
+
+## 延伸阅读 / 参考
+
+- pandas 缺失与重复处理：https://pandas.pydata.org/docs/user_guide/missing_data.html
+- pandera（DataFrame Schema 校验）：https://pandera.readthedocs.io/
+- Great Expectations（数据质量平台）：https://greatexpectations.io/
+- IQR 与异常检测科普：https://en.wikipedia.org/wiki/Interquartile_range
+- scikit-learn 隔离森林：https://scikit-learn.org/stable/modules/outlier_detection.html

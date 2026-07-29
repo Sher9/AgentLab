@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>uni-app 跨端开发实战 · AgentLab</title>
+  <meta name="description" content="理解 uni-app 的跨端编译原理、条件编译、统一组件与 API，写出可运行骨架并掌握多端发布与常见坑。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="uni-app 跨端开发实战 · AgentLab"/>
+  <meta property="og:description" content="理解 uni-app 的跨端编译原理、条件编译、统一组件与 API，写出可运行骨架并掌握多端发布与常见坑。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#frontend">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🎨</span>
+        <span class="art-moduleName">前端工程</span>
+        <span class="art-diff">进阶</span>
+        <span class="art-dur">25 分钟</span>
+      </div>
+      <h1 class="art-title">uni-app 跨端开发实战</h1>
+      <p class="art-desc">理解 uni-app 的跨端编译原理、条件编译、统一组件与 API，写出可运行骨架并掌握多端发布与常见坑。</p>
+      <div class="art-tags"><span class="art-tag">#uni-app</span><span class="art-tag">#跨端</span><span class="art-tag">#小程序</span><span class="art-tag">#Vue</span></div>
+    </div>
+    <div class="prose"><h1>uni-app 跨端开发实战</h1>
+<p>uni-app 用 <strong>Vue 语法</strong>写一套代码，编译到多个平台：H5、微信/支付宝/抖音等小程序、App（iOS/Android）、乃至快应用。核心是「一套源码 + 条件编译 + 平台适配层」，让你不用为每个端各维护一套工程。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">它解决什么</span></div><div class="co-body"><p>  小程序、H5、App 的运行时和 API 各不相同。uni-app 提供<strong>统一的组件标签（<code>&lt;view&gt;</code>/<code>&lt;text&gt;</code>）和统一的 JS API（<code>uni.xxx</code>）</strong>，
+  编译时再把它们翻译成各平台的原生写法，避免重复开发。</p>
+</div></div><h2 id="1-跨端编译原理">1. 跨端编译原理</h2>
+<p>uni-app 的编译器（基于 Vite/Rollup）把 <code>.vue</code> 源文件转译成目标端代码：</p>
+<ul>
+<li>编译到<strong>小程序</strong>：每个页面/组件变成小程序规范的四件套（<code>wxml</code>/<code>wxss</code>/<code>js</code>/<code>json</code>）；</li>
+<li>编译到<strong>H5</strong>：走标准 Web，组件映射成 HTML 标签；</li>
+<li>编译到 <strong>App</strong>：通过 <code>web-view</code> 渲染或原生渲染（nvue）承载。</li>
+</ul>
+<p>你写的始终是 Vue 单文件组件，差异由编译器与运行时屏蔽。</p>
+<pre><code class="language-vue">&lt;!-- pages/index/index.vue —— 一个跨端页面 --&gt;
+&lt;script setup&gt;
+import { ref } from 'vue';
+
+const title = ref('你好 uni-app');
+
+// uni.navigateTo 是统一 API，编译到各端变成对应跳转
+function goDetail() {
+  uni.navigateTo({ url: '/pages/detail/detail' });
+}
+&lt;/script&gt;
+
+&lt;template&gt;
+  &lt;!-- 用 uni 的 view/text 而非 div/span，保证各端可编译 --&gt;
+  &lt;view class="card" @click="goDetail"&gt;
+    &lt;text&gt;{{ title }}&lt;/text&gt;
+  &lt;/view&gt;
+&lt;/template&gt;
+
+&lt;style&gt;
+.card { padding: 20rpx; } /* rpx 是响应式单位，按屏宽自适应 */
+&lt;/style&gt;
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">rpx 自适应利器</span></div><div class="co-body">  <code>rpx</code> 把屏幕宽固定为 750 份，写 <code>750rpx</code> 即满屏宽。不同设备自动缩放，
+<p>  比写死 <code>px</code> 更适合多端。但 1rpx 边框在部分机型会消失，必要时回退 px。</p>
+</div></div><h2 id="2-条件编译-按端差异">2. 条件编译：按端差异</h2>
+<p>一套代码跑多端，总有平台特有能力（如微信的开放能力、App 的原生插件）。用<strong>条件编译注释</strong>按平台保留代码：</p>
+<pre><code class="language-js">// 条件编译语法：以注释形式存在，编译器只保留命中平台的分支
+// #ifdef MP-WEIXIN
+console.log('这段只在微信小程序编译进去');
+wx.requestSubscribeMessage({ /* 微信专属订阅消息 */ });
+// #endif
+
+// #ifdef APP-PLUS
+console.log('这段只在 App 端编译进去');
+plus.runtime.quit(); // 5+ 引擎的 App 专属 API
+// #endif
+
+// #ifndef H5
+console.log('除 H5 外的所有端都编译这段');
+// #endif
+</code></pre><p>模板与样式同样支持条件编译：</p>
+<pre><code class="language-vue">&lt;!-- #ifdef MP-WEIXIN --&gt;
+&lt;ad unit-id="xxxx"&gt;&lt;/ad&gt; &lt;!-- 仅微信小程序显示广告组件 --&gt;
+&lt;!-- #endif --&gt;
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">别滥用条件编译</span></div><div class="co-body"><p>  条件分支一多，同一份源码在不同端行为分叉，调试成本陡增。优先用 <code>uni.xxx</code> 统一 API；
+  只有真没有跨端能力时才条件编译，并集中收敛到单独文件/函数里。</p>
+</div></div><h2 id="3-组件与-api-的统一层">3. 组件与 API 的统一层</h2>
+<p>uni-app 提供跨端组件（<code>&lt;view&gt;</code> <code>&lt;text&gt;</code> <code>&lt;image&gt;</code> <code>&lt;scroll-view&gt;</code> 等）和跨端 API（<code>uni.request</code> <code>uni.navigateTo</code> <code>uni.getStorage</code> 等）。</p>
+<pre><code class="language-js">// 统一网络请求：编译后各端映射到原生请求实现
+uni.request({
+  url: 'https://api.example.com/user',
+  method: 'GET',
+  success: (res) =&gt; console.log(res.data),
+  fail: (err) =&gt; console.error(err),
+});
+
+// 本地存储也是统一 API，不用关心端上底层是 wx.storage 还是 localStorage
+uni.setStorageSync('token', 'abc');
+const token = uni.getStorageSync('token');
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">与原生小程序语法的映射</span></div><div class="co-body"><p>  习惯 <code>wx.xxx</code> 的开发者注意：uni-app 用 <code>uni.xxx</code> 统一封装，参数基本对齐微信小程序，
+  但个别平台专属字段需查文档。API 易变，以官方文档为准。</p>
+</div></div><h2 id="4-多端发布">4. 多端发布</h2>
+<p>工程配置集中在 <code>manifest.json</code>（应用名、图标、各端 appid 等），各端编译入口在 <code>pages.json</code>（路由与窗口样式）。</p>
+<pre><code class="language-jsonc">// pages.json —— 路由与全局样式（编译到各端对应配置）
+{
+  "pages": [
+    { "path": "pages/index/index", "style": { "navigationBarTitleText": "首页" } },
+    { "path": "pages/detail/detail", "style": { "navigationBarTitleText": "详情" } }
+  ],
+  "globalStyle": { "navigationBarBackgroundColor": "#ffffff" }
+}
+</code></pre><pre><code class="language-bash"># 常用编译命令（基于 cli，具体以所用版本为准）
+npm run dev:mp-weixin   # 开发微信小程序（产物在 dist/dev/mp-weixin）
+npm run build:h5        # 构建 H5 静态站
+npm run build:app-plus  # 构建 App 包（需 HbuilderX 或云打包）
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">小程序要先配 appid</span></div><div class="co-body"><p>  编译到具体小程序平台前，需在 <code>manifest.json</code> 填对应平台的 appid，并安装该平台开发者工具。
+  H5 端则像普通 Web 工程一样起本地服务预览。</p>
+</div></div><h2 id="5-方案对比">5. 方案对比</h2>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>uni-app</th>
+<th>Taro</th>
+<th>Flutter</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>语法</td>
+<td>Vue</td>
+<td>React</td>
+<td>Dart</td>
+</tr>
+<tr>
+<td>渲染</td>
+<td>各端原生/Web</td>
+<td>各端原生/Web</td>
+<td>自绘 Skia 引擎</td>
+</tr>
+<tr>
+<td>性能</td>
+<td>中（依赖端能力）</td>
+<td>中</td>
+<td>高（自绘）</td>
+</tr>
+<tr>
+<td>小程序支持</td>
+<td>强（官方优先）</td>
+<td>强</td>
+<td>弱（需桥接）</td>
+</tr>
+<tr>
+<td>上手成本</td>
+<td>低（Vue 党友好）</td>
+<td>低（React 党）</td>
+<td>高（新语言）</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">怎么选</span></div><div class="co-body"><p>  Vue 团队、重小程序覆盖 → uni-app；React 团队 → Taro；追求极致性能与原生体验、能接受 Dart → Flutter。
+  纯小程序且要深度用平台能力，直接用原生小程序也未必更慢。</p>
+</div></div><h2 id="6-常见坑">6. 常见坑</h2>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">各端 API 能力不对等</span></div><div class="co-body"><p>  并非所有 <code>uni.xxx</code> 在每个端都可用。编译不报错、运行才崩是最常见陷阱。
+  上线前务必在<strong>每个目标端</strong>真机验证，别只跑 H5。</p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">小程序体积包限制</span></div><div class="co-body"><p>  微信小程序主包有体积上限（常见 2MB，分包后可扩展）。别把大图、整库塞进主包，
+  用分包加载、CDN 资源、按需引入。超限会上传失败。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">样式兼容性</span></div><div class="co-body"><p>  小程序不支持部分 Web CSS（如 <code>*</code> 通配、<code>position: fixed</code> 在某些组件内异常）。
+  用 <code>rpx</code>、避免过于花哨的选择器，复杂布局优先用 flex。以官方文档的样式限制为准。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>uni-app 用 Vue 写一套源码，经编译器翻译成 H5/小程序/App 多端代码。</li>
+<li>跨端靠统一组件（<code>&lt;view&gt;</code> 等）与统一 API（<code>uni.xxx</code>）；平台差异用条件编译 <code>#ifdef</code> 收敛。</li>
+<li>工程配置在 <code>manifest.json</code> 与 <code>pages.json</code>；发布前逐端真机验证。</li>
+<li>红线：别滥用条件编译、各端能力不等要实测、注意小程序包体积与样式兼容。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  想把界面工程化得更现代，可参考 <strong>fe-nuxtjs</strong> 的组合式写法；
+  做桌面端则看 <strong>fe-electron</strong> 的进程模型。</p>
+</div></div><h2 id="延伸阅读">延伸阅读</h2>
+<ul>
+<li>uni-app 官方文档：<a href="https://uniapp.dcloud.net.cn">https://uniapp.dcloud.net.cn</a></li>
+<li>条件编译说明：<a href="https://uniapp.dcloud.net.cn/tutorial/platform.html">https://uniapp.dcloud.net.cn/tutorial/platform.html</a></li>
+<li>pages.json 配置：<a href="https://uniapp.dcloud.net.cn/collocation/pages.html">https://uniapp.dcloud.net.cn/collocation/pages.html</a></li>
+<li>小程序分包：<a href="https://developers.weixin.qq.com/miniprogram/dev/framework/subpackages.html">https://developers.weixin.qq.com/miniprogram/dev/framework/subpackages.html</a></li>
+<li>Taro（React 系替代）：<a href="https://taro-docs.jd.com">https://taro-docs.jd.com</a></li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="fe-electron.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">Electron 桌面应用开发</span></a>
+    <span></span>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

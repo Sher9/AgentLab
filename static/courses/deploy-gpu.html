@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>GPU 推理服务：模型服务化、批处理、显存优化与多卡 · AgentLab</title>
+  <meta name="description" content="把大模型推理服务化部署到 GPU——讲透服务化框架、连续批处理、显存优化（量化/KV Cache/分页注意力）、多卡并行策略，以及 K8s 上 GPU 节点与资源调度的可运行骨架与踩坑。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="GPU 推理服务：模型服务化、批处理、显存优化与多卡 · AgentLab"/>
+  <meta property="og:description" content="把大模型推理服务化部署到 GPU——讲透服务化框架、连续批处理、显存优化（量化/KV Cache/分页注意力）、多卡并行策略，以及 K8s 上 GPU 节点与资源调度的可运行骨架与踩坑。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#deploy">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🚀</span>
+        <span class="art-moduleName">部署运维</span>
+        <span class="art-diff">高级</span>
+        <span class="art-dur">42 分钟</span>
+      </div>
+      <h1 class="art-title">GPU 推理服务：模型服务化、批处理、显存优化与多卡</h1>
+      <p class="art-desc">把大模型推理服务化部署到 GPU——讲透服务化框架、连续批处理、显存优化（量化/KV Cache/分页注意力）、多卡并行策略，以及 K8s 上 GPU 节点与资源调度的可运行骨架与踩坑。</p>
+      <div class="art-tags"><span class="art-tag">#GPU</span><span class="art-tag">#推理服务</span><span class="art-tag">#vLLM</span><span class="art-tag">#批处理</span><span class="art-tag">#量化</span><span class="art-tag">#显存优化</span><span class="art-tag">#多卡并行</span></div>
+    </div>
+    <div class="prose"><h1>GPU 推理服务：模型服务化、批处理、显存优化与多卡</h1>
+<p>前面 <code>deploy-docker</code> 把服务打成镜像、<code>deploy-k8s</code> 把副本跑稳。但当你要<strong>自己托管大模型推理</strong>（而不是只调 OpenAI 这类远端 API）时，问题性质变了：模型权重占几 GB 到上百 GB 显存、单请求延迟高、吞吐是成本命门、多卡调度复杂。这一篇讲 <strong>GPU 推理服务化</strong>——把模型变成一个高吞吐、低延迟、可弹性伸缩的在线服务。</p>
+<p>面向有经验的开发者。框架类（vLLM / TGI / Triton）API 演进快，<strong>下文以『架构思路 + 通用骨架』表达，落地参数以各项目官方文档为准</strong>，不编造私有接口。</p>
+<h2 id="1-为什么-gpu-推理服务特殊">1. 为什么 GPU 推理服务特殊</h2>
+<p>调云端 API 时，推理引擎、显存、扩缩都是厂商的事。自己托管则全要自己扛：</p>
+<table>
+<thead>
+<tr>
+<th>挑战</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>显存墙</td>
+<td>7B 模型 FP16 约 14GB，70B 约 140GB，单卡装不下就要切分</td>
+</tr>
+<tr>
+<td>吞吐 vs 延迟</td>
+<td>大模型逐 token 生成，单请求空闲算力大，必须靠批处理把算力喂满</td>
+</tr>
+<tr>
+<td>冷启动慢</td>
+<td>权重从磁盘加载到显存要数秒到数十秒，影响首发延迟</td>
+</tr>
+<tr>
+<td>成本高</td>
+<td>GPU 按卡时计费，利用率直接决定账单</td>
+</tr>
+<tr>
+<td>多卡复杂</td>
+<td>切分策略（张量/流水/数据并行）影响正确性与效率</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">先想清楚要不要自托管</span></div><div class="co-body"><p>  如果调用量不大、对延迟不敏感、合规允许，直接用云端推理 API 往往更省心省钱。
+  自托管 GPU 推理的理由通常是：数据不出域（合规）、长尾低成本、对延迟/并发有强定制需求。
+  先算 TCO，别为『看起来更酷』而自建。</p>
+</div></div><h2 id="2-gpu-与显存基础">2. GPU 与显存基础</h2>
+<ul>
+<li><strong>CUDA</strong>：NVIDIA 的并行计算平台，推理框架底层都走 CUDA + cuDNN/cuBLAS。</li>
+<li><strong>显存（VRAM）</strong>：模型权重、KV Cache、激活值都住这。显存不够 = 推理直接 OOM。</li>
+<li><strong>多卡互联</strong>：NVLink 比 PCIe 带宽高一个数量级；切分跨卡时，互联带宽决定通信开销。</li>
+<li><strong>利用率陷阱</strong>：<code>nvidia-smi</code> 看的是瞬时 GPU 占用，不等于『有效算力被喂满』。批处理不足时占用可能 90% 但吞吐很低（kernel 启动开销、等待数据）。</li>
+</ul>
+<pre><code class="language-bash"># 看 GPU 状态与显存占用
+nvidia-smi
+# 持续监控（每 1 秒刷新）
+watch -n 1 nvidia-smi
+# 看某进程占的显存/算力（更细）
+nvidia-smi dmon -s u
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">显存预算先算权重</span></div><div class="co-body"><p>  推理显存 ≈ 权重 + KV Cache + 激活 + 框架开销。权重可估：参数量 × 每参数字节数
+  （FP16=2B，INT8=1B，INT4=0.5B）。7B×FP16≈14GB 仅是权重，还要给 KV Cache 留空间，
+  所以单卡 24GB 跑 7B 有余，跑 13B 就紧。先算再选型。</p>
+</div></div><h2 id="3-模型服务化框架-把模型变成-api">3. 模型服务化框架：把模型变成 API</h2>
+<p>裸 <code>transformers</code> 逐条 <code>generate</code> 吞吐极低，不适合线上。生产用专用服务化框架，核心是<strong>连续批处理（continuous batching）<strong>和</strong>显存高效管理</strong>。主流三选一：</p>
+<table>
+<thead>
+<tr>
+<th>框架</th>
+<th>定位</th>
+<th>亮点</th>
+<th>注意</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>vLLM</td>
+<td>高吞吐开源推理</td>
+<td>PagedAttention、continuous batching、易上手</td>
+<td>主要面向 LLM 生成</td>
+</tr>
+<tr>
+<td>TGI（Text Generation Inference）</td>
+<td>HuggingFace 出品</td>
+<td>量化、张量并行、投产成熟</td>
+<td>偏 HF 生态</td>
+</tr>
+<tr>
+<td>Triton</td>
+<td>多框架推理服务器</td>
+<td>多后端（TF/PyTorch/ONNX/自定义）、扩缩</td>
+<td>配置较复杂</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">思路骨架而非私有 API</span></div><div class="co-body"><p>  以下用 vLLM 演示『如何起一个 OpenAI 兼容服务』的通用的思路。具体启动参数、环境变量、
+  端口随版本变化，<strong>以官方文档为准</strong>。我们只讲清它在做什么、为什么这样配。</p>
+</div></div><pre><code class="language-bash"># 思路骨架：用 vLLM 起一个 OpenAI 兼容的推理服务（参数以官方文档为准）
+# 镜像里已装好 vLLM；下面等价于官方快速起步命令的『意图』
+docker run --gpus all -p 8000:8000 \
+  vllm/vllm-openai:latest \
+  --model meta-llama/Llama-3-8B-Instruct \
+  --tensor-parallel-size 1 \     # 单卡；多卡改成卡数
+  --gpu-memory-utilization 0.9 \ # 显存用到 90%，给 KV Cache 留余量
+  --max-model-len 8192 \         # 最大上下文长度，影响 KV Cache 预留
+  --served-model-name my-llm
+# 起来后，它暴露 /v1/chat/completions，客户端可当 OpenAI 兼容端点调用
+</code></pre><p>客户端调用（兼容 OpenAI SDK，可直接复用前面 Agent 的 client）：</p>
+<pre><code class="language-ts">// 把自建推理端点接到 OpenAI SDK（只需改 baseURL）
+import OpenAI from 'openai';
+import 'dotenv/config';
+
+const client = new OpenAI({
+  baseURL: 'http://localhost:8000/v1', // 指向你的 GPU 推理服务
+  apiKey: 'not-needed',                // 自建服务通常不校验 key
+});
+
+const res = await client.chat.completions.create({
+  model: 'my-llm',
+  messages: [{ role: 'user', content: '用一句话解释 KV Cache' }],
+  stream: true,                        // 流式，降低首 token 延迟感
+});
+</code></pre><h2 id="4-连续批处理-吞吐的灵魂">4. 连续批处理：吞吐的灵魂</h2>
+<p>朴素推理是『一个请求跑完再跑下一个』，GPU 算力大部分时间在等内存带宽，<strong>利用率极低</strong>。</p>
+<p><strong>连续批处理（continuous batching）</strong> 不等人：请求 A 生成完第 3 个 token，B 的第 1 个 token 立刻插进同一波计算。所有在途请求动态组成一个 batch，GPU 始终被喂满。</p>
+<pre><code>朴素批处理：  [A A A A] [B B B] [C C]      ← 等长凑批，短请求干等
+连续批处理：  [A B A C A B C B A C ...]    ← 谁有 token 谁进 batch，算力不空转
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">让请求并发进来才能批</span></div><div class="co-body"><p>  连续批处理的前提是『同一时刻有多个在途请求』。如果你的网关把请求串行化（一次只放一个），
+  批处理毫无用武之地。让前端/网关保持并发，或在线程池里聚合请求再发推理服务。</p>
+</div></div><h2 id="5-显存优化-量化-kv-cache-与分页注意力">5. 显存优化：量化、KV Cache 与分页注意力</h2>
+<p>显存是 GPU 推理最紧的资源，三条主线优化：</p>
+<h3 id="5-1-量化-quantization">5.1 量化（Quantization）</h3>
+<p>把权重从 FP16 压到 INT8 / INT4，显存与带宽需求腰斩甚至更低，精度损失可控。</p>
+<table>
+<thead>
+<tr>
+<th>精度</th>
+<th>每参数字节</th>
+<th>7B 权重大小</th>
+<th>取舍</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>FP16</td>
+<td>2B</td>
+<td>~14GB</td>
+<td>基准精度</td>
+</tr>
+<tr>
+<td>INT8</td>
+<td>1B</td>
+<td>~7GB</td>
+<td>几乎无损，提速明显</td>
+</tr>
+<tr>
+<td>INT4</td>
+<td>0.5B</td>
+<td>~3.5GB</td>
+<td>显存极小，需校准，部分任务掉点</td>
+</tr>
+</tbody></table>
+<pre><code class="language-bash"># 思路骨架：以 INT4（AWQ/GPTQ）加载，显存直接砍到约 1/4
+# 具体参数名随框架版本变，以官方文档为准
+docker run --gpus all -p 8000:8000 vllm/vllm-openai:latest \
+  --model TheBloke/Llama-3-8B-Instruct-AWQ \   # 已量化权重
+  --quantization awq
+</code></pre><h3 id="5-2-kv-cache-与分页注意力-pagedattention">5.2 KV Cache 与分页注意力（PagedAttention）</h3>
+<p>自回归生成时，每个 token 要『看』前面所有 token 的 K/V，这些缓存在显存里。传统做法为每请求预分配最大长度连续块，<strong>碎片与浪费巨大</strong>。vLLM 的 <strong>PagedAttention</strong> 像操作系统虚拟内存一样，把 KV Cache 分页、按需分配，显存利用率从 ~20% 提到 ~90%+。</p>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">max-model-len 调太大很烧显存</span></div><div class="co-body"><p>  KV Cache 预留 ≈ 并发数 × max-model-len × 每层维度。把 <code>--max-model-len</code> 设成 128k
+  但平时只用 4k，会预留巨量永不使用的显存。按真实场景设上限，必要时再放开。</p>
+</div></div><h3 id="5-3-预编译-图优化">5.3 预编译 / 图优化</h3>
+<p>TensorRT-LLM、ONNX Runtime 等可对计算图做算子融合、内核优选，进一步压延迟。属于进阶优化，优先级低于批处理与量化。</p>
+<h2 id="6-多卡并行-装不下-要更快怎么办">6. 多卡并行：装不下 / 要更快怎么办</h2>
+<p>单卡显存不够或要更高吞吐时，把模型摊到多卡：</p>
+<table>
+<thead>
+<tr>
+<th>策略</th>
+<th>切分维度</th>
+<th>通信量</th>
+<th>适用</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>数据并行（DP）</td>
+<td>多份相同模型，各卡处理不同请求</td>
+<td>低（仅梯度同步，推理无）</td>
+<td>吞吐优先、单卡装得下</td>
+</tr>
+<tr>
+<td>张量并行（TP）</td>
+<td>单层权重切到多卡，逐层协作</td>
+<td>高（每层都 all-reduce）</td>
+<td>单卡装不下，需 NVLink</td>
+</tr>
+<tr>
+<td>流水线并行（PP）</td>
+<td>按层切段，各卡管一段</td>
+<td>中（段间传激活）</td>
+<td>模型极深、TP 不够</td>
+</tr>
+</tbody></table>
+<pre><code class="language-bash"># 思路骨架：4 卡做张量并行（TP=4）；多机再叠加 PP
+# 前提：卡间有 NVLink，否则 TP 通信开销会拖垮收益
+docker run --gpus device=0,1,2,3 -p 8000:8000 vllm/vllm-openai:latest \
+  --model meta-llama/Llama-3-70B-Instruct \
+  --tensor-parallel-size 4
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">TP 依赖高带宽互联</span></div><div class="co-body"><p>  张量并行每层都要跨卡 all-reduce，PCIe 的带宽会让通信成为瓶颈，<strong>TP 必须用 NVLink 机器</strong>。
+  没有 NVLink 时优先用流水线并行（PP）或数据并行（DP），把通信量降到最低。</p>
+</div></div><h2 id="7-在-k8s-上跑-gpu-服务">7. 在 K8s 上跑 GPU 服务</h2>
+<p>把 GPU 推理服务上 K8s，关键是<strong>让调度器知道哪些节点有 GPU、并正确分配 GPU 资源</strong>。</p>
+<pre><code class="language-yaml"># 思路骨架：GPU 节点的 Deployment（以官方 NVIDIA device plugin 文档为准）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-inference
+spec:
+  replicas: 1              # GPU 服务通常按卡规划副本，1 副本绑 1 组卡
+  selector:
+    matchLabels:
+      app: llm-inference
+  template:
+    metadata:
+      labels:
+        app: llm-inference
+    spec:
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:latest
+          args:
+            - "--model"
+            - "meta-llama/Llama-3-8B-Instruct"
+            - "--tensor-parallel-size"
+            - "1"
+          resources:
+            limits:
+              nvidia.com/gpu: 1   # 关键：向调度器声明要 1 张 GPU
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30   # 权重加载慢，给足宽限
+            periodSeconds: 15
+</code></pre><p>前置条件（集群侧，非本文件）：</p>
+<ul>
+<li>节点装好 NVIDIA 驱动 + 容器运行时（containerd/nvidia-container-runtime）；</li>
+<li>装 <strong>NVIDIA device plugin</strong>，把 <code>nvidia.com/gpu</code> 暴露成可调度资源；</li>
+<li>给 GPU 节点打 taint/label，避免把普通 Pod 调度上去挤占 GPU。</li>
+</ul>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">GPU 不能超卖，limits 要等于 requests</span></div><div class="co-body"><p>  GPU 目前<strong>不支持</strong>按小数分割（除非用 MIG），<code>nvidia.com/gpu</code> 必须是整数且
+  <code>limits == requests</code>（不能只设 request 让调度器超分）。设错会导致两 Pod 抢同一张卡。</p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">GPU 节点缩容会杀掉推理 Pod</span></div><div class="co-body"><p>  GPU 机器贵，自动缩容节点时若直接驱逐推理 Pod，权重要重新加载、首发延迟飙升。
+  给 GPU 节点设 <code>nodeAffinity</code>/taint 防止被普通 autoscaler 误缩，或配置终止宽限 + 优雅排空。</p>
+</div></div><h2 id="8-完整可运行骨架-单机-docker">8. 完整可运行骨架（单机 docker）</h2>
+<p>把下面作为本地验证脚本（需本机有 NVIDIA 驱动与 <code>nvidia-container-toolkit</code>）：</p>
+<pre><code class="language-bash">#!/usr/bin/env bash
+# serve-llm.sh —— 本地起一个 GPU 推理服务（骨架，参数以官方文档为准）
+set -euo pipefail
+
+MODEL=${MODEL:-"meta-llama/Llama-3-8B-Instruct"}
+TP=${TP:-1}
+PORT=${PORT:-8000}
+
+docker run --rm --gpus all -p "${PORT}:8000" \
+  vllm/vllm-openai:latest \
+  --model "${MODEL}" \
+  --tensor-parallel-size "${TP}" \
+  --gpu-memory-utilization 0.9 \
+  --max-model-len 8192 \
+  --served-model-name my-llm
+# 起来后访问 http://localhost:8000/v1/models 验证；调用见第 3 节客户端
+</code></pre><pre><code class="language-bash"># 简单压测：并发发请求，观察吞吐与显存（思路，工具以实际为准）
+# 用 hey / locust / 自写并发循环，看 nvidia-smi 的利用率与每秒 token 数
+watch -n 1 nvidia-smi
+</code></pre><h2 id="9-服务拓扑-路由-预处理与延迟-slo">9. 服务拓扑：路由、预处理与延迟 SLO</h2>
+<p>一个生产推理服务不是『单进程监听 8000』就完事。典型拓扑是<strong>网关 + 推理 worker</strong>分层：</p>
+<pre><code>客户端 → API 网关（鉴权 / 限流 / 模型路由 / 排队）
+              │
+              ├─→ 推理 worker A（GPU 0）   ← 连续批处理在这里发生
+              ├─→ 推理 worker B（GPU 1）
+              └─→ 推理 worker C（GPU 2）
+</code></pre><ul>
+<li><strong>网关层</strong>做与 GPU 无关的事：API Key 校验、按用户/模型路由、全局限流、把突发请求塞进队列（避免瞬间压垮 worker）。</li>
+<li><strong>worker 层</strong>只管推理。多 worker 通过 K8s Service 负载均衡，副本数随 GPU 卡数走。</li>
+</ul>
+<p>延迟要拆开看，否则优化没方向：</p>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>含义</th>
+<th>优化抓手</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>TTFT（Time To First Token）</td>
+<td>从发请求到出第一个 token</td>
+<td>权重加载（常驻显存）、队列深度、预填充速度</td>
+</tr>
+<tr>
+<td>TPOT（Time Per Output Token）</td>
+<td>后续每个 token 间隔</td>
+<td>批处理大小、显存带宽、量化</td>
+</tr>
+<tr>
+<td>端到端</td>
+<td>TTFT + TPOT × 长度</td>
+<td>流式输出让 TTFT 体感主导</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">用 SLO 反推配置</span></div><div class="co-body"><p>  先定 SLO：如『P99 TTFT &lt; 2s、TPOT &lt; 50ms』。再据此算需要的并发上限、批大小、是否量化。
+  没有 SLO 的优化是瞎调——可能花大力气压 TPOT，但用户其实只感知 TTFT。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">队列无界会拖垮 TTFT</span></div><div class="co-body"><p>  网关若不对排队长度设上限，突发流量会把请求堆在队列里，等轮到时 TTFT 已飙到几十秒。
+  设最大排队数，超限直接 429，让客户端退避或走兜底（云端 API），比『假活在排队』体验好。</p>
+</div></div><h2 id="10-对比-自托管-gpu-推理的取舍">10. 对比：自托管 GPU 推理的取舍</h2>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>云端推理 API</th>
+<th>自托管 GPU</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>起步成本</td>
+<td>低（按 token 计费）</td>
+<td>高（机器/卡）</td>
+</tr>
+<tr>
+<td>数据合规</td>
+<td>数据出域（需评估）</td>
+<td>可完全不出域</td>
+</tr>
+<tr>
+<td>长尾成本</td>
+<td>量大时贵</td>
+<td>量大时摊薄更省</td>
+</tr>
+<tr>
+<td>可控性</td>
+<td>低（黑盒）</td>
+<td>高（批处理/量化/路由自主）</td>
+</tr>
+<tr>
+<td>运维</td>
+<td>无</td>
+<td>重（驱动/调度/扩缩）</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">混合是常见最优解</span></div><div class="co-body"><p>  很多团队用『云端 API 兜底 + 自托管跑主力流量』的混合：自托管扛稳定大盘，
+  峰值或长尾溢出到云端。既控成本又保弹性。先别 all-in 自托管。</p>
+</div></div><h2 id="11-常见坑">11. 常见坑</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">显存 OOM 在首次请求才爆</span></div><div class="co-body"><p>  服务起来了不代表能跑——权重加载只占一部分显存，真正的 OOM 常在第一个请求分配 KV Cache 时爆发。
+  上线前务必用接近生产的并发与上下文长度做压测，别只看『服务起没起』。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">量化掉点未验证就上线</span></div><div class="co-body"><p>  INT4 在部分任务（如长链推理、代码、特定语言）会明显掉点。量化后必须跑一遍你的评测集
+  （见 <code>eval-metrics</code>），确认掉点在可接受范围。别凭『朋友圈说无损』就切换。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">把权重打进镜像导致巨大无比</span></div><div class="co-body"><p>  几 GB~上百 GB 的权重别烘焙进镜像（见 <code>deploy-docker</code> 红线）。权重走挂载卷或对象存储
+  按需下载；镜像只含运行时代码与框架。否则构建/拉取慢到不可用。</p>
+</div></div><div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">TP 跑在 PCIe 上反而更慢</span></div><div class="co-body"><p>  没 NVLink 却设大 <code>tensor-parallel-size</code>，跨卡通信开销超过并行收益，吞吐不升反降。
+  没有 NVLink 优先 PP/DP。先用 <code>nvidia-smi topo -m</code> 看卡间拓扑再决定切分策略。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">副本数超过卡数导致抢占</span></div><div class="co-body"><p>  GPU 服务副本数 × 每副本卡的 <code>nvidia.com/gpu</code> 不能超过集群总卡数，且不能两 Pod 共享一张卡。
+  调度失败会一直 Pending。规划副本时先算总卡数预算。</p>
+</div></div><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">监控 GPU 利用率而非仅占用</span></div><div class="co-body">  <code>nvidia-smi</code> 占用高 ≠ 吞吐高。配合框架暴露的『每秒 token 数 / 批大小 / 排队长度』指标
+<p>  （见 <code>deploy-monitor</code>），判断批处理是否真的把算力喂满，再决定要不要扩卡或调并发。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>自托管 GPU 推理的硬约束是显存与吞吐：先算权重显存预算，再选卡与切分。</li>
+<li>服务化框架的价值在连续批处理（算力不空转）与 PagedAttention（KV Cache 显存高效）。</li>
+<li>显存优化三件套：量化（INT8/INT4）、KV Cache 分页管理、按真实长度设 <code>max-model-len</code>。</li>
+<li>多卡：TP 需 NVLink、PP/DP 适配弱互联；GPU 资源 <code>limits==requests</code> 不可超卖。</li>
+<li>自托管 vs 云端 API 按 TCO 与合规权衡，混合部署常是最优；上线前用真实并发压测显存与掉点。</li>
+</ul>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">下一步</span></div><div class="co-body"><p>  GPU 推理服务跑起来后，要盯住『每秒 token 数、批大小、排队、成本、质量』这些指标，
+  见 <strong>deploy-monitor</strong>；要把这些副本弹性伸缩，见 <strong>deploy-scale</strong>。</p>
+</div></div><h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>vLLM 官方文档：PagedAttention、continuous batching、启动参数（以官方为准）</li>
+<li>HuggingFace TGI 文档：量化、张量并行、投产配置</li>
+<li>NVIDIA TensorRT-LLM 文档：图优化与内核融合（进阶延迟优化）</li>
+<li>Kubernetes GPU 调度：NVIDIA device plugin 与 <code>nvidia.com/gpu</code> 资源语义</li>
+<li>论文 <em>Efficient Memory Management for Large Language Model Serving with PagedAttention</em>（vLLM 底层原理）</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="deploy-serverless.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">Serverless 部署：云函数、冷启动与 Agent 长任务适配</span></a>
+    <a class="art-pagerLink art-pagerRight" href="deploy-monitor.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">监控与日志：指标、链路、日志与 LLM 专属监控</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

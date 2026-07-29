@@ -1,0 +1,195 @@
+---
+title: uni-app 跨端开发实战
+description: 理解 uni-app 的跨端编译原理、条件编译、统一组件与 API，写出可运行骨架并掌握多端发布与常见坑。
+category: 前端工程
+order: 6
+difficulty: 进阶
+duration: 25 分钟
+tags: [uni-app, 跨端, 小程序, Vue]
+date: 2026-07-29
+---
+
+# uni-app 跨端开发实战
+
+uni-app 用 **Vue 语法**写一套代码，编译到多个平台：H5、微信/支付宝/抖音等小程序、App（iOS/Android）、乃至快应用。核心是「一套源码 + 条件编译 + 平台适配层」，让你不用为每个端各维护一套工程。
+
+<Callout type="note" title="它解决什么">
+  小程序、H5、App 的运行时和 API 各不相同。uni-app 提供**统一的组件标签（`<view>`/`<text>`）和统一的 JS API（`uni.xxx`）**，
+  编译时再把它们翻译成各平台的原生写法，避免重复开发。
+</Callout>
+
+## 1. 跨端编译原理
+
+uni-app 的编译器（基于 Vite/Rollup）把 `.vue` 源文件转译成目标端代码：
+
+- 编译到**小程序**：每个页面/组件变成小程序规范的四件套（`wxml`/`wxss`/`js`/`json`）；
+- 编译到**H5**：走标准 Web，组件映射成 HTML 标签；
+- 编译到 **App**：通过 `web-view` 渲染或原生渲染（nvue）承载。
+
+你写的始终是 Vue 单文件组件，差异由编译器与运行时屏蔽。
+
+```vue
+<!-- pages/index/index.vue —— 一个跨端页面 -->
+<script setup>
+import { ref } from 'vue';
+
+const title = ref('你好 uni-app');
+
+// uni.navigateTo 是统一 API，编译到各端变成对应跳转
+function goDetail() {
+  uni.navigateTo({ url: '/pages/detail/detail' });
+}
+</script>
+
+<template>
+  <!-- 用 uni 的 view/text 而非 div/span，保证各端可编译 -->
+  <view class="card" @click="goDetail">
+    <text>{{ title }}</text>
+  </view>
+</template>
+
+<style>
+.card { padding: 20rpx; } /* rpx 是响应式单位，按屏宽自适应 */
+</style>
+```
+
+<Callout type="tip" title="rpx 自适应利器">
+  `rpx` 把屏幕宽固定为 750 份，写 `750rpx` 即满屏宽。不同设备自动缩放，
+  比写死 `px` 更适合多端。但 1rpx 边框在部分机型会消失，必要时回退 px。
+</Callout>
+
+## 2. 条件编译：按端差异
+
+一套代码跑多端，总有平台特有能力（如微信的开放能力、App 的原生插件）。用**条件编译注释**按平台保留代码：
+
+```js
+// 条件编译语法：以注释形式存在，编译器只保留命中平台的分支
+// #ifdef MP-WEIXIN
+console.log('这段只在微信小程序编译进去');
+wx.requestSubscribeMessage({ /* 微信专属订阅消息 */ });
+// #endif
+
+// #ifdef APP-PLUS
+console.log('这段只在 App 端编译进去');
+plus.runtime.quit(); // 5+ 引擎的 App 专属 API
+// #endif
+
+// #ifndef H5
+console.log('除 H5 外的所有端都编译这段');
+// #endif
+```
+
+模板与样式同样支持条件编译：
+
+```vue
+<!-- #ifdef MP-WEIXIN -->
+<ad unit-id="xxxx"></ad> <!-- 仅微信小程序显示广告组件 -->
+<!-- #endif -->
+```
+
+<Callout type="warn" title="别滥用条件编译">
+  条件分支一多，同一份源码在不同端行为分叉，调试成本陡增。优先用 `uni.xxx` 统一 API；
+  只有真没有跨端能力时才条件编译，并集中收敛到单独文件/函数里。
+</Callout>
+
+## 3. 组件与 API 的统一层
+
+uni-app 提供跨端组件（`<view>` `<text>` `<image>` `<scroll-view>` 等）和跨端 API（`uni.request` `uni.navigateTo` `uni.getStorage` 等）。
+
+```js
+// 统一网络请求：编译后各端映射到原生请求实现
+uni.request({
+  url: 'https://api.example.com/user',
+  method: 'GET',
+  success: (res) => console.log(res.data),
+  fail: (err) => console.error(err),
+});
+
+// 本地存储也是统一 API，不用关心端上底层是 wx.storage 还是 localStorage
+uni.setStorageSync('token', 'abc');
+const token = uni.getStorageSync('token');
+```
+
+<Callout type="note" title="与原生小程序语法的映射">
+  习惯 `wx.xxx` 的开发者注意：uni-app 用 `uni.xxx` 统一封装，参数基本对齐微信小程序，
+  但个别平台专属字段需查文档。API 易变，以官方文档为准。
+</Callout>
+
+## 4. 多端发布
+
+工程配置集中在 `manifest.json`（应用名、图标、各端 appid 等），各端编译入口在 `pages.json`（路由与窗口样式）。
+
+```jsonc
+// pages.json —— 路由与全局样式（编译到各端对应配置）
+{
+  "pages": [
+    { "path": "pages/index/index", "style": { "navigationBarTitleText": "首页" } },
+    { "path": "pages/detail/detail", "style": { "navigationBarTitleText": "详情" } }
+  ],
+  "globalStyle": { "navigationBarBackgroundColor": "#ffffff" }
+}
+```
+
+```bash
+# 常用编译命令（基于 cli，具体以所用版本为准）
+npm run dev:mp-weixin   # 开发微信小程序（产物在 dist/dev/mp-weixin）
+npm run build:h5        # 构建 H5 静态站
+npm run build:app-plus  # 构建 App 包（需 HbuilderX 或云打包）
+```
+
+<Callout type="tip" title="小程序要先配 appid">
+  编译到具体小程序平台前，需在 `manifest.json` 填对应平台的 appid，并安装该平台开发者工具。
+  H5 端则像普通 Web 工程一样起本地服务预览。
+</Callout>
+
+## 5. 方案对比
+
+| 维度 | uni-app | Taro | Flutter |
+|------|---------|------|---------|
+| 语法 | Vue | React | Dart |
+| 渲染 | 各端原生/Web | 各端原生/Web | 自绘 Skia 引擎 |
+| 性能 | 中（依赖端能力） | 中 | 高（自绘） |
+| 小程序支持 | 强（官方优先） | 强 | 弱（需桥接） |
+| 上手成本 | 低（Vue 党友好） | 低（React 党） | 高（新语言） |
+
+<Callout type="note" title="怎么选">
+  Vue 团队、重小程序覆盖 → uni-app；React 团队 → Taro；追求极致性能与原生体验、能接受 Dart → Flutter。
+  纯小程序且要深度用平台能力，直接用原生小程序也未必更慢。
+</Callout>
+
+## 6. 常见坑
+
+<Callout type="warn" title="各端 API 能力不对等">
+  并非所有 `uni.xxx` 在每个端都可用。编译不报错、运行才崩是最常见陷阱。
+  上线前务必在**每个目标端**真机验证，别只跑 H5。
+</Callout>
+
+<Callout type="danger" title="小程序体积包限制">
+  微信小程序主包有体积上限（常见 2MB，分包后可扩展）。别把大图、整库塞进主包，
+  用分包加载、CDN 资源、按需引入。超限会上传失败。
+</Callout>
+
+<Callout type="warn" title="样式兼容性">
+  小程序不支持部分 Web CSS（如 `*` 通配、`position: fixed` 在某些组件内异常）。
+  用 `rpx`、避免过于花哨的选择器，复杂布局优先用 flex。以官方文档的样式限制为准。
+</Callout>
+
+## 小结
+
+- uni-app 用 Vue 写一套源码，经编译器翻译成 H5/小程序/App 多端代码。
+- 跨端靠统一组件（`<view>` 等）与统一 API（`uni.xxx`）；平台差异用条件编译 `#ifdef` 收敛。
+- 工程配置在 `manifest.json` 与 `pages.json`；发布前逐端真机验证。
+- 红线：别滥用条件编译、各端能力不等要实测、注意小程序包体积与样式兼容。
+
+<Callout type="note" title="下一步">
+  想把界面工程化得更现代，可参考 **fe-nuxtjs** 的组合式写法；
+  做桌面端则看 **fe-electron** 的进程模型。
+</Callout>
+
+## 延伸阅读
+
+- uni-app 官方文档：https://uniapp.dcloud.net.cn
+- 条件编译说明：https://uniapp.dcloud.net.cn/tutorial/platform.html
+- pages.json 配置：https://uniapp.dcloud.net.cn/collocation/pages.html
+- 小程序分包：https://developers.weixin.qq.com/miniprogram/dev/framework/subpackages.html
+- Taro（React 系替代）：https://taro-docs.jd.com

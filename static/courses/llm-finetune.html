@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>微调实战：SFT 与 LoRA 从数据到上线 · AgentLab</title>
+  <meta name="description" content="从『要不要微调』的决策出发，讲透 SFT 数据格式与 Zod 校验、全参/LoRA/QLoRA/PEFT 方案对比、OpenAI 托管微调可运行骨架、LoRA 训练伪代码、评估与成本，给有经验开发者能落地的全流程。"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="AgentLab"/>
+  <meta property="og:title" content="微调实战：SFT 与 LoRA 从数据到上线 · AgentLab"/>
+  <meta property="og:description" content="从『要不要微调』的决策出发，讲透 SFT 数据格式与 Zod 校验、全参/LoRA/QLoRA/PEFT 方案对比、OpenAI 托管微调可运行骨架、LoRA 训练伪代码、评估与成本，给有经验开发者能落地的全流程。"/>
+  <meta name="twitter:card" content="summary"/>
+  <link rel="stylesheet" href="../assets/styles.css"/>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"/>
+  <script>
+    try { var t = localStorage.getItem('theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme','dark'); } catch(e){}
+  </script>
+</head>
+<body>
+  <header class="hdr-header">
+  <div class="hdr-inner">
+    <a class="hdr-brand" href="../index.html"><svg width="38" height="38" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect width="40" height="40" rx="10" fill="url(#agentlab-logo)"/>
+  <path d="M20 8L10 31H14.5L16.8 25.5H23.2L25.5 31H30L20 8ZM18.3 21.5L20 16.8L21.7 21.5H18.3Z" fill="white"/>
+  <defs><linearGradient id="agentlab-logo" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#1a9a6e"/><stop offset="1" stop-color="#15875d"/>
+  </linearGradient></defs>
+</svg><span class="hdr-brandText">AgentLab</span></a>
+    <nav class="hdr-nav">
+      <a href="../index.html" class="">首页</a>
+      <a href="../courses.html" class="">课程</a>
+      <a href="../about.html" class="">关于</a>
+    </nav>
+    <div class="hdr-actions">
+      <button class="sr-trigger" id="searchTrigger" type="button" aria-label="站内搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+  <path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg><span class="sr-triggerText">搜索</span></button>
+      <button class="tt-btn" id="themeToggle" type="button" aria-label="切换主题" title="切换到暗色"><span aria-hidden>🌙</span></button>
+      <a class="hdr-cta" href="../courses.html">开始学习</a>
+    </div>
+  </div>
+</header>
+  <div class="main">
+  <article>
+    <div class="art-header">
+      <a class="art-back" href="../courses.html#llm">← 课程大纲</a>
+      <div class="art-metaRow">
+        <span class="art-moduleTag">🧠</span>
+        <span class="art-moduleName">LLM大模型</span>
+        <span class="art-diff">高级</span>
+        <span class="art-dur">45 分钟</span>
+      </div>
+      <h1 class="art-title">微调实战：SFT 与 LoRA 从数据到上线</h1>
+      <p class="art-desc">从『要不要微调』的决策出发，讲透 SFT 数据格式与 Zod 校验、全参/LoRA/QLoRA/PEFT 方案对比、OpenAI 托管微调可运行骨架、LoRA 训练伪代码、评估与成本，给有经验开发者能落地的全流程。</p>
+      <div class="art-tags"><span class="art-tag">#微调</span><span class="art-tag">#SFT</span><span class="art-tag">#LoRA</span><span class="art-tag">#QLoRA</span><span class="art-tag">#PEFT</span><span class="art-tag">#评估</span><span class="art-tag">#成本</span></div>
+    </div>
+    <div class="prose"><h1>微调实战：SFT 与 LoRA 从数据到上线</h1>
+<p>预训练（见 llm-pretrain）造出『续写机器』基座；<strong>微调（Fine-tuning）</strong> 才是把它变成『听话、懂业务』的助手的关键一步。这一篇面向已经会调 API 的开发者，直接给你：决策依据、数据怎么造、四种方案怎么选、可运行骨架、怎么评估、要花多少钱。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">本篇两条主线</span></div><div class="co-body"><p>  ① <strong>托管微调</strong>：用 OpenAI 等厂商的 fine-tuning API，Node SDK + Zod 校验数据，开箱即用；
+  ② <strong>自训微调</strong>：LoRA / QLoRA / PEFT，用开源模型本地训练（以官方文档为准的伪代码骨架）。
+  两者目标一致——让模型适配你的任务，成本和可控性不同。</p>
+</div></div><h2 id="1-先决策-到底要不要微调">1. 先决策：到底要不要微调</h2>
+<p>微调不是银弹。先和更便宜的方案比一比：</p>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>成本</th>
+<th>可控性</th>
+<th>适合</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>提示工程 / Few-shot</td>
+<td>零训练成本</td>
+<td>低（受上下文限制）</td>
+<td>简单、变化快的 task</td>
+</tr>
+<tr>
+<td>RAG（检索增强）</td>
+<td>零训练，仅推理</td>
+<td>中</td>
+<td>需『私有知识』且要可溯源</td>
+</tr>
+<tr>
+<td><strong>SFT 微调</strong></td>
+<td>中</td>
+<td>高</td>
+<td>固定格式/语气/稳定能力，如客服话术</td>
+</tr>
+<tr>
+<td><strong>LoRA/QLoRA</strong></td>
+<td>中低</td>
+<td>高</td>
+<td>单卡也能训大模型，领域适配</td>
+</tr>
+<tr>
+<td>全参数微调</td>
+<td>高</td>
+<td>最高</td>
+<td>你有充足数据和算力，要深度改造</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">默认路径</span></div><div class="co-body"><p>  先上『提示工程 + RAG』验证价值；若模型在固定格式/稳定风格上仍不达标，再上 SFT；
+  若要在自有算力上训大模型，选 LoRA/QLoRA。不要一上来就全参微调——多数场景它性价比最差。</p>
+</div></div><h2 id="2-sft-数据-微调的命门">2. SFT 数据：微调的命门</h2>
+<p>监督微调（Supervised Fine-Tuning, SFT）喂的是**『输入 → 期望输出』配对**。数据质量远比数量重要——几百条精心标注，常胜过几万条噪声。</p>
+<h3 id="2-1-数据格式">2.1 数据格式</h3>
+<p>OpenAI 风格的 SFT 文件是 JSONL，每行一条多轮对话：</p>
+<pre><code class="language-json">{"messages": [
+  {"role": "system", "content": "你是严谨的运维助手"},
+  {"role": "user", "content": "磁盘满了怎么查？"},
+  {"role": "assistant", "content": "用 df -h 看挂载点用量，再用 du -sh * 定位大目录。"}
+]}
+</code></pre><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">数据分布决定模型行为</span></div><div class="co-body"><p>  模型会『忠实复刻』你的训练分布。如果你的 SFT 全是正例、没有『拒答/澄清』样本，
+  上线后模型会对一切问题强行作答（幻觉式自信）。务必混入拒答、反问、降级样本。</p>
+</div></div><h3 id="2-2-用-zod-校验训练数据">2.2 用 Zod 校验训练数据</h3>
+<p>在提交给微调 API 前，用 Zod 守住格式关——坏样本会在跑了几小时后才暴露：</p>
+<pre><code class="language-ts">// validate_sft.ts —— SFT 数据校验（沿用 OpenAI SDK 项目的 Zod 习惯）
+import { z } from 'zod';
+
+// 单条消息：角色 + 内容
+const Message = z.object({
+  role: z.enum(['system', 'user', 'assistant']),
+  content: z.string().min(1, '内容不能为空'),
+});
+
+// 一条 SFT 样本：messages 数组，且必须以 assistant 回复收尾
+const SftSample = z.object({
+  messages: z.array(Message).min(2).refine(
+    (ms) =&gt; ms[ms.length - 1].role === 'assistant',
+    { message: '最后一条必须是 assistant 消息' }
+  ),
+});
+
+// 逐行校验 JSONL，非法行写回 bad.jsonl 供人工修
+function validate(jsonlPath: string) {
+  // 读文件、split('\n')、逐行 safeParse —— 真实实现见 fs/promises
+  // 伪代码：for (const line of lines) { const r = SftSample.safeParse(JSON.parse(line)); ... }
+}
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">单一事实来源</span></div><div class="co-body"><p>  若你同时用 Zod 做『线上入参校验』和『训练数据校验』，尽量复用同一 schema 描述，
+  避免『训练分布』和『线上分布』漂移——这是很多模型上线后行为不符预期的隐蔽来源。</p>
+</div></div><h2 id="3-方案对比-全参-lora-qlora-peft">3. 方案对比：全参 / LoRA / QLoRA / PEFT</h2>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>改哪些参数</th>
+<th>显存</th>
+<th>适配强度</th>
+<th>适合</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>全参数微调</td>
+<td>全部权重</td>
+<td>极高（模型×多倍）</td>
+<td>最强</td>
+<td>数据充足、要深度改造</td>
+</tr>
+<tr>
+<td><strong>LoRA</strong></td>
+<td>仅低秩 adapters</td>
+<td>中</td>
+<td>强</td>
+<td>单/多卡训大模型，可逆、可切换</td>
+</tr>
+<tr>
+<td><strong>QLoRA</strong></td>
+<td>LoRA + 4bit 量化基座</td>
+<td>低（单卡可训 7B~70B）</td>
+<td>强</td>
+<td>消费级显卡训大模型</td>
+</tr>
+<tr>
+<td><strong>PEFT</strong></td>
+<td>适配器家族总称</td>
+<td>视具体方法</td>
+<td>强</td>
+<td>统一管理多种高效微调</td>
+</tr>
+</tbody></table>
+<p><strong>核心直觉</strong>：大模型权重里大量是『冗余方向』。LoRA 假设『有用的权重更新」可分解为低秩矩阵 ΔW = A·B，只训练这两个小矩阵（秩 r 通常 8~64），原权重冻结。好处：</p>
+<ul>
+<li>训练参数量从『数十亿』降到『数百万』，显存和时长骤降；</li>
+<li>原模型不动，一个基座可挂多个 LoRA 适配器，按需热插拔；</li>
+<li>合并（merge）后推理无额外开销，或保持分离按需加载。</li>
+</ul>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">LoRA 超参经验值</span></div><div class="co-body"><p>  rank（r）越大拟合越强但越易过拟合，常用 8 / 16 / 32；alpha 一般取 2r；
+  target_modules 默认 attention 的 q/v/proj。先小 r 跑通，再按需加大。具体以 PEFT 文档为准。</p>
+</div></div><h2 id="4-openai-托管微调-可运行骨架">4. OpenAI 托管微调：可运行骨架</h2>
+<p>如果你不想碰训练集群，OpenAI 的 fine-tuning API 是最省事路径。下面是用 Node SDK 提交一次 SFT 作业、并用 Zod 校验本地数据文件的完整骨架：</p>
+<pre><code class="language-ts">// openai_finetune.ts —— 托管 SFT 作业提交（可运行骨架）
+import OpenAI from 'openai';
+import 'dotenv/config';
+import { z } from 'zod';
+import { readFileSync } from 'node:fs';
+
+const client = new OpenAI();
+
+// ① 复用第 2 节的 Zod schema 校验训练文件，避免垃圾数据烧钱
+const Message = z.object({
+  role: z.enum(['system', 'user', 'assistant']),
+  content: z.string().min(1),
+});
+const SftSample = z.object({
+  messages: z.array(Message).min(2).refine(
+    (ms) =&gt; ms[ms.length - 1].role === 'assistant',
+    { message: '末条须为 assistant' }
+  ),
+});
+
+function validateFile(path: string): boolean {
+  const lines = readFileSync(path, 'utf8').trim().split('\n');
+  return lines.every((l) =&gt; SftSample.safeParse(JSON.parse(l)).success);
+}
+
+async function run() {
+  if (!validateFile('train.jsonl')) {
+    throw new Error('训练数据校验失败，已中止提交');
+  }
+
+  // ② 上传训练文件（必须先 upload，拿到 file_id）
+  const file = await client.files.create({
+    file: readFileSync('train.jsonl'),
+    purpose: 'fine-tune',
+  });
+
+  // ③ 创建微调作业：选基模 + 超参（以官方文档为准，字段易变）
+  const job = await client.fineTuning.jobs.create({
+    training_file: file.id,
+    model: 'gpt-4o-mini-2024-07-18', // 基模，按你账号可用列表填
+    hyperparameters: {
+      n_epochs: 3, // 小数据集可多轮；过大易过拟合
+      // batch_size / learning_rate_multiplier 也可在此覆盖
+    },
+  });
+
+  console.log('作业已提交:', job.id);
+
+  // ④ 轮询状态（生产环境建议用 webhook / 事件流，而非死轮询）
+  let status = job.status;
+  while (status === 'running' || status === 'validating_files') {
+    await new Promise((r) =&gt; setTimeout(r, 30_000));
+    const cur = await client.fineTuning.jobs.retrieve(job.id);
+    status = cur.status;
+    console.log('当前状态:', status);
+  }
+
+  if (status === 'succeeded') {
+    const fineTuned = await client.fineTuning.jobs.retrieve(job.id);
+    console.log('微调模型名:', fineTuned.fine_tuned_model);
+  }
+}
+
+run();
+</code></pre><p>运行：<code>npm i openai dotenv zod</code> 然后 <code>npx tsx openai_finetune.ts</code>。</p>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">托管微调的隐性约束</span></div><div class="co-body"><p>  厂商对训练文件大小、样本数、基模版本都有准入门槛（如最少 N 条）。提交前务必读当前
+  官方『fine-tuning 要求』页——字段和限额随版本变，本骨架仅示意流程。</p>
+</div></div><h2 id="5-lora-qlora-自训-伪代码骨架">5. LoRA / QLoRA 自训：伪代码骨架</h2>
+<p>当你要在自有显卡上训开源模型，PEFT + Transformers 是主流。下面是以官方文档为准的思路骨架（不可直接复制运行，超参见最新文档）：</p>
+<pre><code class="language-python"># lora_train.py —— LoRA 微调骨架（思路为主，以 PEFT / Transformers 官方文档为准）
+from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer
+from peft import LoraConfig, get_peft_model
+import torch
+
+# ① 加载基座（QLoRA 时在此加 4bit 量化加载，见 bitsandbytes）
+model = AutoModelForCausalLM.from_pretrained(
+    "meta-llama/Llama-3-8B",
+    torch_dtype=torch.bfloat16,
+    device_map="auto",
+)
+tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3-8B")
+
+# ② 只把 LoRA 适配器挂到注意力层，原权重冻结
+lora_cfg = LoraConfig(
+    r=16,                      # 低秩维度：越大拟合越强
+    lora_alpha=32,             # 缩放系数，常取 2*r
+    target_modules=["q_proj", "v_proj"],  # 注入位置
+    lora_dropout=0.05,
+    bias="none",
+    task_type="CAUSAL_LM",
+)
+model = get_peft_model(model, lora_cfg)
+model.print_trainable_parameters()   # 会看到『可训参数 &lt;1%』
+
+# ③ 标准 Trainer 流程：数据经 tokenizer 编码成 labels，因果 LM 算损失
+args = TrainingArguments(
+    output_dir="./lora-out",
+    per_device_train_batch_size=4,
+    gradient_accumulation_steps=8,   # 小显存靠累积补 batch
+    learning_rate=2e-4,
+    num_train_epochs=3,
+    fp16=True,
+    logging_steps=10,
+)
+# trainer = Trainer(model=model, args=args, train_dataset=tokenized_dataset)
+# trainer.train()
+# model.save_pretrained("./lora-adapter")  # 只存适配器，体积小
+</code></pre><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">QLoRA 省显存的原理</span></div><div class="co-body"><p>  QLoRA 在 LoRA 基础上，把『冻结的基座』用 4bit（NF4）量化加载，前向时反量化计算。
+  这样 7B 模型可在单张 24GB 卡训练，70B 也可在多卡消费级环境跑。代价是极少量精度损失，
+  实践中几乎无感。具体加载写法（BitsAndBytesConfig）以官方文档为准。</p>
+</div></div><h2 id="6-评估-别只看-loss">6. 评估：别只看 loss</h2>
+<p>训练 loss 下降≠能力达标。SFT 评估要分层：</p>
+<ul>
+<li><strong>自动指标</strong>：在保留集上算困惑度（PPL）、格式合规率（如是否严格 JSON）。</li>
+<li><strong>LLM-as-judge</strong>：用强模型按 rubric 给回答打分（准确性、语气、安全性），注意 judge 自身偏差。</li>
+<li><strong>任务完成度</strong>：针对你的真实场景抽 50~200 条黄金集，人工或自动判定『达标/不达标』。</li>
+<li><strong>回归测试</strong>：微调后原能力不能掉（如通用问答骤降=过拟合/遗忘），需跑一套通用基准做护栏。</li>
+</ul>
+<div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">过拟合信号</span></div><div class="co-body"><p>  训练 loss 一路降、验证 loss 却回升 → 过拟合。常见解法：降 epoch、加 LoRA dropout、
+  扩增数据、降 rank。小数据集（几百条）跑 1~3 个 epoch 通常就够，别贪图多轮。</p>
+</div></div><h2 id="7-成本-算清这笔账">7. 成本：算清这笔账</h2>
+<table>
+<thead>
+<tr>
+<th>环节</th>
+<th>托管微调（OpenAI）</th>
+<th>自训 LoRA（8B，单卡）</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>数据准备</td>
+<td>人力为主</td>
+<td>人力为主</td>
+</tr>
+<tr>
+<td>训练算力</td>
+<td>按 token 计费，千条级约几~几十美元</td>
+<td>单卡跑数小时，电费可忽略</td>
+</tr>
+<tr>
+<td>推理</td>
+<td>微调模型按调用计费（略高于基模）</td>
+<td>自托管免费，但需运维 GPU</td>
+</tr>
+<tr>
+<td>隐性成本</td>
+<td>数据出域合规风险</td>
+<td>工程与运维人力</td>
+</tr>
+</tbody></table>
+<div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">省钱口诀</span></div><div class="co-body"><p>  托管微调：先在小样本（几百条）上验证基线，再决定扩量；用 <code>n_epochs</code> 控制，避免白训。
+  自训：QLoRA + 梯度累积把显存压到最低；适配器只存几 MB，可挂多版本 A/B。</p>
+</div></div><h2 id="8-训练完怎么用-合并与上线衔接">8. 训练完怎么用：合并与上线衔接</h2>
+<p>微调产出的东西分两类，处理方式不同：</p>
+<h3 id="8-1-托管微调-直接换模型名">8.1 托管微调：直接换模型名</h3>
+<p>OpenAI 类作业成功后，<code>fine_tuned_model</code> 就是一个新模型 ID，推理时代入即可：</p>
+<pre><code class="language-ts">// 用微调后的模型推理（与基模调用方式完全一致）
+const res = await client.chat.completions.create({
+  model: fineTunedModelId, // 第 4 节拿到的名字，替换基模即可
+  messages: [{ role: 'user', content: '磁盘满了怎么查？' }],
+});
+</code></pre><p>零部署成本，但模型权重在厂商侧，数据出域需合规评估。</p>
+<h3 id="8-2-lora-适配器-合并-or-分离加载">8.2 LoRA 适配器：合并 or 分离加载</h3>
+<p>自训得到的 <code>./lora-adapter</code> 只有几 MB（仅低秩矩阵）。上线有两种姿势：</p>
+<ul>
+<li><strong>合并（merge）</strong>：把适配器权重加回基座，产出『完整模型』，推理无额外逻辑、延迟零增加。适合固定一个适配器长期服务。</li>
+<li><strong>分离加载</strong>：推理框架（vLLM / TGI / llama.cpp）支持『基座 + 适配器』分离加载，可热切换多个 LoRA。适合多租户/多任务共用一个基座。</li>
+</ul>
+<pre><code class="language-python"># merge_lora.py —— 把 LoRA 合并进基座（思路骨架，以官方文档为准）
+from peft import PeftModel
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+base = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3-8B")
+model = PeftModel.from_pretrained(base, "./lora-adapter")
+merged = model.merge_and_unload()          # 权重相加，适配器消失于结果中
+merged.save_pretrained("./llama3-8b-sft")  # 得到可独立部署的完整模型
+tokenizer.save_pretrained("./llama3-8b-sft")
+</code></pre><div class="co-callout co-tip"><div class="co-head"><span aria-hidden>💡</span><span class="co-title">选 merge 还是分离</span></div><div class="co-body"><p>  单场景、要最低延迟 → merge。多场景共用基座、需 A/B 多个适配器 → 分离加载。
+  分离加载的『切换成本』几乎为零，但部分老推理框架对动态 LoRA 支持有限，部署前先验证。</p>
+</div></div><h3 id="8-3-上线前最后一道关-护栏">8.3 上线前最后一道关：护栏</h3>
+<p>微调模型仍可能输出违规/越界内容。上线时务必在推理侧叠护栏（详见 llm-safety）：
+输入过滤 + 输出审核 + 敏感词/越狱检测。微调注入的是『能力』，护栏约束的是『边界』，两者正交、缺一不可。</p>
+<div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">版本与回滚</span></div><div class="co-body"><p>  适配器/微调模型要像代码一样版本化（命名带日期/数据版本）。一旦新版本指标回退，
+  能一键回滚到上一版。建议保留最近 N 个版本，别只留『最新』。</p>
+</div></div><h2 id="9-常见坑">9. 常见坑</h2>
+<div class="co-callout co-danger"><div class="co-head"><span aria-hidden>🚫</span><span class="co-title">训练/评测泄漏</span></div><div class="co-body"><p>  若评测集样本出现在训练数据里，指标虚高。提交前必须去重、留干净保留集，
+  最好加『题目级』去重而非仅行级。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">数据分布单一</span></div><div class="co-body"><p>  只喂『完美回答』会导致模型不会拒答/澄清。务必混入拒答、反问、降级、异常输入样本，
+  否则上线后遇到越界问题会硬编答案（幻觉）。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">LoRA rank 盲目拉满</span></div><div class="co-body"><p>  rank 越大不代表越好。过大易过拟合且丢『通用能力』，先小 r（8~16）跑通再加。
+  另外 target_modules 只选 q/v 通常够，全层注入收益有限且更贵。</p>
+</div></div><div class="co-callout co-warn"><div class="co-head"><span aria-hidden>⚠️</span><span class="co-title">QLoRA 精度陷阱</span></div><div class="co-body"><p>  4bit 基座在『数值敏感』任务（如精确计算、特定格式）上偶尔掉点。若质量要求极高，
+  对关键任务用 8bit 或全精度 LoRA 做对照实验再定。</p>
+</div></div><div class="co-callout co-note"><div class="co-head"><span aria-hidden>📌</span><span class="co-title">别忘了对齐位置</span></div><div class="co-body"><p>  SFT 让模型『会按格式答』，但不保证『安全/有用』。生产助手通常还要 RLHF/DPO 对齐一步，
+  或在推理侧加护栏（见 llm-safety）。把微调当『能力注入』，对齐当『行为约束』，两者配合。</p>
+</div></div><h2 id="小结">小结</h2>
+<ul>
+<li>决策顺序：提示工程/RAG → SFT → LoRA/QLoRA → 全参，按成本和可控性升级。</li>
+<li>SFT 数据『质量 &gt; 数量』，务必混入拒答/降级样本，并用 Zod 在入库前校验格式。</li>
+<li>方案选型：全参最强最贵；LoRA 只训低秩适配器、可逆可热插拔；QLoRA 4bit 基座让单卡训大模型。</li>
+<li>托管微调用 OpenAI Node SDK 可跑通全流程；自训用 PEFT 骨架（以官方文档为准）。</li>
+<li>评估分层（自动+judge+任务完成度+回归），警惕过拟合与能力遗忘；成本先小样本验证再扩。</li>
+<li>红线：防泄漏、防分布单一、rank 别盲拉、QLoRA 精度对照、微调后还要对齐。</li>
+</ul>
+<h2 id="延伸阅读-参考">延伸阅读 / 参考</h2>
+<ul>
+<li>OpenAI Fine-tuning 官方文档（文件格式、超参、限额，以官方为准）</li>
+<li>HuggingFace PEFT 文档（LoraConfig、QLoRA、适配器管理）</li>
+<li>Dettmers et al. <em>QLoRA</em>（4bit 微调原论文）</li>
+<li>论文 <em>LIMA</em>（『少而精』的 SFT 数据也能塑造模型行为）</li>
+<li>评估框架：用 Ragas / 自研 LLM-as-judge rubric 做 SFT 质量回归</li>
+</ul>
+</div>
+    <nav class="art-pager">
+    <a class="art-pagerLink" href="llm-pretrain.html"><span class="art-pagerLabel">← 上一篇</span><span class="art-pagerTitle">预训练基础：从语料到基座模型</span></a>
+    <a class="art-pagerLink art-pagerRight" href="llm-inference.html"><span class="art-pagerLabel">下一篇 →</span><span class="art-pagerTitle">推理部署与量化：把模型跑起来还跑得稳</span></a>
+  </nav>
+  </article>
+  </div>
+  <footer class="ftr-footer">
+  <div class="ftr-inner">
+    <span>© 2026 AgentLab · 边学边做，锻造你的第一个 Agent</span>
+    <nav class="ftr-nav">
+      <a href="../courses.html">课程</a>
+      <a href="../about.html">关于</a>
+    </nav>
+  </div>
+</footer>
+  <script src="../assets/app.js" defer></script>
+</body>
+</html>

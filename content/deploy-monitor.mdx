@@ -1,0 +1,186 @@
+---
+title: 监控与日志：指标、链路、日志与 LLM 专属监控
+description: 掌握可观测性的三支柱（指标/链路/日志）在 Agent 服务上的落地，聚焦 LLM 专属监控（token 成本、延迟、质量、工具调用成功率），并给出可运行骨架与告警踩坑。
+category: 部署运维
+order: 6
+difficulty: 进阶
+duration: 24 分钟
+tags: [可观测性, 监控, 日志, 链路追踪, LLM监控, 成本]
+date: 2026-07-29
+---
+
+# 监控与日志：指标、链路、日志与 LLM 专属监控
+
+Agent 服务上线后，你迟早会面对这类问题：『为什么这波请求变慢了』『这个用户这个月烧了多少 token』『模型是不是开始乱答了』。传统 Web 监控只盯 QPS/延迟/错误率，对 LLM 应用远远不够——你得额外盯住**成本、生成质量、工具调用成败**。这一篇把可观测性三支柱讲清，并重点落到 LLM 专属指标上。
+
+## 1. 可观测性三支柱
+
+| 支柱 | 回答的问题 | 典型载体 |
+|------|------------|----------|
+| Metrics（指标） | 系统整体健康与趋势（量化） | Prometheus、CloudWatch |
+| Tracing（链路） | 一次请求内部经历了什么（定位） | OpenTelemetry、Jaeger |
+| Logging（日志） | 当时到底发生了什么（排查） | 结构化日志、Loki/ELK |
+
+三者互补：指标发现『异常』，链路定位『哪一步慢』，日志还原『具体错了什么』。Agent 场景三者都要，且都需带 `user_id`/`session_id`/`trace_id` 维度以便下钻。
+
+## 2. 指标：从 RED 到 LLM 指标
+
+通用服务看 RED（Rate 请求率、Errors 错误率、Duration 延迟）。Agent 还要加一组 **LLM 专属指标**：
+
+| 指标 | 含义 | 用途 |
+|------|------|------|
+| `llm_tokens_total` | 累计 token 数（区分 prompt/completion） | 成本核算、异常暴涨告警 |
+| `llm_cost_usd` | 估算花费 | 预算控制、按用户/租户分摊 |
+| `llm_latency_seconds` | 单次模型调用延迟 | 定位慢模型/慢链路 |
+| `agent_tool_calls_total` | 工具调用次数与成功率 | 发现坏工具、循环失控 |
+| `agent_quality_score` | 质量分（人工/LLM-as-judge） | 监控退化、回归 |
+
+<Callout type="note" title="成本指标是 LLM 应用的第一公民">
+  在传统服务里成本是『机器账单』，运维月底才看；在 LLM 应用里，token 是
+  **按调用实时燃烧**的。把 `llm_tokens_total` 与 `llm_cost_usd` 做成实时面板，
+  并按 user/tenant/feature 拆维度，否则一次坏循环能几小时烧掉一个月预算。
+</Callout>
+
+## 3. 可运行骨架：埋点 + 结构化日志
+
+下面用 Python 演示：用 `prometheus_client` 暴露指标，用标准 `logging` 打结构化日志（JSON），并在一次 Agent 调用里记录 token 与延迟。库名与接口以官方为准，骨架聚焦思路。
+
+```python
+# monitor_agent.py —— Agent 调用的指标埋点与结构化日志（骨架）
+import logging, time, json
+from prometheus_client import Counter, Histogram, start_http_server
+
+# 1) 定义指标（全局单例，Prometheus 会来拉这些）
+TOKENS = Counter("llm_tokens_total", "累计 token 数",
+                 ["kind", "model"])          # kind=prompt/completion
+COST = Counter("llm_cost_usd", "估算花费(美元)", ["model"])
+CALL_LAT = Histogram("llm_latency_seconds", "模型调用延迟", ["model"])
+TOOL_OK = Counter("agent_tool_calls_total", "工具调用数",
+                  ["name", "status"])        # status=ok/fail
+
+# 2) 结构化日志：一行一个 JSON，方便 Loki/ELK 检索与按字段过滤
+logging.basicConfig(level=logging.INFO,
+                    format='%(message)s')     # 我们直接输出 JSON 字符串
+log = logging.getLogger("agent")
+
+def record_llm(model, prompt_tok, completion_tok, price_per_1k):
+    # 把 token 换算成钱，按各自厂商单价；这里仅为示意
+    TOKENS.labels(kind="prompt", model=model).inc(prompt_tok)
+    TOKENS.labels(kind="completion", model=model).inc(completion_tok)
+    usd = (prompt_tok + completion_tok) / 1000 * price_per_1k
+    COST.labels(model=model).inc(usd)
+    return usd
+
+def call_llm(model, prompt, price_per_1k):
+    start = time.time()
+    # —— 真实模型调用在这里；骨架不编造具体 SDK ——
+    prompt_tok, completion_tok = 120, 80
+    result = f"[模型对『{prompt}』的回复]"
+    # 记录延迟（Histogram 自带 _count/_sum/_bucket）
+    CALL_LAT.labels(model=model).observe(time.time() - start)
+    usd = record_llm(model, prompt_tok, completion_tok, price_per_1k)
+    # 结构化日志：字段可被检索，带 trace/user 维度
+    log.info(json.dumps({
+        "event": "llm_call", "model": model, "prompt_tok": prompt_tok,
+        "completion_tok": completion_tok, "cost_usd": round(usd, 6),
+        "latency_ms": int((time.time() - start) * 1000),
+        "trace_id": "req-abc", "user_id": "u_001",
+    }, ensure_ascii=False))
+    return result
+
+if __name__ == "__main__":
+    start_http_server(8000)        # Prometheus 来 http://:8000/metrics 拉数据
+    print("metrics on :8000/metrics")
+    call_llm("gpt-4o-mini", "你好", price_per_1k=0.002)
+```
+
+<Callout type="tip" title="日志里别打密钥与 PII">
+  结构化日志很方便，但很容易顺手把 `messages` 全打进去——里面可能有用户隐私、
+  甚至你注入的系统密钥。生产日志只打『必要字段 + 哈希后的 user_id』，
+  正文内容脱敏或仅存 ID 供审计回溯。这是合规红线。
+</Callout>
+
+## 4. 链路追踪：把 Agent 多步串成一条 Trace
+
+Agent 一次请求往往经历『路由 → 模型调用 → 工具执行 → 再模型 → 生成』多步。用 OpenTelemetry 给每一步建 `Span`，父 `trace_id` 贯穿，就能在 Jaeger 里看到完整瀑布图，定位『到底是模型慢还是某个工具慢』。
+
+```python
+# trace_agent.py —— 用 OpenTelemetry 给 Agent 步骤建 Span（骨架思路）
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import ConsoleSpanExporter, BatchSpanProcessor
+
+trace.set_tracer_provider(TracerProvider())
+trace.get_tracer_provider().add_span_processor(
+    BatchSpanProcessor(ConsoleSpanExporter()))   # 真实环境换成 OTLP 导出到后端
+tracer = trace.get_tracer("agent")
+
+def run_step(name, fn):
+    with tracer.start_as_current_span(name) as span:
+        # 把业务属性挂到 span，便于检索与告警
+        span.set_attribute("agent.step", name)
+        return fn()
+
+# 用法：每一步都包一层，trace_id 自动沿调用链传递
+run_step("llm_call", lambda: call_llm("gpt-4o-mini", "你好", 0.002))
+run_step("tool_refund", lambda: None)   # 真实场景执行具体工具
+```
+
+## 5. 告警：传统 vs LLM 专属
+
+| 告警项 | 阈值思路 |
+|--------|----------|
+| 错误率突增 | 5xx > 1% 持续 5 分钟 |
+| P99 延迟 | > 正常基线 2 倍 |
+| token 成本 | 单用户/单小时花费超预算 |
+| 工具成功率 | 某工具失败率 > 10% |
+| 质量退化 | LLM-as-judge 均分周环比下降 > 5% |
+
+<Callout type="warn" title="成本告警要快于错误告警">
+  一次失控的工具循环能在分钟级烧掉大额 token。给『单用户单位时间花费』
+  设比『错误率』更灵敏的告警（如 1 分钟维度），并配套硬限流/熔断兜底，
+  否则等人工发现时账单已经炸了。
+</Callout>
+
+## 6. 对比：传统监控 vs LLM 监控
+
+| 维度 | 传统监控 | LLM 应用监控 |
+|------|----------|--------------|
+| 核心成本 | 机器/实例 | token（按调用实时燃烧） |
+| 关键延迟 | 网络/DB | 模型推理 + 工具往返 |
+| 质量信号 | 状态码/异常 | 生成质量、幻觉率、工具成败 |
+| 失败可解释 | 堆栈清晰 | 需 trace + 日志还原 prompt |
+
+## 7. 踩坑
+
+<Callout type="danger" title="指标维度基数爆炸">
+  给 Counter 加了 `user_id` 当 label 且用户量巨大，Prometheus 会为每个值建一条时间序列，
+  内存被撑爆。高基数维度（user_id、session_id）只放日志/链路，不放指标 label；
+  指标 label 只用低基数维度（model、tool_name、status）。
+</Callout>
+
+<Callout type="warn" title="只监控不告警等于没监控">
+  面板做得再漂亮，没人看也发现不了故障。把『成本异常、工具失败率、质量退化』
+  接进真实告警渠道（钉钉/企微/Slack/电话），并定期演练告警真的会响。
+</Callout>
+
+<Callout type="warn" title="质量监控要靠 judge，不能只看延迟">
+  Agent 『答得快、零报错』不代表答得对。引入 LLM-as-judge 或抽检打分，
+  监控『质量分』趋势，否则模型/提示一退化，你只能等用户投诉才发现。
+</Callout>
+
+## 小结
+
+- 可观测性三支柱：指标看趋势、链路定位置、日志看细节；三者都带 user/trace 维度才能下钻。
+- LLM 应用把 `token 成本、模型延迟、工具成功率、质量分`列为第一公民指标，按 user/tenant 拆维度。
+- 用 `prometheus_client` 埋点、`logging` 打结构化日志、OpenTelemetry 串链路；日志务必脱敏。
+- 告警要覆盖成本与质量，且比传统错误告警更灵敏；高基数维度别进指标 label，防基数爆炸。
+- 监控质量要靠 judge/抽检，不能只看状态码与延迟。
+
+## 延伸阅读 / 参考
+
+- Prometheus / `prometheus_client` 官方文档：指标类型、Exporter、高基数风险
+- OpenTelemetry 官方文档：Span/Context 传播、OTLP 导出，跨函数与队列串联
+- *Google SRE Book* 的监控与告警章节：RED 方法论、有效告警设计
+- *LLM-as-a-Judge* 相关实践：用模型评模型的质量分监控思路
+- Grafana + Loki + Tempo：指标/日志/链路一体化看板搭建指南
